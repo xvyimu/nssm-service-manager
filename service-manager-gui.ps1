@@ -1,4 +1,4 @@
-Requires -Version 7.0
+#requires -Version 7.0
 # service-manager-gui.ps1 — NSSM 服务管理 GUI（卡片式）
 # 白色简洁 · 圆角卡片(全自绘) · 固定窗口 · 后台探测(不卡 UI) · 托盘 · 内置日志
 # 配置: services.json · logs/
@@ -11,6 +11,22 @@ if (-not (New-Object Security.Principal.WindowsPrincipal([Security.Principal.Win
   Start-Process pwsh -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$MyInvocation.MyCommand.Path; exit
 }
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+
+# ---- 崩溃留痕：UI 线程异常 / 进程级异常 / 关闭原因 → logs\gui-crash.log ----
+# pwsh 7 下 UI 线程事件处理器抛出的未捕获异常会直接杀掉整个进程（无任何对话框），
+# 表现为「点着点着窗口就没了」。这里把异常改为记录后存活，方便事后定位。
+$crashLog = "$logDir\gui-crash.log"
+function Write-CrashLog([string]$m){
+  try { [IO.File]::AppendAllText($crashLog, "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') $m`r`n", [Text.UTF8Encoding]::new($false)) } catch {}
+}
+[System.Windows.Forms.Application]::SetUnhandledExceptionMode('CatchException')
+[System.Windows.Forms.Application]::add_ThreadException({ param($s,$e)
+  Write-CrashLog "ThreadException: $($e.Exception.GetType().FullName): $($e.Exception.Message)`n$($e.Exception.StackTrace)"
+})
+[AppDomain]::CurrentDomain.add_UnhandledException({ param($s,$e)
+  $x = $e.ExceptionObject
+  Write-CrashLog "UnhandledException(terminating=$($e.IsTerminating)): $($x.GetType().FullName): $($x.Message)`n$($x.StackTrace)"
+})
 
 # ---- 主题 ----
 $fReg = New-Object System.Drawing.Font('Microsoft YaHei UI',10)
@@ -97,10 +113,15 @@ function New-Dialog([string]$title, $w, $h) {
 
 # 工具栏
 $rnd = New-Object System.Windows.Forms.ToolStripProfessionalRenderer(New-Object System.Windows.Forms.ProfessionalColorTable)
-$rnd.ColorTable.GetType().GetProperties() | ?{ $_.Name -like 'ToolStrip*' } | %{ $_.SetValue($rnd.ColorTable,$T.TBg) }
+$rnd.ColorTable.GetType().GetProperties() | ?{ $_.Name -like 'ToolStrip*' -and $_.CanWrite } | %{ $_.SetValue($rnd.ColorTable,$T.TBg) }
 $tb = New-Object System.Windows.Forms.ToolStrip -Property @{ Dock='Top'; BackColor=$T.TBg; GripStyle='Hidden'; Renderer=$rnd; Padding=New-Object System.Windows.Forms.Padding(6,3,6,3) }
 $form.Controls.Add($tb)
-function New-TB([string]$t,[int]$w=70){ New-Object System.Windows.Forms.ToolStripButton -Property @{Text=$t;DisplayStyle='Text';AutoSize=$false;Width=$w;Height=28;Font=$fS;ForeColor=$T.Fg;BackColor=$T.TBg} }
+# 注意：参数名不能用 $t —— PowerShell 变量名大小写不敏感，$t 会和主题表 $T 是同一个变量，
+# 于是 ForeColor=$T.Fg / BackColor=$T.TBg 实际取到的是传入的按钮文字（string），
+# Color 属性收到字符串 → "The value supplied is not valid, or the property is read-only"
+# → New-TB 返回 null → Items.Add($null) 报歧义重载 → 四个工具栏按钮全 null、Add_Click 全失败
+# → 工具栏整条空白（用户看到的「空白的地方」）。参数名改 $label 即解。
+function New-TB([string]$label,[int]$w=70){ New-Object System.Windows.Forms.ToolStripButton -Property @{Text=$label;DisplayStyle='Text';AutoSize=$false;Width=$w;Height=28;Font=$fS;ForeColor=$T.Fg;BackColor=$T.TBg} }
 function Add-TB([string]$key,[string]$text,[int]$w=70){ $b=New-TB $text $w; [void]$tb.Items.Add($b); $b }
 $tbBtns=@{
   add    = Add-TB 'add' '➕ 添加'
@@ -276,8 +297,8 @@ function Show-Log([string]$n){
   foreach($d in @(@('输出(out)','out'),@('错误(err)','err'),@('🔄 刷新','reload'))){
     $b=New-TB $d[0] 80; $b.Tag=$d[1]
     $b.Add_Click({
-      $t=$this.Tag
-      if($t -in 'out','err'){ $state.Current = $t }
+      $tag=$this.Tag
+      if($tag -in 'out','err'){ $state.Current = $tag }
       & $load
     }.GetNewClosure())
     [void]$lt.Items.Add($b)
@@ -292,8 +313,8 @@ function Show-Add{
   $inp=@{}; $y=15
   foreach($k in $fields.Keys){
     $l=New-Object System.Windows.Forms.Label -Property @{Text=$k;Location=New-Object System.Drawing.Point(15,$y);Width=100;Height=24;ForeColor=$T.Dim}
-    $t=New-Object System.Windows.Forms.TextBox -Property @{Location=New-Object System.Drawing.Point(120,$y);Width=315;BackColor=$T.Card;ForeColor=$T.Fg;BorderStyle='FixedSingle';Text=$fields[$k]}
-    $dlg.Controls.Add($l); $dlg.Controls.Add($t); $inp[$k]=$t; $y+=30
+    $txt=New-Object System.Windows.Forms.TextBox -Property @{Location=New-Object System.Drawing.Point(120,$y);Width=315;BackColor=$T.Card;ForeColor=$T.Fg;BorderStyle='FixedSingle';Text=$fields[$k]}
+    $dlg.Controls.Add($l); $dlg.Controls.Add($txt); $inp[$k]=$txt; $y+=30
   }
   $tip=New-Object System.Windows.Forms.Label -Property @{Text='环境变量: KEY=VAL,KEY2=VAL2（一次传入；LocalSystem 服务勿填交互用户 APPDATA）';Location=New-Object System.Drawing.Point(15,$y);Width=430;Height=20;ForeColor=$T.Dim;Font=$fS}
   $dlg.Controls.Add($tip); $y+=28
@@ -381,7 +402,7 @@ $trayShow.Add_Click({ $form.Show(); $form.WindowState='Normal'; $form.Activate()
 $trayHide.Add_Click({ $form.Hide() })
 $script:exiting=$false
 $trayExit.Add_Click({ $script:exiting=$true; $notify.Visible=$false; $form.Close() })
-$form.Add_FormClosing({ param($s,$e) if(-not $script:exiting -and $e.CloseReason -eq 'UserClosing'){ $e.Cancel=$true; $form.Hide(); $notify.ShowBalloonTip(1500,'服务管理','右键托盘退出',[System.Windows.Forms.ToolTipIcon]::Info) } })
+$form.Add_FormClosing({ param($s,$e) Write-CrashLog "FormClosing reason=$($e.CloseReason) exiting=$script:exiting"; if(-not $script:exiting -and $e.CloseReason -eq 'UserClosing'){ $e.Cancel=$true; $form.Hide(); $notify.ShowBalloonTip(1500,'服务管理','右键托盘退出',[System.Windows.Forms.ToolTipIcon]::Info) } })
 
 # ---- 工具栏事件 ----
 $tbBtns['add'].Add_Click({ Show-Add })
@@ -398,6 +419,7 @@ if($script:configWarning){
 }
 
 [void]$form.ShowDialog()
+Write-CrashLog "ShowDialog returned (normal exit path)"
 # 收尾（有界等待，不卡退出）
 $uiTimer.Stop(); $sync.stop=$true
 try { $bgPS.StopAsync($null,$null).Wait(1500) } catch {}
