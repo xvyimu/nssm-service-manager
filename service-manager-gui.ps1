@@ -87,22 +87,15 @@ function Save-Svc($s) {
     if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -EA SilentlyContinue }
   }
 }
-# 结构化服务状态（Get-Service，不依赖 sc.exe 文本）
-$svcNames = @{ Stopped='已停止'; StartPending='启动中'; StopPending='停止中'; Running='运行中' }
-function Get-Svc([string]$n) {
-  try {
-    $s = Get-Service -Name $n -EA Stop
-    @{ name = ($svcNames[[string]$s.Status] ?? '未知'); code = [int]$s.Status }
-  } catch {
-    if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { @{ name='未安装'; code=-1 } } else { @{ name='未知'; code=0 } }
+# ---- 主窗口（高度按实际服务数动态算）----
+# 轮询服务到 Stopped（最多 ~6s），restart/delete 前调用避免端口未释放或标记待删
+function Wait-Stopped([string]$n,[int]$timeoutMs=6000){
+  $waited=0
+  while($waited -lt $timeoutMs){
+    try { $s=Get-Service -Name $n -EA Stop; if([string]$s.Status -eq 'Stopped'){return} } catch { return }
+    Start-Sleep -Milliseconds 300; $waited+=300
   }
 }
-# 端口监听校验（判断端口是否被占用，不验 PID 归属——NSSM 子进程监听端口而非 wrapper）
-function Test-PortListen([int]$port) {
-  $null -ne (Get-NetTCPConnection -State Listen -LocalPort $port -EA SilentlyContinue)
-}
-
-# ---- 主窗口（高度按实际服务数动态算）----
 $script:svc = Load-Svc
 $cols=3; $cardW=190; $cardH=132; $gap=14; $margin=16
 $rows=[math]::Max(1,[math]::Ceiling($script:svc.Count/$cols))
@@ -162,7 +155,7 @@ function New-RoundPath([int]$w,[int]$h,[int]$r){
   $p.CloseFigure(); $p
 }
 # 缓存笔刷
-$brushes = @{ fg=New-Object System.Drawing.SolidBrush $T.Fg; dim=New-Object System.Drawing.SolidBrush $T.Dim; grn=New-Object System.Drawing.SolidBrush $T.Grn; red=New-Object System.Drawing.SolidBrush $T.Red; org=New-Object System.Drawing.SolidBrush $T.Org; gry=New-Object System.Drawing.SolidBrush $T.Gry; crd=New-Object System.Drawing.SolidBrush $T.Card }
+$brushes = @{ fg=New-Object System.Drawing.SolidBrush $T.Fg; dim=New-Object System.Drawing.SolidBrush $T.Dim; grn=New-Object System.Drawing.SolidBrush $T.Grn; red=New-Object System.Drawing.SolidBrush $T.Red; org=New-Object System.Drawing.SolidBrush $T.Org; gry=New-Object System.Drawing.SolidBrush $T.Gry }
 $penBrd = New-Object System.Drawing.Pen $T.Brd,1
 # 每张卡独立的路径副本——Region 各自持有独立 GraphicsPath，互不影响
 function New-CardPath(){ New-RoundPath $cardW $cardH 8 }
@@ -199,7 +192,7 @@ function New-Card([string]$name, $info){
     $this.ST = if($act -eq 'stop'){'停止中'}else{'启动中'}
     $this.SC = $T.Org; $this.Invalidate()
     $cmdQueue.Enqueue([pscustomobject]@{ n=$n; act=$act })
-    $sLbl.Text="$n $($(if($act -eq 'stop'){'停止'}else{'启动'}))中..."
+    $sLbl.Text="$n $(if($act -eq 'stop'){'停止'}else{'启动'})中..."
   })
   $p.Add_MouseDown({
     if($_.Button -ne 'Right'){return}
@@ -285,12 +278,7 @@ while(-not $sync.stop){
       'stop'    { sc.exe stop $n 2>&1 | Out-Null }
       'restart' {
         sc.exe stop $n 2>&1 | Out-Null
-        # 轮询服务到 Stopped（最多 ~6s），避免端口未释放就 start 导致 bind 失败
-        $waited=0
-        while($waited -lt 6000){
-          try { $s=Get-Service -Name $n -EA Stop; if([string]$s.Status -eq 'Stopped'){break} } catch { break }
-          Start-Sleep -Milliseconds 300; $waited+=300
-        }
+        Wait-Stopped $n
         Start-Sleep -Milliseconds 500  # 端口 TIME_WAIT 余量
         sc.exe start $n 2>&1 | Out-Null
       }
@@ -373,19 +361,23 @@ function Show-Add{
   }
   # NSSM 操作——失败抛错，不更新清单
   try {
+    function nssm-set([string]$n,[string]$k,$v){
+      $o=& $script:nssm set $n $k $v 2>&1
+      if($LASTEXITCODE -ne 0){ throw "NSSM set $k 失败($LASTEXITCODE): $($o -join ' ')" }
+    }
     $nssmOut = & $nssm install $n $exe 2>&1
     if($LASTEXITCODE -ne 0){ throw "NSSM install 失败($LASTEXITCODE): $($nssmOut -join ' ')" }
-    if($dir){ $o=& $nssm set $n AppDirectory $dir 2>&1; if($LASTEXITCODE -ne 0){throw "AppDirectory 失败: $($o -join ' ')"} }
-    if($par){ $o=& $nssm set $n AppParameters $par 2>&1; if($LASTEXITCODE -ne 0){throw "AppParameters 失败: $($o -join ' ')"} }
-    $o=& $nssm set $n AppStdout "$logDir\$n.out.log" 2>&1; if($LASTEXITCODE -ne 0){throw "AppStdout 失败"}
-    $o=& $nssm set $n AppStderr "$logDir\$n.err.log" 2>&1; if($LASTEXITCODE -ne 0){throw "AppStderr 失败"}
-    $o=& $nssm set $n AppStdoutCreationDisposition 4 2>&1; if($LASTEXITCODE -ne 0){throw "StdoutCreationDisposition 失败"}
-    $o=& $nssm set $n AppStderrCreationDisposition 4 2>&1; if($LASTEXITCODE -ne 0){throw "StderrCreationDisposition 失败"}
-    $o=& $nssm set $n AppStopMethodConsole 5000 2>&1; if($LASTEXITCODE -ne 0){throw "StopMethodConsole 失败"}
-    $o=& $nssm set $n Start SERVICE_DEMAND_START 2>&1; if($LASTEXITCODE -ne 0){throw "Start 失败"}
+    if($dir){ nssm-set $n AppDirectory $dir }
+    if($par){ nssm-set $n AppParameters $par }
+    nssm-set $n AppStdout "$logDir\$n.out.log"
+    nssm-set $n AppStderr "$logDir\$n.err.log"
+    nssm-set $n AppStdoutCreationDisposition 4
+    nssm-set $n AppStderrCreationDisposition 4
+    nssm-set $n AppStopMethodConsole 5000
+    nssm-set $n Start SERVICE_DEMAND_START
     # 进程退出不自动重启（AppExit Default=Ignore）——需手动启动，避免崩溃死循环
-    $o=& $nssm set $n AppExit Default Ignore 2>&1; if($LASTEXITCODE -ne 0){throw "AppExit 失败"}
-    if($envPairs.Count){ $o=& $nssm set $n AppEnvironmentExtra $envPairs 2>&1; if($LASTEXITCODE -ne 0){throw "AppEnvironmentExtra 失败: $($o -join ' ')"} }
+    nssm-set $n AppExit Default Ignore
+    if($envPairs.Count){ nssm-set $n AppEnvironmentExtra $envPairs }
   } catch {
     [System.Windows.Forms.MessageBox]::Show($dlg,$_.Exception.Message,'注册失败','OK','Error')|Out-Null
     return
@@ -414,12 +406,7 @@ function Show-Remove{
   if([System.Windows.Forms.MessageBox]::Show($form,"删除 $n ？`n`n停止+注销+移除清单`n数据目录不动。",'确认','OKCancel','Warning') -ne 'OK'){return}
   try {
     $o = sc.exe stop $n 2>&1
-    # 轮询到 Stopped 再 delete，避免服务仍在运行时被标记「待重启删除」
-    $waited=0
-    while($waited -lt 6000){
-      try { $s=Get-Service -Name $n -EA Stop; if([string]$s.Status -eq 'Stopped'){break} } catch { break }
-      Start-Sleep -Milliseconds 300; $waited+=300
-    }
+    Wait-Stopped $n
     $o = sc.exe delete $n 2>&1
     # sc.exe delete 在服务不存在时也可能返回非 0，不视为硬失败
   } catch {
@@ -437,14 +424,7 @@ function Show-Remove{
 # ---- 托盘 ----
 # 从 shell32.dll 抽取服务相关图标（比通用 SystemIcons.Application 更辨识）
 $trayIcon = $null
-try {
-  $icoPath = "$env:SystemRoot\System32\shell32.dll"
-  # shell32.dll 内 #138 是服务/齿轮图标（系统版本间索引基本稳定）
-  $tmpIco = Join-Path $env:TEMP "sm-tray-$PID.ico"
-  # 用 IconExtractor 抽索引会引入依赖；这里直接用 ExtractAssociatedIcon 的等价法——
-  # 实际取 whole-file associated icon 走 shell32.dll
-  $trayIcon = [System.Drawing.Icon]::ExtractAssociatedIcon($icoPath)
-} catch { $trayIcon = [System.Drawing.SystemIcons]::Application }
+try { $trayIcon = [System.Drawing.Icon]::ExtractAssociatedIcon("$env:SystemRoot\System32\shell32.dll") } catch { $trayIcon = [System.Drawing.SystemIcons]::Application }
 $notify=New-Object System.Windows.Forms.NotifyIcon -Property @{Icon=$trayIcon;Visible=$true;Text='服务管理'}
 $tray=New-Object System.Windows.Forms.ContextMenuStrip -Property @{BackColor=$T.TBg;ForeColor=$T.Fg}
 $trayShow=$tray.Items.Add('显示窗口'); $trayHide=$tray.Items.Add('隐藏到托盘'); $tray.Items.Add('-')|Out-Null; $trayExit=$tray.Items.Add('退出')
