@@ -44,7 +44,7 @@
 | OmniRoute | 20129 | http://127.0.0.1:20129/dashboard | 独立部署 |
 | CPA | 8317 | http://127.0.0.1:8317/management.html | 独立部署 |
 | WorkBuddy2API | 7863 | http://127.0.0.1:7863/panel/ | 独立部署 |
-| TTSShim | 8001 | http://127.0.0.1:8001/health | 本仓 `st-tts-shim/server.mjs`（NSSM `AppDirectory` 指向本目录，`AppEnvironmentExtra` 注入 `TTS_API_KEY`） |
+| TTSShim | 8001 | http://127.0.0.1:8001/health | 本仓 `st-tts-shim/server.mjs`（NSSM `AppDirectory` 指向本目录，`AppEnvironmentExtra` 注入 `TTS_API_KEY`，`AppExit Default=Ignore` 不自动重启） |
 
 ## 依赖
 

@@ -383,6 +383,8 @@ function Show-Add{
     $o=& $nssm set $n AppStderrCreationDisposition 4 2>&1; if($LASTEXITCODE -ne 0){throw "StderrCreationDisposition 失败"}
     $o=& $nssm set $n AppStopMethodConsole 5000 2>&1; if($LASTEXITCODE -ne 0){throw "StopMethodConsole 失败"}
     $o=& $nssm set $n Start SERVICE_DEMAND_START 2>&1; if($LASTEXITCODE -ne 0){throw "Start 失败"}
+    # 进程退出不自动重启（AppExit Default=Ignore）——需手动启动，避免崩溃死循环
+    $o=& $nssm set $n AppExit Default Ignore 2>&1; if($LASTEXITCODE -ne 0){throw "AppExit 失败"}
     if($envPairs.Count){ $o=& $nssm set $n AppEnvironmentExtra $envPairs 2>&1; if($LASTEXITCODE -ne 0){throw "AppEnvironmentExtra 失败: $($o -join ' ')"} }
   } catch {
     [System.Windows.Forms.MessageBox]::Show($dlg,$_.Exception.Message,'注册失败','OK','Error')|Out-Null
