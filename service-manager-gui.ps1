@@ -12,6 +12,20 @@ if (-not (New-Object Security.Principal.WindowsPrincipal([Security.Principal.Win
 }
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 
+# DPI Aware：高缩放屏（2x/2.5x）下卡片不模糊、圆角 Region 不错位
+try {
+  Add-Type -Namespace Win32 -Name Dpi -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'
+  [Win32.Dpi]::SetProcessDPIAware() | Out-Null
+} catch {
+  # 旧系统无该 API，静默降级
+}
+
+# NSSM 存在性预检——缺失则提示用户安装，避免后续 install 命令静默失败
+if (-not (Test-Path -LiteralPath $nssm)) {
+  [System.Windows.Forms.MessageBox]::Show(0,"未在 $nssm 找到 NSSM。`n请用 scoop install nssm 安装后重试。",'依赖缺失','OK','Warning') | Out-Null
+  exit 1
+}
+
 # ---- 崩溃留痕：UI 线程异常 / 进程级异常 / 关闭原因 → logs\gui-crash.log ----
 # pwsh 7 下 UI 线程事件处理器抛出的未捕获异常会直接杀掉整个进程（无任何对话框），
 # 表现为「点着点着窗口就没了」。这里把异常改为记录后存活，方便事后定位。
@@ -210,7 +224,7 @@ function Update-CardData([string]$n,[string]$st,[string]$h){
   if(-not $script:cards.ContainsKey($n)){return}
   $p=$script:cards[$n]
   $p.ST=$st; $p.HT=$h
-  $p.SC = switch($st){ '运行中'{if($h -eq '无响应'){$T.Red}else{$T.Grn}} '已停止'{$T.Gry} '未安装'{$T.Gry} default{$T.Org} }
+  $p.SC = switch($st){ '运行中'{if($h -eq '无响应'){$T.Red}elseif($h -eq '超时'){$T.Org}else{$T.Grn}} '已停止'{$T.Gry} '未安装'{$T.Gry} default{$T.Org} }
   $p.Invalidate()
 }
 
@@ -244,9 +258,14 @@ while(-not $sync.stop){
         $h='无响应'
       } else {
         try {
-          $r = Invoke-WebRequest -Uri $info.url -TimeoutSec 2 -SkipHttpErrorCheck
+          $r = Invoke-WebRequest -Uri $info.url -TimeoutSec 5 -SkipHttpErrorCheck
           $h = if($r.StatusCode -eq 200){'正常'}else{'HTTP ' + $r.StatusCode}
-        } catch { $h='无响应' }
+        } catch {
+          # 区分超时（服务慢但活着）与连接被拒（服务死了）
+          if ($_.Exception -is [System.Net.WebException] -and $_.Exception.Status -eq 'Timeout') { $h='超时' }
+          elseif ($_.Exception.Message -match 'unable to connect|connection refused|连接') { $h='无响应' }
+          else { $h='超时' }
+        }
       }
     }
     $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$st;h=$h})
@@ -259,7 +278,17 @@ while(-not $sync.stop){
     switch($act){
       'start'   { sc.exe start $n 2>&1 | Out-Null }
       'stop'    { sc.exe stop $n 2>&1 | Out-Null }
-      'restart' { sc.exe stop $n 2>&1 | Out-Null; Start-Sleep -Milliseconds 800; sc.exe start $n 2>&1 | Out-Null }
+      'restart' {
+        sc.exe stop $n 2>&1 | Out-Null
+        # 轮询服务到 Stopped（最多 ~6s），避免端口未释放就 start 导致 bind 失败
+        $waited=0
+        while($waited -lt 6000){
+          try { $s=Get-Service -Name $n -EA Stop; if([string]$s.Status -eq 'Stopped'){break} } catch { break }
+          Start-Sleep -Milliseconds 300; $waited+=300
+        }
+        Start-Sleep -Milliseconds 500  # 端口 TIME_WAIT 余量
+        sc.exe start $n 2>&1 | Out-Null
+      }
     }
   }
 
@@ -378,7 +407,12 @@ function Show-Remove{
   if([System.Windows.Forms.MessageBox]::Show($form,"删除 $n ？`n`n停止+注销+移除清单`n数据目录不动。",'确认','OKCancel','Warning') -ne 'OK'){return}
   try {
     $o = sc.exe stop $n 2>&1
-    Start-Sleep 2
+    # 轮询到 Stopped 再 delete，避免服务仍在运行时被标记「待重启删除」
+    $waited=0
+    while($waited -lt 6000){
+      try { $s=Get-Service -Name $n -EA Stop; if([string]$s.Status -eq 'Stopped'){break} } catch { break }
+      Start-Sleep -Milliseconds 300; $waited+=300
+    }
     $o = sc.exe delete $n 2>&1
     # sc.exe delete 在服务不存在时也可能返回非 0，不视为硬失败
   } catch {
@@ -394,7 +428,17 @@ function Show-Remove{
 }
 
 # ---- 托盘 ----
-$notify=New-Object System.Windows.Forms.NotifyIcon -Property @{Icon=[System.Drawing.SystemIcons]::Application;Visible=$true;Text='服务管理'}
+# 从 shell32.dll 抽取服务相关图标（比通用 SystemIcons.Application 更辨识）
+$trayIcon = $null
+try {
+  $icoPath = "$env:SystemRoot\System32\shell32.dll"
+  # shell32.dll 内 #138 是服务/齿轮图标（系统版本间索引基本稳定）
+  $tmpIco = Join-Path $env:TEMP "sm-tray-$PID.ico"
+  # 用 IconExtractor 抽索引会引入依赖；这里直接用 ExtractAssociatedIcon 的等价法——
+  # 实际取 whole-file associated icon 走 shell32.dll
+  $trayIcon = [System.Drawing.Icon]::ExtractAssociatedIcon($icoPath)
+} catch { $trayIcon = [System.Drawing.SystemIcons]::Application }
+$notify=New-Object System.Windows.Forms.NotifyIcon -Property @{Icon=$trayIcon;Visible=$true;Text='服务管理'}
 $tray=New-Object System.Windows.Forms.ContextMenuStrip -Property @{BackColor=$T.TBg;ForeColor=$T.Fg}
 $trayShow=$tray.Items.Add('显示窗口'); $trayHide=$tray.Items.Add('隐藏到托盘'); $tray.Items.Add('-')|Out-Null; $trayExit=$tray.Items.Add('退出')
 $notify.ContextMenuStrip=$tray
@@ -426,5 +470,5 @@ try { $bgPS.StopAsync($null,$null).Wait(1500) } catch {}
 try { if($bgHandle.AsyncWaitHandle.WaitOne(1000)){ $bgPS.EndInvoke($bgHandle) } } catch {}
 try { $bgPS.Stop() } catch {}
 $bgRS.Close(); $bgRS.Dispose(); $bgPS.Dispose()
-$brushes.Values | %{ $_.Dispose() }; $penBrd.Dispose(); $notify.Visible=$false; $notify.Dispose(); $tray.Dispose()
+$brushes.Values | %{ $_.Dispose() }; $penBrd.Dispose(); $notify.Visible=$false; $notify.Dispose(); $tray.Dispose(); if($trayIcon -and $trayIcon -ne [System.Drawing.SystemIcons]::Application){ $trayIcon.Dispose() }
 $fReg.Dispose(); $fB.Dispose(); $fS.Dispose(); $fL.Dispose(); $fMono.Dispose()

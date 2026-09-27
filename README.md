@@ -8,7 +8,7 @@
 |------|------|
 | `service-manager-gui.ps1` | 卡片式 WinForms GUI（唯一入口） |
 | `services.json` | 服务清单（名称 → 端口/面板 URL） |
-| `st-tts-shim/server.mjs` | TTSShim 服务本体：StepFun TTS → OpenAI 兼容 `/v1/audio/speech` 薄适配层（零依赖） |
+| `st-tts-shim/server.mjs` | TTSShim 服务本体：StepFun TTS → OpenAI 兼容 `/v1/audio/speech` 薄适配层（零依赖，流式响应含客户端断开保护） |
 | `st-tts-shim/test-speech.ps1` | TTSShim 打穿测试脚本 |
 | `logs/` | NSSM 服务运行日志（`.out.log` / `.err.log`，git 忽略） |
 | `logs/gui-crash.log` | GUI 崩溃留痕（UI 线程异常 / 进程级异常 / 关闭原因，git 忽略） |
@@ -17,13 +17,20 @@
 
 桌面快捷方式 `服务管理.lnk` → `pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1`
 
-脚本会自动请求 UAC 提权（NSSM/sc.exe 需要管理员权限）。
+脚本会自动请求 UAC 提权（NSSM/sc.exe 需要管理员权限）。启动时若检测不到 NSSM（`~/scoop/apps/nssm/current/nssm.exe`）会弹窗提示安装。进程声明 DPI Aware，高缩放屏下卡片不模糊。
+
+## 配置层（防漂移）
+
+- **`services.json` 是 SSOT**——GUI 运行时增删服务会原子写回它（`$PID.$guid.tmp` → `Replace`）。
+- 脚本内 `$default` 是**兜底**：仅当 `services.json` 不存在或 JSON 解析失败时使用，并在状态栏提示「使用恢复配置」。**新增服务请走 GUI「添加」，不要手改 `services.json`**——NSSM 注册必须由脚本完成（stdout/stderr/stop 超时/启动类型一并设置）。
 
 ## 功能
 
 - 每个服务一张圆角卡片：服务名、端口、状态（带圆点）、健康
+- 健康状态三档：`正常`（绿）/ `超时`（橙，服务在但响应慢）/ `无响应`（红，端口未监听或连接被拒）；超时阈值 5 秒（本地面板冷启动宽限）
 - 双击卡片 = 启停切换
 - 右键卡片 = 启动/停止/重启/面板/日志
+- 重启走 stop→轮询 Stopped（最多 6s）→start，避免端口未释放导致 bind 失败
 - 工具栏：添加服务（NSSM install + env 一次注入）/ 删除服务 / 刷新 / services.msc
 - 后台 runspace 探测（`sc.exe query` + HTTP），UI 线程不碰 I/O，不卡顿
 - 托盘最小化，关窗缩到托盘，右键托盘退出

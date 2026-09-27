@@ -13,6 +13,10 @@
 //   TTS_DEFAULT_VOICE 请求未带 voice 时的缺省音色（默认 lengyanyujie）
 //   TTS_AUTH_STYLE    上游鉴权风格（默认 bearer）
 //   TTS_API_KEY       上游密钥（或 STEPFUN_API_KEY），缺失拒绝启动
+//   TTS_TIMEOUT_MS    上游请求超时（默认 120000）
+//
+// 流式响应客户端断开保护：res.on('error') + 流式段独立 try，
+// 避免下游 socket 写错误冒泡成 uncaughtException 杀进程（2026-09-27 修）。
 //
 // nssm 服务 TTSShim：AppDirectory 指向本目录，AppEnvironmentExtra 注入 TTS_API_KEY。
 
@@ -119,10 +123,19 @@ async function handleSpeech(req, res) {
   if (cd) headers['content-disposition'] = cd;
   res.writeHead(upstream.status, headers);
 
+  // 监听客户端中途断开（浏览器关页 / 酒馆超时取消），
+  // 避免下游 socket 写错误冒泡成 uncaughtException 杀进程
+  res.on('error', () => { try { upstream.body?.cancel?.() } catch {} });
+
   if (upstream.body) {
-    for await (const chunk of upstream.body) res.write(Buffer.from(chunk));
+    try {
+      for await (const chunk of upstream.body) {
+        if (res.writableEnded) break;
+        res.write(Buffer.from(chunk));
+      }
+    } catch { /* 客户端已断开，静默丢弃剩余响应 */ }
   }
-  res.end();
+  try { res.end(); } catch { /* 已 end 或 socket 已关 */ }
 }
 
 const server = http.createServer(async (req, res) => {
