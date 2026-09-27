@@ -191,8 +191,13 @@ function New-Card([string]$name, $info){
     $g.DrawString($s.HT,$fS,$hBr,14,90)
   })
   $p.Add_DoubleClick({
-    $n=[string]$this.Tag; $s=Get-Svc $n
-    $act = if($s.name -eq '运行中'){'stop'}else{'start'}
+    $n=[string]$this.Tag; $cur=$this.ST
+    # 过渡态拦重复双击：启动中/停止中时不再排队，等后台探测落定
+    if($cur -eq '启动中' -or $cur -eq '停止中'){ $sLbl.Text="$n 正在切换中，请稍候"; return }
+    $act = if($cur -eq '运行中'){'stop'}else{'start'}
+    # 立即置过渡态并重绘，防止下一次双击在后台探测更新前又排队
+    $this.ST = if($act -eq 'stop'){'停止中'}else{'启动中'}
+    $this.SC = $T.Org; $this.Invalidate()
     $cmdQueue.Enqueue([pscustomobject]@{ n=$n; act=$act })
     $sLbl.Text="$n $($(if($act -eq 'stop'){'停止'}else{'启动'}))中..."
   })
