@@ -125,16 +125,17 @@ async function handleSpeech(req, res) {
 
   // 监听客户端中途断开（浏览器关页 / 酒馆超时取消），
   // 避免下游 socket 写错误冒泡成 uncaughtException 杀进程
-  res.on('error', () => { try { upstream.body?.cancel?.() } catch {} });
+  const onClientError = () => { try { upstream.body?.cancel?.() } catch {} };
+  res.on('error', onClientError);
 
-  if (upstream.body) {
-    try {
+  try {
+    if (upstream.body) {
       for await (const chunk of upstream.body) {
         if (res.writableEnded) break;
         res.write(Buffer.from(chunk));
       }
-    } catch { /* 客户端已断开，静默丢弃剩余响应 */ }
-  }
+    }
+  } catch { /* 客户端已断开，静默丢弃剩余响应 */ }
   try { res.end(); } catch { /* 已 end 或 socket 已关 */ }
 }
 

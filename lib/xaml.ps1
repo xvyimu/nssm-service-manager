@@ -1,0 +1,117 @@
+# lib/xaml.ps1 — 六卡片主视图：3 列 × 2 行，窗口缩放时同步伸展
+$script:PER_PAGE = 6
+
+function New-MainWindow {
+  $win = New-Object System.Windows.Window -Property @{
+    Width=1040; Height=640; MinWidth=840; MinHeight=540
+    WindowStyle='None'; AllowsTransparency=$false; Background=[System.Windows.Media.Brushes]::Transparent
+    ResizeMode='CanResize'; WindowStartupLocation='CenterScreen'
+    Title='服务管理'; FontFamily=$script:cjkFont; FontSize=12
+    UseLayoutRounding=$true; SnapsToDevicePixels=$true
+  }
+  # 原生非 layered 窗口允许 DWM 背景生效；WindowChrome 保留边缘缩放。
+  $chrome = New-Object System.Windows.Shell.WindowChrome -Property @{
+    CaptionHeight=0; ResizeBorderThickness='6'; GlassFrameThickness='-1'; UseAeroCaptionButtons=$false
+  }
+  [System.Windows.Shell.WindowChrome]::SetWindowChrome($win, $chrome)
+  $win.Resources[[System.Windows.Controls.Button]] = $script:buttonStyle
+  $root = New-Object System.Windows.Controls.Border -Property @{
+    CornerRadius=10; BorderBrush=$script:T.CardBrd; BorderThickness='1'; Background='#E6EEF2F6'
+  }
+  $grid = New-Object System.Windows.Controls.Grid
+  foreach ($height in 'Auto','*','Auto') {
+    [void]$grid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition -Property @{Height=$height}))
+  }
+
+  $titleBar = New-Object System.Windows.Controls.Grid -Property @{Height=44; Margin='20,0,8,0'; Background='Transparent'}
+  $title = New-Object System.Windows.Controls.TextBlock -Property @{
+    Text='服务管理'; FontSize=14; FontWeight='SemiBold'; Foreground=$script:T.Fg; VerticalAlignment='Center'
+  }
+  [void]$titleBar.Children.Add($title)
+  $windowActions = New-Object System.Windows.Controls.StackPanel -Property @{
+    Orientation='Horizontal'; HorizontalAlignment='Right'; VerticalAlignment='Center'
+  }
+  $btnMin = New-Object System.Windows.Controls.Button -Property @{
+    Content='—'; Width=36; MinHeight=28; Height=28; Padding='0'; Background='Transparent'; BorderThickness='0'; ToolTip='最小化'
+  }
+  $btnClose = New-Object System.Windows.Controls.Button -Property @{
+    Content='✕'; Width=36; MinHeight=28; Height=28; Padding='0'; Background='Transparent'; BorderThickness='0'; ToolTip='关闭'
+  }
+  [void]$windowActions.Children.Add($btnMin); [void]$windowActions.Children.Add($btnClose)
+  [void]$titleBar.Children.Add($windowActions)
+  [void]$grid.Children.Add($titleBar)
+
+  $content = New-Object System.Windows.Controls.DockPanel -Property @{Margin='12,0,12,0'}
+  $toolbar = New-Object System.Windows.Controls.Grid -Property @{Height=50; Margin='8,0,8,4'}
+  $summary = New-Object System.Windows.Controls.TextBlock -Property @{
+    Text='本地服务'; Foreground=$script:T.Dim; FontSize=13; VerticalAlignment='Center'
+  }
+  [void]$toolbar.Children.Add($summary)
+  $actions = New-Object System.Windows.Controls.StackPanel -Property @{
+    Orientation='Horizontal'; HorizontalAlignment='Right'; VerticalAlignment='Center'
+  }
+  $btnPrev = New-Object System.Windows.Controls.Button -Property @{Content='上一页'; Padding='10,5'; Margin='0,0,6,0'}
+  $lblPage = New-Object System.Windows.Controls.TextBlock -Property @{
+    VerticalAlignment='Center'; Margin='4,0,10,0'; Foreground=$script:T.Dim
+  }
+  $btnNext = New-Object System.Windows.Controls.Button -Property @{Content='下一页'; Padding='10,5'; Margin='0,0,12,0'}
+  $btnAdd = New-Object System.Windows.Controls.Button -Property @{Content='+ 添加服务'; Foreground='#185A9D'; Padding='14,6'}
+  foreach ($control in $btnPrev,$lblPage,$btnNext,$btnAdd) { [void]$actions.Children.Add($control) }
+  [void]$toolbar.Children.Add($actions)
+  [System.Windows.Controls.DockPanel]::SetDock($toolbar, 'Top')
+  [void]$content.Children.Add($toolbar)
+  $cardPanel = New-Object System.Windows.Controls.Primitives.UniformGrid -Property @{Columns=3; Rows=2}
+  [void]$content.Children.Add($cardPanel)
+  [void]$grid.Children.Add($content); [System.Windows.Controls.Grid]::SetRow($content,1)
+
+  $footer = New-Object System.Windows.Controls.Grid -Property @{Height=34; Margin='20,0,20,0'}
+  $statusBar = New-Object System.Windows.Controls.TextBlock -Property @{
+    Text='正在获取状态…'; FontSize=11; Foreground=$script:T.Dim; VerticalAlignment='Center'
+  }
+  $hint = New-Object System.Windows.Controls.TextBlock -Property @{
+    Text='双击启停 · 右键更多操作'; FontSize=11; Foreground=$script:T.Dim
+    VerticalAlignment='Center'; HorizontalAlignment='Right'
+  }
+  [void]$footer.Children.Add($statusBar); [void]$footer.Children.Add($hint)
+  [void]$grid.Children.Add($footer); [System.Windows.Controls.Grid]::SetRow($footer,2)
+  $root.Child=$grid; $win.Content=$root
+
+  $script:window=$win; $script:cardPanel=$cardPanel; $script:statusBar=$statusBar
+  $script:lblPage=$lblPage; $script:btnPrev=$btnPrev; $script:btnNext=$btnNext
+  $script:serviceSummary=$summary; $script:cards=@{}; $script:curPage=0
+
+  $titleBar.Add_MouseLeftButtonDown({ param($s,$e) if ($e.LeftButton -eq 'Pressed') { $script:window.DragMove() } })
+  $btnMin.Add_Click({ $script:window.WindowState='Minimized' })
+  $btnClose.Add_Click({ $script:window.Close() })
+  $win.Add_Closed({ Stop-Background })
+  $btnAdd.Add_Click({ Show-Add $script:window; Render-Page })
+  $btnPrev.Add_Click({ if ($script:curPage -gt 0) { $script:curPage--; Render-Page } })
+  $btnNext.Add_Click({
+    $pages=[math]::Max(1,[math]::Ceiling($script:svc.Count / $script:PER_PAGE))
+    if ($script:curPage -lt $pages-1) { $script:curPage++; Render-Page }
+  })
+  $win
+}
+
+function Render-Page {
+  $script:cardPanel.Children.Clear()
+  $names=@($script:svc.Keys)
+  $pages=[math]::Max(1,[math]::Ceiling($names.Count / $script:PER_PAGE))
+  $script:curPage=[math]::Max(0,[math]::Min($script:curPage,$pages-1))
+  $start=$script:curPage*$script:PER_PAGE
+  $end=[math]::Min($start+$script:PER_PAGE,$names.Count)-1
+  if ($start -le $end) {
+    foreach ($n in $names[$start..$end]) {
+      # 重用卡片，翻页不丢失健康状态、过渡状态或 8 秒冷却。
+      $card=if ($script:cards.ContainsKey($n)) { $script:cards[$n] } else { New-Card $n $script:svc[$n] }
+      [void]$script:cardPanel.Children.Add($card)
+    }
+  }
+  $script:serviceSummary.Text="$($names.Count) 个本地服务"
+  $script:lblPage.Text="$($script:curPage+1) / $pages"
+  foreach ($control in $script:btnPrev,$script:lblPage,$script:btnNext) {
+    $control.Visibility=if ($pages -gt 1) { 'Visible' } else { 'Collapsed' }
+  }
+  $script:btnPrev.IsEnabled=($script:curPage -gt 0)
+  $script:btnNext.IsEnabled=($script:curPage -lt $pages-1)
+}
