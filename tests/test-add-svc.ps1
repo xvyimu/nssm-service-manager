@@ -42,6 +42,21 @@ try { Install-NssmService '__sm_rollback__' 'C:\rb.exe' $null $null @() } catch 
 if (-not $rolled) { throw 'Failing NSSM set should surface the error.' }
 if ($script:removed -ne '__sm_rollback__') { throw 'Half-registered service was not rolled back via nssm remove.' }
 
+# Remove-NssmService：stop→Wait-Stopped→nssm remove confirm
+$script:calls.Clear()
+$script:removed=$null
+$script:stopArgs=$null
+function Invoke-TestNssmRemove {
+  $a=$args
+  if ($a[0] -eq 'remove')  { $script:removed=$a[1]; $global:LASTEXITCODE=0; return }
+  $global:LASTEXITCODE=0
+}
+function sc.exe { $script:stopArgs=@($args); $global:LASTEXITCODE=0 }
+$script:nssm='Invoke-TestNssmRemove'
+Remove-NssmService '__sm_remove_test__'
+if ($script:stopArgs -join '|' -ne 'stop|__sm_remove_test__') { throw 'Remove-NssmService must stop before nssm remove.' }
+if ($script:removed -ne '__sm_remove_test__') { throw 'Remove-NssmService did not call nssm remove confirm.' }
+
 # Save-Svc 失败路径：NSSM 已注册但配置落盘失败时，CLI 必须 exit 1 且不启动服务。
 # 用子进程验证，因为 Add-SvcFromCli 靠 exit 终止——不能在当前作用域内联运行。
 $probe = Join-Path ([IO.Path]::GetTempPath()) "sm-save-fail-$([guid]::NewGuid().ToString('N')).ps1"
@@ -65,4 +80,4 @@ try {
 } finally { Remove-Item -LiteralPath $probe -Force -EA SilentlyContinue }
 if ($code -ne 1) { throw "Save-Svc failure must exit 1 (got $code), not swallow the error or start the service." }
 if ((Get-FileHash -LiteralPath $cfg).Hash -ne $before) { throw 'Test changed services.json.' }
-Write-Output 'PASS: CLI registration, NSSM multi-value arguments, rollback on partial set failure, persistence/start boundaries (mocked); config unchanged.'
+Write-Output 'PASS: CLI registration, NSSM multi-value arguments, rollback on partial set failure, remove flow (stop→wait→remove), persistence/start boundaries (mocked); config unchanged.'
