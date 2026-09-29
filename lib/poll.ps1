@@ -21,6 +21,16 @@ function Invoke-Sc([string]$verb,[string]$n,[string]$fail){
   $true
 }
 
+# 轮询服务到 Stopped（最多 6s）避免端口未释放；与 add-svc.ps1 的 Wait-Stopped 同构
+function Wait-Stopped([string]$n,[int]$timeoutMs=6000){
+  $w=0
+  while($w -lt $timeoutMs){
+    try { $s=Get-Service -Name $n -EA Stop; if([string]$s.Status -eq 'Stopped'){return $true} } catch { return $true }
+    Start-Sleep -Milliseconds 300; $w+=300
+  }
+  $false
+}
+
 function Invoke-PendingCommands {
   # 执行命令队列（启停全在后台线程）
   $item=$null
@@ -31,11 +41,7 @@ function Invoke-PendingCommands {
       'stop'    { Invoke-Sc 'stop' $n '停止失败' }
       'restart' {
         if(-not (Invoke-Sc 'stop' $n '停止失败，重启中断')) { break }
-        # 轮询服务到 Stopped（最多 6s）避免端口未释放
-        $w=0; while($w -lt 6000){
-          try { $s=Get-Service -Name $n -EA Stop; if([string]$s.Status -eq 'Stopped'){break} } catch { break }
-          Start-Sleep -Milliseconds 300; $w+=300
-        }
+        [void](Wait-Stopped $n)
         Start-Sleep -Milliseconds 500  # 端口 TIME_WAIT 余量
         Invoke-Sc 'start' $n '重启后启动失败'
       }

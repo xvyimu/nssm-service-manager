@@ -59,7 +59,9 @@ function Add-SvcFromCli([string]$spec){
 }
 
 # 删除服务：先停再删（stop → 轮询 Stopped ≤6s → nssm remove confirm）
-# 与 restart 的 stop→wait 同构；提取出来供 Show-Remove 同步调用。
+# Wait-Stopped 定义在 poll.ps1 的 $script:poll 脚本块里（后台 runspace 侧），
+# Show-Remove 在 UI 线程调用时不会命中那个定义——这里重新定义一份同构函数。
+# 两处独立是刻意的：poll.ps1 的 Wait-Stopped 跑在 runspace 字符串里无法被 UI 线程调用。
 function Wait-Stopped([string]$n,[int]$timeoutMs=6000){
   $w=0
   while($w -lt $timeoutMs){
