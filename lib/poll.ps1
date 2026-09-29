@@ -86,9 +86,18 @@ while(-not $sync.stop){
           $r = $http.GetAsync($info.url).Result
           try { $h = if($r.StatusCode -eq [System.Net.HttpStatusCode]::OK){'正常'}else{'HTTP ' + [int]$r.StatusCode} } finally { $r.Dispose() }
         } catch {
-          $msg = [string]$_.Exception.Message
-          if ($msg -match 'timed out|超时|Timeout') { $h='超时' }
-          elseif ($msg -match 'refused|unable to connect|连接|connection') { $h='无响应' }
+          # .Result 失败抛的是 AggregateException，.Message 是「One or more errors occurred.」
+          # 不含 timed out/refused/connection，直接 match 全部落到 else=超时，掩盖真实错误。
+          # 先展平 InnerExceptions 再按原规则分类。
+          $msgs = @($_.Exception.Message)
+          if ($_.Exception -is [System.AggregateException]) {
+            $msgs = @($_.Exception.InnerExceptions | ForEach-Object { [string]$_.Message })
+          } elseif ($_.Exception.InnerException) {
+            $msgs = @($_.Exception.InnerException.Message)
+          }
+          $combined = $msgs -join '|'
+          if ($combined -match 'timed out|超时|Timeout|canceled|任务已取消') { $h='超时' }
+          elseif ($combined -match 'refused|unable to connect|连接|connection|ConnectFailure|Connection refused') { $h='无响应' }
           else { $h='超时' }
         }
       }

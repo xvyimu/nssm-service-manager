@@ -58,7 +58,82 @@ function Add-SvcFromCli([string]$spec){
   Write-Host "$n 已添加并启动 (port=$p url=$url)"
 }
 
-# GUI 添加服务（简化：3 必填 + 高级折叠）
+# 删除服务：先停再删（stop → 轮询 Stopped ≤6s → nssm remove confirm）
+# 与 restart 的 stop→wait 同构；提取出来供 Show-Remove 同步调用。
+function Wait-Stopped([string]$n,[int]$timeoutMs=6000){
+  $w=0
+  while($w -lt $timeoutMs){
+    try { $s=Get-Service -Name $n -EA Stop; if([string]$s.Status -eq 'Stopped'){return $true} } catch { return $true }
+    Start-Sleep -Milliseconds 300; $w+=300
+  }
+  $false
+}
+
+function Remove-NssmService([string]$n){
+  sc.exe stop $n 2>&1 | Out-Null
+  # stop 失败不阻断（服务可能已停），等 Stopped 再删，避免删一个还在跑的服务
+  [void](Wait-Stopped $n)
+  $o=& $script:nssm remove $n confirm 2>&1
+  if($LASTEXITCODE -ne 0){ throw "NSSM remove 失败($LASTEXITCODE): $($o -join ' ')" }
+}
+
+# GUI 删除服务（输入服务名确认才点亮删除——借鉴 PSSM，-ceq 区分大小写）
+# OKCancel 太容易误点；NSSM remove 是不可逆操作，要求打全名。
+function Show-Remove([string]$n, $owner){
+  $f = New-Object System.Windows.Window -Property @{
+    Title="删除服务 $n"; Width=420; Height=260; WindowStartupLocation='CenterOwner'
+    Background=[System.Windows.Media.Brushes]::White; ResizeMode='NoResize'
+  }
+  $stack=New-Object System.Windows.Controls.StackPanel -Property @{Margin='15'}
+  $warn=New-Object System.Windows.Controls.TextBlock -Property @{
+    Text="将从 NSSM 删除服务「$n」并移除配置。`n此操作不可撤销：服务会先停止再删除。`n`n输入完整服务名以确认："
+    FontFamily=$script:cjkFont; FontSize=12; TextWrapping='Wrap'
+  }
+  [void]$stack.Children.Add($warn)
+  $input=New-Object System.Windows.Controls.TextBox -Property @{FontFamily=$script:cjkFont; FontSize=13; Margin='0,8,0,12'}
+  [void]$stack.Children.Add($input)
+
+  $btnPanel=New-Object System.Windows.Controls.StackPanel -Property @{Orientation='Horizontal';HorizontalAlignment='Right'}
+  $cancel=New-Object System.Windows.Controls.Button -Property @{Content='取消';Padding='16,6';Margin='0,0,8,0'}
+  $del=New-Object System.Windows.Controls.Button -Property @{
+    Content='删除'; Padding='16,6'; IsEnabled=$false
+    Background=(New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(192,57,43)))
+    Foreground=[System.Windows.Media.Brushes]::White
+  }
+  [void]$btnPanel.Children.Add($cancel); [void]$btnPanel.Children.Add($del)
+  [void]$stack.Children.Add($btnPanel)
+  $f.Content=$stack
+
+  # 精确匹配（-ceq 区分大小写）才点亮删除按钮
+  $input.Add_TextChanged({ $del.IsEnabled = ($input.Text.Trim() -ceq $n) })
+  $cancel.Add_Click({ $f.DialogResult=$false; $f.Close() })
+
+  $del.Add_Click({
+    $script:lastActionAt=[datetime]::Now
+    $script:statusBar.Text="正在删除 $n ..."
+    try {
+      Remove-NssmService $n
+    } catch {
+      [System.Windows.MessageBox]::Show($f,$_.Exception.Message,'删除失败','OK','Error') | Out-Null
+      $script:statusBar.Text="$n 删除失败"
+      return
+    }
+    [Threading.Monitor]::Enter($sync.gate)
+    try { $script:svc.Remove($n) } finally { [Threading.Monitor]::Exit($sync.gate) }
+    try {
+      Save-Svc $script:svc
+    } catch {
+      [System.Windows.MessageBox]::Show($f,"服务已删除但配置保存失败：$($_.Exception.Message)`n请手动从 services.json 移除 $n。",'保存失败','OK','Warning') | Out-Null
+    }
+    $script:statusBar.Text="$n 已删除"
+    $f.DialogResult=$true; $f.Close()
+  })
+
+  $f.Owner=$owner
+  $f.ShowDialog() | Out-Null
+}
+
+# CLI 模式：解析逗号分隔参数，注册 NSSM 服务并启动，不弹 GUI
 function Show-Add($owner){
   $f = New-Object System.Windows.Window -Property @{
     Title='添加服务'; Width=460; Height=540; WindowStartupLocation='CenterOwner'

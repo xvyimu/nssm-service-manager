@@ -115,8 +115,9 @@ function New-Card([string]$name, $info){
     param($s,$e)
     $n = $s.SvcName
     $ctx = New-Object System.Windows.Controls.ContextMenu
-    foreach ($d in @(@('启动','start'),@('停止','stop'),@('重启','restart'),@('面板','open'),@('日志','log'),@('安全检查','security'))) {
+    foreach ($d in @(@('启动','start'),@('停止','stop'),@('重启','restart'),@('面板','open'),@('日志','log'),@('安全检查','security'),@('删除','remove'))) {
       $mi = New-Object System.Windows.Controls.MenuItem -Property @{Header=$d[0]; Tag=$d[1]+'|'+$n}
+      if ($d[1] -eq 'remove') { $mi.Foreground = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(192,57,43)) }
       $mi.Add_Click({
         $parts = $this.Tag -split '\|'; $act = $parts[0]; $n = $parts[1]
         switch ($act) {
@@ -124,6 +125,7 @@ function New-Card([string]$name, $info){
           'open'    { if ($script:svc[$n].url) { Start-Process $script:svc[$n].url } }
           'log'     { Show-Log $n $script:window }
           'security'{ Show-SecurityCheck $n }
+          'remove'  { Show-Remove $n $script:window; Render-Page }
         }
       })
       [void]$ctx.Items.Add($mi)

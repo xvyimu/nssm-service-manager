@@ -11,7 +11,7 @@
 | `lib/theme.ps1` | 系统字体、主题色、按钮样式、Mica P/Invoke |
 | `lib/util.ps1` | 配置持久化、NSSM 操作、安全检查、日志查看器 |
 | `lib/poll.ps1` | 后台 runspace 探测脚本块（Get-Service + TcpClient + HttpClient 三档健康） |
-| `lib/add-svc.ps1` | 添加服务（GUI 简化 + CLI agent 友好） |
+| `lib/add-svc.ps1` | 添加服务（GUI 简化 + CLI agent 友好）+ 删除服务（输入全名确认）+ `Wait-Stopped`/`Remove-NssmService` |
 | `lib/card.ps1` | 卡片构建 + 双击防抖（8s 冷却 + 健康门闩）+ 右键菜单 |
 | `lib/xaml.ps1` | 主窗口外壳（自定义标题栏 + 工具栏 + 分页 + 状态栏） |
 | `assets/icon.ico` | 自绘齿轮图标（窗口 + 任务栏） |
@@ -40,7 +40,8 @@
 - 每张卡：服务名、端口、URL、状态圆点、健康说明、打开面板、启停按钮
 - 健康三档：`正常`（绿）/ `超时`（橙，服务在但响应慢）/ `无响应`（红，端口未监听或连接被拒）；HTTP 超时 3 秒
 - 双击卡片 = 启停切换，8 秒冷却 + 健康门闩（只有运行中+健康=正常才允许双击关闭）
-- 右键卡片 = 启动/停止/重启/面板/日志/安全检查
+- 右键卡片 = 启动/停止/重启/面板/日志/安全检查/删除（删除需输入完整服务名确认，红字标注）
+- 单实例互斥：重复双击启动器只保留第一个窗口，第二个弹提示退出（Mutex 进程级，崩溃后自动释放）
 - 重启走 stop→轮询 Stopped（最多 6s）→start，避免端口未释放导致 bind 失败
 - 工具栏：添加服务 / 上一页 / 下一页
 - 后台 runspace 探测（`Get-Service` + TcpClient + HttpClient），UI 线程只取结果、刷新卡片

@@ -96,7 +96,7 @@ try {
   } | Where-Object { $_ -is [Windows.Controls.ContextMenu] })
   Assert ($menus.Count -eq 1) 'Context menu was not created.'
   $menu = $menus[0]
-  Assert ($menu.Items.Count -eq 6) 'Context menu must contain six actions.'
+  Assert ($menu.Items.Count -eq 7) 'Context menu must contain seven actions.'
   foreach ($i in 0..2) {
     $menu.Items[$i].RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.MenuItem]::ClickEvent))
   }
@@ -104,13 +104,15 @@ try {
   function Start-Process([string]$FilePath) { $script:opened=$FilePath }
   function Show-Log([string]$name,$owner) { $script:logged=$name }
   function Show-SecurityCheck([string]$name) { $script:checked=$name }
-  foreach ($i in 3..5) {
+  function Show-Remove([string]$name,$owner) { $script:removed=$name }
+  foreach ($i in 3..6) {
     $menu.Items[$i].RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.MenuItem]::ClickEvent))
   }
   Assert ($script:opened -eq $script:svc[$card.SvcName].url) 'Panel action did not reach the URL opener.'
   Assert ($script:logged -eq $card.SvcName -and $script:checked -eq $card.SvcName) 'Log/security action targeted wrong service.'
+  Assert ($script:removed -eq $card.SvcName) 'Remove action targeted wrong service.'
   $menu.IsOpen = $false
-  Write-Output 'PASS: all six menu actions reach their targets (side effects mocked).'
+  Write-Output 'PASS: all seven menu actions reach their targets (side effects mocked).'
 
   $buttons = @(Get-VisualNodes $win | Where-Object { $_ -is [Windows.Controls.Button] })
   $minimize = $buttons | Where-Object { $_.Content -eq '—' }
