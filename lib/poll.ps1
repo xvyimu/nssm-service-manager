@@ -82,22 +82,15 @@ while(-not $sync.stop){
       } else {
         # HTTP 探测：共享 HttpClient，3s 超时（本地面板冷启动宽限）
         # 响应必须 Dispose，否则内容缓冲滞留——每轮探测泄漏一份。
+        # 用 .GetAwaiter().GetResult() 而非 .Result：后者抛 AggregateException
+        # （.Message = "One or more errors occurred." 无信息量），前者直接抛内层异常。
         try {
-          $r = $http.GetAsync($info.url).Result
+          $r = $http.GetAsync($info.url).GetAwaiter().GetResult()
           try { $h = if($r.StatusCode -eq [System.Net.HttpStatusCode]::OK){'正常'}else{'HTTP ' + [int]$r.StatusCode} } finally { $r.Dispose() }
         } catch {
-          # .Result 失败抛的是 AggregateException，.Message 是「One or more errors occurred.」
-          # 不含 timed out/refused/connection，直接 match 全部落到 else=超时，掩盖真实错误。
-          # 先展平 InnerExceptions 再按原规则分类。
-          $msgs = @($_.Exception.Message)
-          if ($_.Exception -is [System.AggregateException]) {
-            $msgs = @($_.Exception.InnerExceptions | ForEach-Object { [string]$_.Message })
-          } elseif ($_.Exception.InnerException) {
-            $msgs = @($_.Exception.InnerException.Message)
-          }
-          $combined = $msgs -join '|'
-          if ($combined -match 'timed out|超时|Timeout|canceled|任务已取消') { $h='超时' }
-          elseif ($combined -match 'refused|unable to connect|连接|connection|ConnectFailure|Connection refused') { $h='无响应' }
+          $msg = [string]$_.Exception.Message
+          if ($msg -match 'timed out|超时|Timeout|canceled|任务已取消') { $h='超时' }
+          elseif ($msg -match 'refused|unable to connect|连接|connection|ConnectFailure') { $h='无响应' }
           else { $h='超时' }
         }
       }
