@@ -84,11 +84,14 @@ while(-not $sync.stop){
         # 响应必须 Dispose，否则内容缓冲滞留——每轮探测泄漏一份。
         # 用 .GetAwaiter().GetResult() 而非 .Result：后者抛 AggregateException
         # （.Message = "One or more errors occurred." 无信息量），前者直接抛内层异常。
+        # PowerShell 再包一层 MethodInvocationException，真实异常在 .InnerException。
         try {
           $r = $http.GetAsync($info.url).GetAwaiter().GetResult()
           try { $h = if($r.StatusCode -eq [System.Net.HttpStatusCode]::OK){'正常'}else{'HTTP ' + [int]$r.StatusCode} } finally { $r.Dispose() }
         } catch {
-          $msg = [string]$_.Exception.Message
+          $ex = $_.Exception.InnerException
+          if (-not $ex) { $ex = $_.Exception }
+          $msg = [string]$ex.Message
           if ($msg -match 'timed out|超时|Timeout|canceled|任务已取消') { $h='超时' }
           elseif ($msg -match 'refused|unable to connect|连接|connection|ConnectFailure') { $h='无响应' }
           else { $h='超时' }
