@@ -104,7 +104,12 @@ function New-MainWindow {
 
 function Render-Page {
   $script:cardPanel.Children.Clear()
-  $names=@($script:svc.Keys)
+  # 读 $script:svc 加 gate（发现 15）：与后台 runspace 的读路径对称。
+  # 当前 UI 线程是唯一写者，无实际并发写，但锁不对称后续加后台写入即踩。
+  # 测试夹具可能没初始化 $sync（CLI 路径与部分单测），退化成不加锁直接读。
+  $gate = if ($script:sync -and $script:sync.gate) { $script:sync.gate } else { $null }
+  if ($gate) { [Threading.Monitor]::Enter($gate) }
+  try { $names=@($script:svc.Keys) } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }
   $pages=[math]::Max(1,[math]::Ceiling($names.Count / $script:PER_PAGE))
   $script:curPage=[math]::Max(0,[math]::Min($script:curPage,$pages-1))
   $start=$script:curPage*$script:PER_PAGE
@@ -112,9 +117,15 @@ function Render-Page {
   if ($start -le $end) {
     foreach ($n in $names[$start..$end]) {
       # 重用卡片，翻页不丢失健康状态、过渡状态或 8 秒冷却。
-      $card=if ($script:cards.ContainsKey($n)) { $script:cards[$n] } else { New-Card $n $script:svc[$n] }
+      $cached = $script:cards.ContainsKey($n)
+      $card=if ($cached) { $script:cards[$n] } else { New-Card $n $script:svc[$n] }
       # 命中缓存时刷新端口/URL/Tag——配置可能已变更（发现 1）。
-      if ($script:cards.ContainsKey($n)) { Update-CardInfo $n $script:svc[$n] }
+      # 新建的卡已在 New-Card 里固化，不重复刷新。
+      if ($cached) {
+        if ($gate) { [Threading.Monitor]::Enter($gate) }
+        try { $info = $script:svc[$n] } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }
+        if ($info) { Update-CardInfo $n $info }
+      }
       [void]$script:cardPanel.Children.Add($card)
     }
   }
