@@ -1,17 +1,19 @@
 ' Keep this file ASCII: Windows Script Host decodes VBS using the ANSI code page.
 ' Launch PowerShell 7 with UAC elevation and no console window.
 Option Explicit
-Dim fso, sh, here, script, pwsh
+Dim fso, sh, sh2, here, script, pwsh, scoopPwsh
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set sh  = CreateObject("Shell.Application")
+Set sh2 = CreateObject("WScript.Shell")
 here = fso.GetParentFolderName(WScript.ScriptFullName)
 script = here & "\service-manager-gui.ps1"
 
 ' Prefer an absolute pwsh path (SCOOP or Program Files) before falling back to PATH
 ' (finding 8: a bare "pwsh.exe" relies on PATH, which may not be loaded under wscript).
-pwsh = "pwsh.exe"
-Dim scoopPwsh
-scoopPwsh = Environ("USERPROFILE") & "\scoop\shims\pwsh.exe"
+' Environ is a method of WScript.Shell, not a global VBScript function; calling it
+' bare throws "Type mismatch" and aborts before ShellExecute (no pwsh starts, no log).
+pwsh = "pwsh.exe"  ' PATH fallback: only when scoop/Program Files both miss
+scoopPwsh = sh2.ExpandEnvironmentStrings("%USERPROFILE%") & "\scoop\shims\pwsh.exe"
 If fso.FileExists(scoopPwsh) Then
   pwsh = scoopPwsh
 ElseIf fso.FileExists("C:\Program Files\PowerShell\7\pwsh.exe") Then
