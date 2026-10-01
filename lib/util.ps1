@@ -144,27 +144,9 @@ function Show-Log([string]$n, $owner){
     $box.ScrollToEnd()
   }.GetNewClosure()
 
-  # 初始填充下拉
-  $files = Get-LogFiles $n
-  if ($files.Count -eq 0) {
-    [void]$combo.Items.Add((New-Object System.Windows.Controls.ComboBoxItem -Property @{Content='无日志'; Tag=''}))
-  } else {
-    foreach ($fi in $files) {
-      $item = New-Object System.Windows.Controls.ComboBoxItem -Property @{
-        Content = $fi.Label; Tag = $fi.Path
-      }
-      [void]$combo.Items.Add($item)
-    }
-    $combo.SelectedIndex = 0
-    $state.File = $files[0].Path
-  }
-  $combo.Add_SelectionChanged({
-    $item = $combo.SelectedItem
-    if ($item -and $item.Tag) { $state.Current = ''; $state.File = [string]$item.Tag; & $load }
-  }.GetNewClosure())
-  $refreshBtn.Add_Click({
-    # 刷新下拉（轮转文件可能新增）并重载当前
-    $oldPath = $state.File
+  # 初始填充与刷新共用：枚举文件 → 建 ComboBoxItem → 选中 oldPath（或首项）
+  $fillCombo = {
+    param($selectPath)
     $combo.Items.Clear()
     $files = Get-LogFiles $n
     if ($files.Count -eq 0) {
@@ -175,11 +157,21 @@ function Show-Log([string]$n, $owner){
       for ($i=0; $i -lt $files.Count; $i++) {
         $item = New-Object System.Windows.Controls.ComboBoxItem -Property @{ Content=$files[$i].Label; Tag=$files[$i].Path }
         [void]$combo.Items.Add($item)
-        if ($files[$i].Path -eq $oldPath) { $selIdx = $i }
+        if ($selectPath -and $files[$i].Path -eq $selectPath) { $selIdx = $i }
       }
       $combo.SelectedIndex = $selIdx
       $state.File = $files[$selIdx].Path
     }
+  }.GetNewClosure()
+
+  & $fillCombo $null
+  $combo.Add_SelectionChanged({
+    $item = $combo.SelectedItem
+    if ($item -and $item.Tag) { $state.Current = ''; $state.File = [string]$item.Tag; & $load }
+  }.GetNewClosure())
+  $refreshBtn.Add_Click({
+    # 刷新下拉（轮转文件可能新增）并重载当前
+    & $fillCombo $state.File
     & $load
   }.GetNewClosure())
 

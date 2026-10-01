@@ -30,6 +30,16 @@ function Convert-ScExitCode([int]$code){
     default { "错误码 $code" }
   }
 }
+# ServiceController.Status → 中文状态（单一映射源，避免兜底分支缩水版漂移）
+function Convert-ServiceStatus([string]$s){
+  switch ($s) {
+    'Stopped'      { '已停止' }
+    'StartPending'  { '启动中' }
+    'StopPending'   { '停止中' }
+    'Running'       { '运行中' }
+    default         { '未知' }
+  }
+}
 function Invoke-Sc([string]$verb,[string]$n,[string]$fail){
   sc.exe $verb $n 2>&1 | Out-Null
   if($LASTEXITCODE -ne 0){
@@ -108,16 +118,10 @@ while(-not $sync.stop){
     try { $info = $sync.svc[$n] } finally { [Threading.Monitor]::Exit($sync.gate) }
     if (-not $info) { continue }
 
-    $st = switch ($svcStatus[$n]) {
-      'Stopped'      { '已停止' }
-      'StartPending'  { '启动中' }
-      'StopPending'   { '停止中' }
-      'Running'       { '运行中' }
-      default         { '未知' }
-    }
+    $st = Convert-ServiceStatus ([string]$svcStatus[$n])
     if (-not $svcStatus[$n]) {
       # 批量查询未返回此服务：单独查一次，区分未安装与未知
-      try { $s = Get-Service -Name $n -EA Stop; $st = switch([string]$s.Status){ 'Stopped'{'已停止'} 'Running'{'运行中'} default{'未知'} } }
+      try { $st = Convert-ServiceStatus ([string](Get-Service -Name $n -EA Stop).Status) }
       catch { if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { $st='未安装' } else { $st='未知' } }
     }
 

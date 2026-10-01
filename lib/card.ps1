@@ -161,9 +161,10 @@ function Update-CardData([string]$n,[string]$st,[string]$h){
   # 用户刚刚触发的过渡态，也不应重新启用按钮——否则慢停止期间显示与实际不符。
   # 按方向判期望终态：启动中只接受运行中收尾，停止中只接受已停止收尾；
   # 未安装/未知属异常态（服务被卸载或出错），允许通过。
-  $inTransition = $c.ST -in @('启动中','停止中')
-  if ($inTransition) {
-    $expected = if ($c.ST -eq '启动中') { '运行中' } else { '已停止' }
+  # Altitude 注：这是症状层补丁，根因是缺少命令纪元；个人工具暂不引入。
+  $transitionExpect = @{ '启动中' = '运行中'; '停止中' = '已停止' }
+  if ($transitionExpect.ContainsKey($c.ST)) {
+    $expected = $transitionExpect[$c.ST]
     if ($st -ne $expected -and $st -notin @('未安装','未知')) { return }
   }
   $c.ST = $st; $c.HT = $h

@@ -2,14 +2,9 @@
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
+. (Join-Path $RepoRoot 'tests/test-helpers.ps1')
 function Assert($condition, [string]$message) {
   if (-not $condition) { throw $message }
-}
-function Get-VisualNodes($node) {
-  $node
-  for ($i = 0; $i -lt [Windows.Media.VisualTreeHelper]::GetChildrenCount($node); $i++) {
-    Get-VisualNodes ([Windows.Media.VisualTreeHelper]::GetChild($node, $i))
-  }
 }
 function Send-CardMouse($card, [Windows.Input.MouseButton]$button, [int]$clicks) {
   $eventArgs = [Windows.Input.MouseButtonEventArgs]::new([Windows.Input.Mouse]::PrimaryDevice, 0, $button)
