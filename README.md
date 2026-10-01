@@ -46,7 +46,7 @@
 - 单实例互斥：重复双击启动器只保留第一个窗口，第二个弹提示退出（Mutex 进程级，崩溃后自动释放）
 - 重启走 stop→轮询 Stopped（最多 6s）→start，避免端口未释放导致 bind 失败
 - 工具栏：添加服务 / 上一页 / 下一页
-- 后台 runspace 探测（`Get-Service` 批量查询 + TcpClient + HttpClient），UI 线程只取结果、刷新卡片
+- 后台 runspace 探测（`Get-Service` 批量查询 + TcpClient + HttpClient 并行探测，UI 线程只取结果、刷新卡片）
 - GUI 命令统一入队并唤醒后台；每次服务探测之间优先处理命令，避免等待整轮探测和固定空闲间隔
 - `sc.exe` 失败时状态栏显示映射后的中文原因（1056 已在运行 / 1060 服务未安装 等），而非裸数字
 - 日志查看器支持轮转历史下拉（NSSM `AppRotateFiles` 产生的 `*.out-*.log` / `*.err-*.log`），切换并刷新

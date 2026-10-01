@@ -96,6 +96,11 @@ while(-not $sync.stop){
     }
   }
 
+  # 收集阶段：算状态，运行中的留待并行探测，其余直接入队。
+  # 并行化（发现 4）：原 foreach 串行 TCP+HTTP，6 服务最坏 ~19s；
+  # 改并行后最坏 ~3.2s（HTTP 超时上限）。命令在收集间隙仍优先处理，
+  # 但并行探测期间不插 Invoke-PendingCommands——最长等一次并行轮。
+  $toProbe = [System.Collections.Generic.List[pscustomobject]]::new()
   foreach($n in $snap){
     Invoke-PendingCommands
     if ($sync.stop) { break }
@@ -116,41 +121,43 @@ while(-not $sync.stop){
       catch { if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { $st='未安装' } else { $st='未知' } }
     }
 
-    $h=''
-    if($st -eq '运行中'){
-      $p = [int]$info.port
-      # 轻量端口探测：TcpClient 200ms 超时（不用 Get-NetTCPConnection）
-      $listen = $false
-      $tcp = [System.Net.Sockets.TcpClient]::new()
-      try {
-        $iar = $tcp.BeginConnect('127.0.0.1', $p, $null, $null)
-        if ($iar.AsyncWaitHandle.WaitOne(200, $false)) {
-          try { $tcp.EndConnect($iar); $listen = $true } catch {}
-        }
-      } finally { try { $tcp.Close() } catch {} }
-
-      if (-not $listen) {
-        $h='无响应'
-      } else {
-        # HTTP 探测：共享 HttpClient，3s 超时（本地面板冷启动宽限）
-        # 响应必须 Dispose，否则内容缓冲滞留——每轮探测泄漏一份。
-        # 用 .GetAwaiter().GetResult() 而非 .Result：后者抛 AggregateException
-        # （.Message = "One or more errors occurred." 无信息量），前者直接抛内层异常。
-        # PowerShell 再包一层 MethodInvocationException，真实异常在 .InnerException。
-        try {
-          $r = $http.GetAsync($info.url).GetAwaiter().GetResult()
-          try { $h = if($r.StatusCode -eq [System.Net.HttpStatusCode]::OK){'正常'}else{'HTTP ' + [int]$r.StatusCode} } finally { $r.Dispose() }
-        } catch {
-          $ex = $_.Exception.InnerException
-          if (-not $ex) { $ex = $_.Exception }
-          $msg = [string]$ex.Message
-          if ($msg -match 'timed out|超时|Timeout|canceled|任务已取消') { $h='超时' }
-          elseif ($msg -match 'refused|unable to connect|连接|connection|ConnectFailure') { $h='无响应' }
-          else { $h='超时' }
-        }
-      }
+    if ($st -eq '运行中') {
+      $toProbe.Add([pscustomobject]@{n=$n;port=[int]$info.port;url=[string]$info.url})
+    } else {
+      $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$st;h=''})
     }
-    $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$st;h=$h})
+  }
+
+  # 并行探测运行中服务：每个服务一个并行块，内部 TCP→HTTP 串行，服务间并行。
+  # $using:http 传 HttpClient 引用（线程安全）；结果按输入顺序返回，统一入队。
+  if ($toProbe.Count -and -not $sync.stop) {
+    $results = $toProbe | ForEach-Object -Parallel {
+      $n=$_.n; $p=$_.port; $url=$_.url
+      $httpClient=$using:http
+      # 轻量端口探测：TcpClient 200ms 超时（不用 Get-NetTCPConnection）
+      $listen=$false
+      $tcp=[System.Net.Sockets.TcpClient]::new()
+      try {
+        $iar=$tcp.BeginConnect('127.0.0.1',$p,$null,$null)
+        if($iar.AsyncWaitHandle.WaitOne(200,$false)){ try{$tcp.EndConnect($iar);$listen=$true}catch{} }
+      } finally { try{$tcp.Close()}catch{} }
+
+      if(-not $listen){ return [pscustomobject]@{n=$n;h='无响应'} }
+      # HTTP 探测：共享 HttpClient，3s 超时（本地面板冷启动宽限）
+      # 响应必须 Dispose，否则内容缓冲滞留——每轮探测泄漏一份。
+      try {
+        $r=$httpClient.GetAsync($url).GetAwaiter().GetResult()
+        try { $h=if($r.StatusCode -eq [System.Net.HttpStatusCode]::OK){'正常'}else{'HTTP '+[int]$r.StatusCode} } finally { $r.Dispose() }
+      } catch {
+        $ex=$_.Exception.InnerException; if(-not $ex){$ex=$_.Exception}
+        $msg=[string]$ex.Message
+        if($msg -match 'timed out|超时|Timeout|canceled|任务已取消'){$h='超时'}
+        elseif($msg -match 'refused|unable to connect|连接|connection|ConnectFailure'){$h='无响应'}
+        else{$h='超时'}
+      }
+      [pscustomobject]@{n=$n;h=$h}
+    } -ThrottleLimit 8
+    foreach($r in $results){ $sync.queue.Enqueue([pscustomobject]@{n=$r.n;st='运行中';h=$r.h}) }
   }
 
   Invoke-PendingCommands
