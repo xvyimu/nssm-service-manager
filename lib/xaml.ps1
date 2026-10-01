@@ -16,7 +16,7 @@ function New-MainWindow {
   [System.Windows.Shell.WindowChrome]::SetWindowChrome($win, $chrome)
   $win.Resources[[System.Windows.Controls.Button]] = $script:buttonStyle
   $root = New-Object System.Windows.Controls.Border -Property @{
-    CornerRadius=10; BorderBrush=$script:T.CardBrd; BorderThickness='1'; Background='#E6EEF2F6'
+    CornerRadius=10; BorderBrush=$script:T.CardBrd; BorderThickness='1'; Background=$script:T.RootBg
   }
   $grid = New-Object System.Windows.Controls.Grid
   foreach ($height in 'Auto','*','Auto') {
@@ -34,10 +34,13 @@ function New-MainWindow {
   $btnMin = New-Object System.Windows.Controls.Button -Property @{
     Content='—'; Width=36; MinHeight=28; Height=28; Padding='0'; Background='Transparent'; BorderThickness='0'; ToolTip='最小化'
   }
+  $btnMax = New-Object System.Windows.Controls.Button -Property @{
+    Content='▢'; Width=36; MinHeight=28; Height=28; Padding='0'; Background='Transparent'; BorderThickness='0'; ToolTip='最大化/还原'
+  }
   $btnClose = New-Object System.Windows.Controls.Button -Property @{
     Content='✕'; Width=36; MinHeight=28; Height=28; Padding='0'; Background='Transparent'; BorderThickness='0'; ToolTip='关闭'
   }
-  [void]$windowActions.Children.Add($btnMin); [void]$windowActions.Children.Add($btnClose)
+  [void]$windowActions.Children.Add($btnMin); [void]$windowActions.Children.Add($btnMax); [void]$windowActions.Children.Add($btnClose)
   [void]$titleBar.Children.Add($windowActions)
   [void]$grid.Children.Add($titleBar)
 
@@ -55,7 +58,7 @@ function New-MainWindow {
     VerticalAlignment='Center'; Margin='4,0,10,0'; Foreground=$script:T.Dim
   }
   $btnNext = New-Object System.Windows.Controls.Button -Property @{Content='下一页'; Padding='10,5'; Margin='0,0,12,0'}
-  $btnAdd = New-Object System.Windows.Controls.Button -Property @{Content='+ 添加服务'; Foreground='#185A9D'; Padding='14,6'}
+  $btnAdd = New-Object System.Windows.Controls.Button -Property @{Content='+ 添加服务'; Foreground=$script:T.Accent; Padding='14,6'}
   foreach ($control in $btnPrev,$lblPage,$btnNext,$btnAdd) { [void]$actions.Children.Add($control) }
   [void]$toolbar.Children.Add($actions)
   [System.Windows.Controls.DockPanel]::SetDock($toolbar, 'Top')
@@ -80,8 +83,14 @@ function New-MainWindow {
   $script:lblPage=$lblPage; $script:btnPrev=$btnPrev; $script:btnNext=$btnNext
   $script:serviceSummary=$summary; $script:cards=@{}; $script:curPage=0
 
-  $titleBar.Add_MouseLeftButtonDown({ param($s,$e) if ($e.LeftButton -eq 'Pressed') { $script:window.DragMove() } })
+  $titleBar.Add_MouseLeftButtonDown({ param($s,$e) if ($e.LeftButton -eq 'Pressed') {
+    if ($e.ClickCount -ge 2) {
+      # 双击标题栏切换最大化（发现 11）；DragMove 与双击互斥，ClickCount≥2 时不拖动
+      $script:window.WindowState = if ($script:window.WindowState -eq 'Maximized') { 'Normal' } else { 'Maximized' }
+    } else { $script:window.DragMove() }
+  } })
   $btnMin.Add_Click({ $script:window.WindowState='Minimized' })
+  $btnMax.Add_Click({ $script:window.WindowState = if ($script:window.WindowState -eq 'Maximized') { 'Normal' } else { 'Maximized' } })
   $btnClose.Add_Click({ $script:window.Close() })
   $win.Add_Closed({ Stop-Background })
   $btnAdd.Add_Click({ Show-Add $script:window; Render-Page })
@@ -95,7 +104,12 @@ function New-MainWindow {
 
 function Render-Page {
   $script:cardPanel.Children.Clear()
-  $names=@($script:svc.Keys)
+  # 读 $script:svc 加 gate（发现 15）：与后台 runspace 的读路径对称。
+  # 当前 UI 线程是唯一写者，无实际并发写，但锁不对称后续加后台写入即踩。
+  # 测试夹具可能没初始化 $sync（CLI 路径与部分单测），退化成不加锁直接读。
+  $gate = if ($script:sync -and $script:sync.gate) { $script:sync.gate } else { $null }
+  if ($gate) { [Threading.Monitor]::Enter($gate) }
+  try { $names=@($script:svc.Keys) } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }
   $pages=[math]::Max(1,[math]::Ceiling($names.Count / $script:PER_PAGE))
   $script:curPage=[math]::Max(0,[math]::Min($script:curPage,$pages-1))
   $start=$script:curPage*$script:PER_PAGE
@@ -103,7 +117,15 @@ function Render-Page {
   if ($start -le $end) {
     foreach ($n in $names[$start..$end]) {
       # 重用卡片，翻页不丢失健康状态、过渡状态或 8 秒冷却。
-      $card=if ($script:cards.ContainsKey($n)) { $script:cards[$n] } else { New-Card $n $script:svc[$n] }
+      $cached = $script:cards.ContainsKey($n)
+      $card=if ($cached) { $script:cards[$n] } else { New-Card $n $script:svc[$n] }
+      # 命中缓存时刷新端口/URL/Tag——配置可能已变更（发现 1）。
+      # 新建的卡已在 New-Card 里固化，不重复刷新。
+      if ($cached) {
+        if ($gate) { [Threading.Monitor]::Enter($gate) }
+        try { $info = $script:svc[$n] } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }
+        if ($info) { Update-CardInfo $n $info }
+      }
       [void]$script:cardPanel.Children.Add($card)
     }
   }

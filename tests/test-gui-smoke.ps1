@@ -2,14 +2,9 @@
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
+. (Join-Path $RepoRoot 'tests/test-helpers.ps1')
 function Assert($condition, [string]$message) {
   if (-not $condition) { throw $message }
-}
-function Get-VisualNodes($node) {
-  $node
-  for ($i = 0; $i -lt [Windows.Media.VisualTreeHelper]::GetChildrenCount($node); $i++) {
-    Get-VisualNodes ([Windows.Media.VisualTreeHelper]::GetChild($node, $i))
-  }
 }
 function Send-CardMouse($card, [Windows.Input.MouseButton]$button, [int]$clicks) {
   $eventArgs = [Windows.Input.MouseButtonEventArgs]::new([Windows.Input.Mouse]::PrimaryDevice, 0, $button)
@@ -116,13 +111,19 @@ try {
 
   $buttons = @(Get-VisualNodes $win | Where-Object { $_ -is [Windows.Controls.Button] })
   $minimize = $buttons | Where-Object { $_.Content -eq '—' }
+  $maximize = $buttons | Where-Object { $_.Content -eq '▢' }
   $close = $buttons | Where-Object { $_.Content -eq '✕' }
-  Assert ($null -ne $minimize -and $null -ne $close) 'Title bar buttons not found.'
+  Assert ($null -ne $minimize -and $null -ne $maximize -and $null -ne $close) 'Title bar buttons not found.'
   $minimize.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
   Assert ($win.WindowState -eq 'Minimized') 'Minimize handler failed.'
+  $win.WindowState = 'Normal'
+  $maximize.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+  Assert ($win.WindowState -eq 'Maximized') 'Maximize handler failed.'
+  $maximize.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+  Assert ($win.WindowState -eq 'Normal') 'Maximize toggle did not restore.'
   $close.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
   Assert $script:backgroundStopped 'Close did not run background cleanup.'
-  Write-Output 'PASS: minimize and close handlers.'
+  Write-Output 'PASS: minimize, maximize toggle, and close handlers.'
 } finally {
   if ($win.IsLoaded) { $win.Close() }
   $script:sync.wake.Dispose()

@@ -21,8 +21,19 @@ if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force $logDir | Ou
 
 # 启动链路日志必须早于提权和 WPF 加载；仅记录阶段，不记录参数或配置值。
 $script:crashLog = "$logDir\gui-crash.log"
+$script:crashLogMaxBytes = 524288  # 512 KiB；超过则轮转一份 .1（发现 14：无轮转无上限会无限增长）
 function Write-CrashLog([string]$m){
-  try { [IO.File]::AppendAllText($script:crashLog, "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') pid=$PID $m`r`n", [Text.UTF8Encoding]::new($false)) } catch {}
+  try {
+    $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') pid=$PID $m`r`n"
+    [IO.File]::AppendAllText($script:crashLog, $line, [Text.UTF8Encoding]::new($false))
+    # 简单轮转：超过上限时把当前文件挪成 .1 再开新的。只保留最近一份历史，足够个人工具。
+    $info = [IO.FileInfo]$script:crashLog
+    if ($info.Exists -and $info.Length -gt $script:crashLogMaxBytes) {
+      $bak = "$($script:crashLog).1"
+      if (Test-Path -LiteralPath $bak) { Remove-Item -LiteralPath $bak -Force -EA SilentlyContinue }
+      [IO.File]::Move($script:crashLog, $bak)
+    }
+  } catch {}
 }
 
 # ---- CLI 模式：添加服务（不弹 GUI，不提权检测——NSSM 写需管理员，调用方自己提权）----

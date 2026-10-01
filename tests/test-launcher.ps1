@@ -14,7 +14,11 @@ try {
   if (@([IO.File]::ReadAllBytes((Join-Path $RepoRoot 'launch.vbs')) | Where-Object { $_ -gt 127 }).Count) {
     throw 'Launcher must remain ASCII for Windows Script Host ANSI decoding.'
   }
-  Write-Output 'PASS: launcher compiles without executing elevation and contains only ASCII.'
+  # UAC rejection guard (finding 8): On Error Resume Next must wrap ShellExecute,
+  # and the cancelled-elevation branch must reach a readable MsgBox, not a raw COM error.
+  if ($source -notmatch 'On Error Resume Next') { throw 'Launcher must guard ShellExecute with On Error Resume Next.' }
+  if ($source -notmatch 'Err\.Number') { throw 'Launcher must check Err.Number after ShellExecute.' }
+  Write-Output 'PASS: launcher compiles without executing elevation, contains only ASCII, and guards UAC rejection.'
 } finally {
   if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe }
 }

@@ -122,6 +122,8 @@ function Show-Remove([string]$n, $owner){
     }
     [Threading.Monitor]::Enter($sync.gate)
     try { $script:svc.Remove($n) } finally { [Threading.Monitor]::Exit($sync.gate) }
+    # 清掉卡片缓存（发现 1）：否则同名重建会复用旧卡，显示旧端口/URL。
+    $script:cards.Remove($n)
     try {
       Save-Svc $script:svc
     } catch {
@@ -135,7 +137,7 @@ function Show-Remove([string]$n, $owner){
   $f.ShowDialog() | Out-Null
 }
 
-# CLI 模式：解析逗号分隔参数，注册 NSSM 服务并启动，不弹 GUI
+# CLI 模式：注册 NSSM 服务并启动，不弹 GUI
 function Show-Add($owner){
   $f = New-Object System.Windows.Window -Property @{
     Title='添加服务'; Width=460; Height=540; WindowStartupLocation='CenterOwner'
@@ -147,7 +149,7 @@ function Show-Add($owner){
   $mkExp = {
     param($t) New-Object System.Windows.Controls.Expander -Property @{Header=$t;Margin='0,8,0,8';FontFamily=$script:cjkFont}
   }
-  $inName=& $mkBox 200; $inPort=& $mkBox 200; $inPort.Text='0'
+  $inName=& $mkBox 200; $inPort=& $mkBox 200; $inPort.Text=''
   $inExe=& $mkBox 380; $inUrl=& $mkBox 380; $inDir=& $mkBox 380; $inPar=& $mkBox 380; $inEnv=& $mkBox 380
   $inExe.ToolTip='完整路径，如 C:\app\server.exe'
   $inEnv.ToolTip='格式 KEY=VAL,KEY2=VAL2（一次传入；LocalSystem 服务勿填交互用户 APPDATA）'

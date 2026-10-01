@@ -13,6 +13,8 @@
 //   TTS_DEFAULT_VOICE 请求未带 voice 时的缺省音色（默认 lengyanyujie）
 //   TTS_AUTH_STYLE    上游鉴权风格（默认 bearer）
 //   TTS_API_KEY       上游密钥（或 STEPFUN_API_KEY），缺失拒绝启动
+//   TTS_API_KEY_FILE  密钥文件路径（优先于 TTS_API_KEY；密钥移出注册表，
+//                     避免 NSSM AppEnvironmentExtra 对 BUILTIN\Users 可读）
 //   TTS_TIMEOUT_MS    上游请求超时（默认 120000）
 //
 // 流式响应客户端断开保护：res.on('error') + 流式段独立 try，
@@ -21,6 +23,7 @@
 // nssm 服务 TTSShim：AppDirectory 指向本目录，AppEnvironmentExtra 注入 TTS_API_KEY。
 
 import http from 'node:http';
+import fs from 'node:fs';
 
 const PORT = Number(process.env.PORT || 8001);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -28,7 +31,23 @@ const TTS_BASE = (process.env.TTS_BASE || 'https://api.stepfun.com/step_plan/v1'
 const TTS_MODEL = process.env.TTS_MODEL || 'stepaudio-2.5-tts';
 const TTS_DEFAULT_VOICE = process.env.TTS_DEFAULT_VOICE || 'lengyanyujie';
 const TTS_AUTH_STYLE = (process.env.TTS_AUTH_STYLE || 'bearer').toLowerCase();
-const API_KEY = process.env.TTS_API_KEY || process.env.STEPFUN_API_KEY || '';
+// 密钥文件优先：TTS_API_KEY_FILE 指向一个仅 Administrators+SYSTEM 可读的文件，
+// 密钥不落 NSSM AppEnvironmentExtra（该注册表值对 BUILTIN\Users 可读——发现 2）。
+// 文件读取失败或为空时回落到 TTS_API_KEY / STEPFUN_API_KEY 环境变量。
+function resolveApiKey() {
+  const keyFile = process.env.TTS_API_KEY_FILE;
+  if (keyFile) {
+    try {
+      const raw = fs.readFileSync(keyFile, 'utf8').trim();
+      if (raw) return raw;
+      console.error(`[shim] TTS_API_KEY_FILE 指向的文件为空：${keyFile}`);
+    } catch (err) {
+      console.error(`[shim] 读取 TTS_API_KEY_FILE 失败：${keyFile} (${err?.code || err?.message})，回落到环境变量`);
+    }
+  }
+  return process.env.TTS_API_KEY || process.env.STEPFUN_API_KEY || '';
+}
+const API_KEY = resolveApiKey();
 
 const UPSTREAM_URL = `${TTS_BASE}/audio/speech`;
 const UPSTREAM_TIMEOUT_MS = Number(process.env.TTS_TIMEOUT_MS || 120_000);

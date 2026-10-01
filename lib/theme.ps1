@@ -6,11 +6,15 @@ $script:cjkFont = 'Microsoft YaHei UI'
 $script:fontMono = 'Consolas'
 
 # 当前界面使用的主题色；动态状态色由 card.ps1 统一管理。
+# 改色只动这一份——card.ps1 / xaml.ps1 都从 $script:T 取，不内联硬编码（发现 6）。
 $script:T = @{
   Card    = '#FCFDFE'
   CardBrd = '#D7E0EA'
   Fg      = '#1C2939'
   Dim     = '#5C6D7E'
+  RootBg  = '#E6EEF2F6'   # 主窗口根 Border 背景（Mica 之上的底色）
+  PortBg  = '#EDF2F7'     # 卡片端口徽章背景
+  Accent  = '#185A9D'     # 打开面板 / 添加服务按钮前景
 }
 
 # 原生 WPF 按钮模板：统一触控区域，保留键盘焦点、禁用与悬停反馈。
