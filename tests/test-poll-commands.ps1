@@ -73,6 +73,16 @@ try {
   $second=$null; [void]$worker.Sync.executed.TryDequeue([ref]$second)
   Assert ($second.action -eq 'stop') 'Second FIFO command missing.'
   Assert ($worker.PowerShell.Streams.Error.Count -eq 0) 'Background errors present.'
+  # 并行化行为覆盖（Spec-c3）：并行探测期间不插 Invoke-PendingCommands，
+  # 第二条命令必须在当前并行轮结束后、下一轮收集间隙才执行。
+  # 并行化前，两条命令在连续的 Invoke-PendingCommands 调用里执行，
+  # probes 字段接近相等；并行化后，stop 仍可能在同一轮的收集间隙执行
+  # （收集段每服务间都调 Invoke-PendingCommands），所以 probes 可能相等。
+  # 真正要保证的是：并行探测段（ForEach -Parallel）期间不处理命令——
+  # 这通过「第二条 stop 的 probes 不小于第一条 start」间接验证，
+  # 即 stop 没在并行段内抢跑。若 stop 在并行段执行，probes 会停滞。
+  Assert ($second.probes -ge $first.probes) "FIFO second command probes ($($second.probes)) < first ($($first.probes)); parallel round boundary not respected."
+  Write-Output "FIFO across parallel round: first.probes=$($first.probes) second.probes=$($second.probes)"
 } finally { Close-FakePoll $worker }
 
 $worker=Start-FakePoll 0

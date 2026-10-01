@@ -44,8 +44,15 @@ try {
   Assert ($rebuilt.Port -eq 9090) "Port not refreshed after rebuild: got $($rebuilt.Port), expected 9090."
   Assert ($rebuilt.Url -eq 'http://127.0.0.1:9090/new') "Url not refreshed after rebuild: got $($rebuilt.Url)."
   # 打开面板按钮的 Tag 固化了 URL，是发现 1 自证的两路径不一致点之一
-  $openBtn=$null
-  foreach ($child in $rebuilt.Child.Children[3].Children) { if ($child.Content -eq '打开面板') { $openBtn=$child; break } }
+  # 按内容查找（与 test-gui-smoke 的 Get-VisualNodes 模式一致），不硬编码索引。
+  function Get-VisualNodes($node) {
+    $node
+    for ($i = 0; $i -lt [Windows.Media.VisualTreeHelper]::GetChildrenCount($node); $i++) {
+      Get-VisualNodes ([Windows.Media.VisualTreeHelper]::GetChild($node, $i))
+    }
+  }
+  $openBtn = @(Get-VisualNodes $rebuilt | Where-Object { $_ -is [Windows.Controls.Button] -and $_.Content -eq '打开面板' }) | Select-Object -First 1
+  Assert ($null -ne $openBtn) 'Open-panel button not found via visual tree.'
   Assert ($openBtn.Tag -eq 'http://127.0.0.1:9090/new') "Open-panel Tag not refreshed: got $($openBtn.Tag)."
 
   # ---- 4. 不删除、只改端口（翻页回来命中缓存的刷新路径）----
