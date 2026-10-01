@@ -59,8 +59,9 @@ function New-Card([string]$name, $info){
     Text=$name; FontFamily=$script:cjkFont; FontSize=19; FontWeight='SemiBold'; Foreground=$script:T.Fg
     VerticalAlignment='Center'; TextTrimming='CharacterEllipsis'; ToolTip=$name; Margin='0,0,8,0'
   }
-  $port=New-Object System.Windows.Controls.Border -Property @{Background='#EDF2F7'; CornerRadius=4; Padding='7,3'; VerticalAlignment='Center'}
-  $port.Child=New-Object System.Windows.Controls.TextBlock -Property @{Text=":$($info.port)"; FontFamily=$script:fontMono; FontSize=12; Foreground=$script:T.Dim}
+  $port=New-Object System.Windows.Controls.Border -Property @{Background=$script:T.PortBg; CornerRadius=4; Padding='7,3'; VerticalAlignment='Center'}
+  $portText=New-Object System.Windows.Controls.TextBlock -Property @{Text=":$($info.port)"; FontFamily=$script:fontMono; FontSize=12; Foreground=$script:T.Dim}
+  $port.Child=$portText
   [void]$heading.Children.Add($lblName); [void]$heading.Children.Add($port)
   [System.Windows.Controls.Grid]::SetColumn($port,1)
   [void]$grid.Children.Add($heading)
@@ -70,7 +71,6 @@ function New-Card([string]$name, $info){
     Margin='0,8,0,0'; TextTrimming='CharacterEllipsis'; ToolTip=$info.url
   }
   [void]$grid.Children.Add($endpoint); [System.Windows.Controls.Grid]::SetRow($endpoint,1)
-
   $state=New-Object System.Windows.Controls.StackPanel -Property @{VerticalAlignment='Center'; Margin='0,12,0,12'}
   $stateLine=New-Object System.Windows.Controls.StackPanel -Property @{Orientation='Horizontal'}
   $dot=New-Object System.Windows.Shapes.Ellipse -Property @{Width=10; Height=10; Fill=[System.Windows.Media.Brushes]::Gray; Margin='0,0,9,0'; VerticalAlignment='Center'}
@@ -83,7 +83,7 @@ function New-Card([string]$name, $info){
   $actions=New-Object System.Windows.Controls.Grid
   $open=New-Object System.Windows.Controls.Button -Property @{
     Content='打开面板'; FontFamily=$script:cjkFont; FontSize=12; Padding='10,6'
-    HorizontalAlignment='Left'; Background='Transparent'; BorderThickness='0'; Foreground='#185A9D'
+    HorizontalAlignment='Left'; Background='Transparent'; BorderThickness='0'; Foreground=$script:T.Accent
     Tag=$info.url; IsEnabled=(-not [string]::IsNullOrWhiteSpace($info.url))
   }
   $open.Add_Click({ if ($this.Tag) { Start-Process ([string]$this.Tag) } })
@@ -100,6 +100,7 @@ function New-Card([string]$name, $info){
     SvcName=$name; Port=$info.port; Url=$info.url
     ST='查询中'; HT=''; LastToggle=[datetime]::MinValue; ReadyToToggle=$false
     Dot=$dot; LblSt=$lblSt; LblUp=$lblUp; Btn=$btn
+    PortText=$portText; Endpoint=$endpoint; OpenBtn=$open
   }
   # 按钮持有卡片引用，Click 里直接取，省得爬 VisualTree
   $btn.Tag = $border
@@ -138,10 +139,33 @@ function New-Card([string]$name, $info){
   $border
 }
 
+# 刷新缓存卡片的端口/URL/按钮 Tag（配置变更后命中缓存时调用）。
+# 同名重建或端口变更后，旧缓存的 Port/Url/Tag 会与 $script:svc 不一致——
+# 发现 1 的根因：New-Card 把 port/url 固化进控件，Render-Page 命中缓存直接复用。
+function Update-CardInfo([string]$name, $info){
+  if (-not $script:cards.ContainsKey($name)) { return }
+  $c = $script:cards[$name]
+  $c.Port = $info.port; $c.Url = $info.url
+  $c.PortText.Text = ":$($info.port)"
+  $c.Endpoint.Text = $info.url
+  $c.Endpoint.ToolTip = $info.url
+  $c.OpenBtn.Tag = $info.url
+  $c.OpenBtn.IsEnabled = (-not [string]::IsNullOrWhiteSpace($info.url))
+}
+
 # 更新卡片数据（由 DispatcherTimer 调用）
 function Update-CardData([string]$n,[string]$st,[string]$h){
   if (-not $script:cards.ContainsKey($n)) { return }
   $c = $script:cards[$n]
+  # 过渡态保护（发现 3）：卡片处于启动中/停止中时，在途的旧探测结果不应覆盖
+  # 用户刚刚触发的过渡态，也不应重新启用按钮——否则慢停止期间显示与实际不符。
+  # 按方向判期望终态：启动中只接受运行中收尾，停止中只接受已停止收尾；
+  # 未安装/未知属异常态（服务被卸载或出错），允许通过。
+  $inTransition = $c.ST -in @('启动中','停止中')
+  if ($inTransition) {
+    $expected = if ($c.ST -eq '启动中') { '运行中' } else { '已停止' }
+    if ($st -ne $expected -and $st -notin @('未安装','未知')) { return }
+  }
   $c.ST = $st; $c.HT = $h
   $running = $st -eq '运行中'
   $healthy = $h -eq '正常'

@@ -21,11 +21,13 @@ function Start-FakePoll([int]$count,[int]$delayMs=0) {
   # Only service query/command boundaries are mocked. Stopped services skip all network I/O.
   $mocks=@'
 function Get-Service {
-  [CmdletBinding()]param([string]$Name)
+  [CmdletBinding()]param([string[]]$Name)
   $sync.probeCount++
   [void]$sync.probeStarted.Set()
   if ($sync.delayMs) { Start-Sleep -Milliseconds $sync.delayMs }
-  [pscustomobject]@{Status='Stopped'}
+  # Real Get-Service returns one object per name with a Name property.
+  # The batch query path indexes results by Name; the mock must match that shape.
+  foreach ($n in $Name) { [pscustomobject]@{ Name=$n; Status='Stopped' } }
 }
 function sc.exe {
   $sync.executed.Enqueue([pscustomobject]@{action=$args[0];name=$args[1];probes=$sync.probeCount})

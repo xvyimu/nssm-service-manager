@@ -30,6 +30,8 @@ $tests = @(
   @{ Name = 'launcher'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-launcher.ps1')) }
   @{ Name = 'GUI smoke'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-gui-smoke.ps1')) }
   @{ Name = 'card actions'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-card-actions.ps1')) }
+  @{ Name = 'card cache'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-card-cache.ps1')) }
+  @{ Name = 'transition race'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-transition-race.ps1')) }
   @{ Name = 'poll commands'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-poll-commands.ps1')) }
   @{ Name = 'security parse'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-security-parse.ps1')) }
   @{ Name = 'service registration'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-add-svc.ps1')) }

@@ -15,9 +15,28 @@ $http = [System.Net.Http.HttpClient]::new()
 $http.Timeout = [TimeSpan]::FromMilliseconds(3000)
 
 # sc.exe 不抛异常，只靠 $LASTEXITCODE；包装成 helper，失败时反馈到 UI 状态栏
+# 常见退出码映射（发现 9）：1056=已在运行 / 1062=未启动 / 1060=未安装 / 1051=禁止启动
+function Convert-ScExitCode([int]$code){
+  switch ($code) {
+    0      { '' }
+    1056   { '已在运行' }
+    1062   { '未启动' }
+    1060   { '服务未安装' }
+    1051   { '禁止启动（禁用或只读）' }
+    1053   { '服务进程无法启动' }
+    1058   { '服务被禁用' }
+    1067   { '进程意外退出' }
+    1072   { '服务已被标记为删除' }
+    default { "错误码 $code" }
+  }
+}
 function Invoke-Sc([string]$verb,[string]$n,[string]$fail){
   sc.exe $verb $n 2>&1 | Out-Null
-  if($LASTEXITCODE -ne 0){ $sync.msg.Enqueue("$n $fail($LASTEXITCODE)"); return $false }
+  if($LASTEXITCODE -ne 0){
+    $reason = Convert-ScExitCode $LASTEXITCODE
+    $sync.msg.Enqueue("$n $fail($LASTEXITCODE $reason)")
+    return $false
+  }
   $true
 }
 
@@ -56,6 +75,27 @@ while(-not $sync.stop){
   [Threading.Monitor]::Enter($sync.gate)
   try { $snap = @($sync.svc.Keys) } finally { [Threading.Monitor]::Exit($sync.gate) }
 
+  # 批量查询服务状态（发现 7）：一次 Get-Service 拿回全部，避免每服务一次 SCM 往返。
+  # 缺失的服务（未安装）会被 Get-Service 抛 ObjectNotFound，下面逐个兜底。
+  $svcStatus = @{}
+  if ($snap.Count) {
+    try {
+      $found = Get-Service -Name $snap -EA Stop
+      # Get-Service 可能返回单个对象或数组；统一成数组再按 Name 索引
+      $foundList = @($found)
+      foreach ($s in $foundList) { $svcStatus[$s.Name] = [string]$s.Status }
+      # 批量查询漏掉的服务（未安装）单独兜底
+      foreach ($n in $snap) {
+        if (-not $svcStatus.ContainsKey($n)) { $svcStatus[$n] = $null }
+      }
+    } catch {
+      # 整批失败（极少见）：退回逐个查询
+      foreach ($n in $snap) {
+        try { $svcStatus[$n] = [string](Get-Service -Name $n -EA Stop).Status } catch { $svcStatus[$n] = $null }
+      }
+    }
+  }
+
   foreach($n in $snap){
     Invoke-PendingCommands
     if ($sync.stop) { break }
@@ -63,11 +103,17 @@ while(-not $sync.stop){
     try { $info = $sync.svc[$n] } finally { [Threading.Monitor]::Exit($sync.gate) }
     if (-not $info) { continue }
 
-    try {
-      $s = Get-Service -Name $n -EA Stop
-      $st = switch([string]$s.Status){ 'Stopped'{'已停止'} 'StartPending'{'启动中'} 'StopPending'{'停止中'} 'Running'{'运行中'} default{'未知'} }
-    } catch {
-      if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { $st='未安装' } else { $st='未知' }
+    $st = switch ($svcStatus[$n]) {
+      'Stopped'      { '已停止' }
+      'StartPending'  { '启动中' }
+      'StopPending'   { '停止中' }
+      'Running'       { '运行中' }
+      default         { '未知' }
+    }
+    if (-not $svcStatus[$n]) {
+      # 批量查询未返回此服务：单独查一次，区分未安装与未知
+      try { $s = Get-Service -Name $n -EA Stop; $st = switch([string]$s.Status){ 'Stopped'{'已停止'} 'Running'{'运行中'} default{'未知'} } }
+      catch { if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { $st='未安装' } else { $st='未知' } }
     }
 
     $h=''

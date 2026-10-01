@@ -93,6 +93,8 @@ function Show-SecurityCheck([string]$n){
 }
 
 # ---- 日志查看器（闭包 hashtable 持久切换状态）----
+# 发现 5：除当前 .out.log / .err.log 外，加轮转历史下拉（nssm AppRotateFiles 产生的
+# .out-*.log / .err-*.log），并在标题栏显示文件大小。22 个轮转文件此前在 GUI 中不可见。
 function Show-Log([string]$n, $owner){
   $f2 = New-Object System.Windows.Window -Property @{
     Title = "$n 日志"; Width = 760; Height = 520; WindowStartupLocation='CenterOwner'
@@ -104,31 +106,84 @@ function Show-Log([string]$n, $owner){
     Background = [System.Windows.Media.Brushes]::White; Foreground = [System.Windows.Media.Brushes]::Black
   }
   $lt = New-Object System.Windows.Controls.StackPanel -Property @{ Orientation='Horizontal' }
-  $state = @{ Current = 'out' }
+  # 当前日志 + 轮转历史下拉；切换时重新加载
+  $state = @{ Current = 'out'; File = $null }
+  $combo = New-Object System.Windows.Controls.ComboBox -Property @{ Margin='4,2'; MinWidth=220 }
+  $refreshBtn = New-Object System.Windows.Controls.Button -Property @{ Content='🔄 刷新'; Margin='4,2' }
+
+  # 枚举当前 + 轮转日志：out/err 是当前，out-YYYYMMDDHHMMSS.log / err-*.log 是轮转
+  function Get-LogFiles([string]$n){
+    $current = @()
+    $rotated = @()
+    $pattern = "{0}.{1}.log" -f $n, '*'
+    $files = @(Get-ChildItem -LiteralPath $logDir -Filter $pattern -File -EA SilentlyContinue |
+      Sort-Object LastWriteTime -Descending)
+    foreach ($f in $files) {
+      $base = $f.BaseName  # e.g. "TTSShim.out" or "TTSShim.out-20260930120000"
+      if ($base -match "\.$n\.(out|err)$") {
+        $current += [pscustomobject]@{ Path=$f.FullName; Label="$($matches[1]) (当前)"; Size=$f.Length }
+      } elseif ($base -match "\.$n\.(out|err)-") {
+        $rotated += [pscustomobject]@{ Path=$f.FullName; Label="$($matches[1]) 轮转 $($f.LastWriteTime.ToString('MM-dd HH:mm'))"; Size=$f.Length }
+      }
+    }
+    # 当前在前，轮转按时间倒序
+    @($current) + @($rotated)
+  }
+
   $load = {
     $box.Clear()
-    $f3 = Join-Path $logDir "$n.$($state.Current).log"
-    if (Test-Path $f3) {
-      # 逐行读，固定容量队列只留最后 500 行——避免把整个大日志物化到内存
-      # （Select-Object -Last 会枚举全部元素到集合，与 File.ReadLines 的惰性抵消）
-      $tail = [System.Collections.Generic.Queue[string]]::new(500)
-      foreach ($l in [System.IO.File]::ReadLines($f3)) {
-        if ($tail.Count -ge 500) { [void]$tail.Dequeue() }
-        $tail.Enqueue($l)
-      }
-      $box.Text = ($tail -join "`r`n")
-      $box.ScrollToEnd()
-    } else { $box.Text = "无日志: $f3" }
+    $f3 = $state.File
+    if (-not $f3 -or -not (Test-Path -LiteralPath $f3)) { $box.Text = "无日志"; return }
+    # 逐行读，固定容量队列只留最后 500 行——避免把整个大日志物化到内存
+    $tail = [System.Collections.Generic.Queue[string]]::new(500)
+    foreach ($l in [System.IO.File]::ReadLines($f3)) {
+      if ($tail.Count -ge 500) { [void]$tail.Dequeue() }
+      $tail.Enqueue($l)
+    }
+    $box.Text = ($tail -join "`r`n")
+    $box.ScrollToEnd()
   }.GetNewClosure()
-  foreach ($d in @(@('输出(out)','out'),@('错误(err)','err'),@('🔄 刷新','reload'))) {
-    $b = New-Object System.Windows.Controls.Button -Property @{ Content=$d[0]; Margin='4,2'; Tag=$d[1] }
-    $b.Add_Click({
-      $tag = $this.Tag
-      if ($tag -in 'out','err') { $state.Current = $tag }
-      & $load
-    }.GetNewClosure())
-    [void]$lt.Children.Add($b)
+
+  # 初始填充下拉
+  $files = Get-LogFiles $n
+  if ($files.Count -eq 0) {
+    [void]$combo.Items.Add((New-Object System.Windows.Controls.ComboBoxItem -Property @{Content='无日志'; Tag=''}))
+  } else {
+    foreach ($fi in $files) {
+      $item = New-Object System.Windows.Controls.ComboBoxItem -Property @{
+        Content = $fi.Label; Tag = $fi.Path
+      }
+      [void]$combo.Items.Add($item)
+    }
+    $combo.SelectedIndex = 0
+    $state.File = $files[0].Path
   }
+  $combo.Add_SelectionChanged({
+    $item = $combo.SelectedItem
+    if ($item -and $item.Tag) { $state.Current = ''; $state.File = [string]$item.Tag; & $load }
+  }.GetNewClosure())
+  $refreshBtn.Add_Click({
+    # 刷新下拉（轮转文件可能新增）并重载当前
+    $oldPath = $state.File
+    $combo.Items.Clear()
+    $files = Get-LogFiles $n
+    if ($files.Count -eq 0) {
+      [void]$combo.Items.Add((New-Object System.Windows.Controls.ComboBoxItem -Property @{Content='无日志'; Tag=''}))
+      $state.File = $null
+    } else {
+      $selIdx = 0
+      for ($i=0; $i -lt $files.Count; $i++) {
+        $item = New-Object System.Windows.Controls.ComboBoxItem -Property @{ Content=$files[$i].Label; Tag=$files[$i].Path }
+        [void]$combo.Items.Add($item)
+        if ($files[$i].Path -eq $oldPath) { $selIdx = $i }
+      }
+      $combo.SelectedIndex = $selIdx
+      $state.File = $files[$selIdx].Path
+    }
+    & $load
+  }.GetNewClosure())
+
+  [void]$lt.Children.Add($combo); [void]$lt.Children.Add($refreshBtn)
   $dock = New-Object System.Windows.Controls.DockPanel
   $dock.LastChildFill = $true
   $lt.SetValue([System.Windows.Controls.DockPanel]::DockProperty, [System.Windows.Controls.Dock]::Top)
