@@ -72,7 +72,7 @@ Write-CrashLog 'WPF assemblies loaded'
 
 # ---- 单实例互斥：重复双击启动器时只保留第一个窗口 ----
 # Mutex 是进程级的，进程退出 OS 自动释放，不会卡死。放在 Add-Type 之后是因为
-# 命中时要用 MessageBox 提示；放在提权之后是为了只让管理员实例占锁。
+# 命中时要静默退出（不弹窗，重复双击是常见操作）；放在提权之后是为了只让管理员实例占锁。
 # AbandonedMutexException：前一个实例被任务管理器杀掉或崩溃时，OS 把所有权
 # 交给当前进程并抛此异常——不是失败，要当成"已获取"，否则第二个实例也起不来。
 $script:appMutex = [System.Threading.Mutex]::new($false, 'Local\service-manager-gui')
