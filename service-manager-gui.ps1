@@ -81,7 +81,6 @@ try { $owned = $script:appMutex.WaitOne(0) }
 catch [System.Threading.AbandonedMutexException] { $owned = $true }
 if (-not $owned) {
   Write-CrashLog 'Already running; another instance holds the mutex'
-  [System.Windows.MessageBox]::Show('服务管理已在运行，请使用已打开的窗口。','服务管理','OK','Information') | Out-Null
   exit 0
 }
 Write-CrashLog 'Single-instance mutex acquired'
