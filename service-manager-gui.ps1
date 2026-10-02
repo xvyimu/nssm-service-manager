@@ -137,6 +137,7 @@ $script:sync = [hashtable]::Synchronized(@{
   svc = $script:svc; queue = $script:queue; cmd = $script:cmdQueue; msg = $script:msgQueue
   stop = $false; gate = [object]::new()
   wake = [Threading.AutoResetEvent]::new($false)
+  nssm = $script:nssm
 })
 $bgRS = [runspacefactory]::CreateRunspace()
 $bgRS.ApartmentState = 'STA'
@@ -177,7 +178,25 @@ $timer = New-Object System.Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromMilliseconds(400)
 $timer.Add_Tick({
   $item = $null
-  while ($script:queue.TryDequeue([ref]$item)) { Update-CardData $item.n $item.st $item.h }
+  while ($script:queue.TryDequeue([ref]$item)) {
+    if ($item.done) {
+      if ($item.act -eq 'remove') {
+        # 删除回执：从 svc 与卡片缓存移除，落盘配置，刷新分页。
+        # UI 线程做配置写与卡片操作（与 Show-Remove 原同步路径对称，只是挪到 ack 收尾）。
+        [Threading.Monitor]::Enter($script:sync.gate)
+        try { $script:svc.Remove($item.n) } finally { [Threading.Monitor]::Exit($script:sync.gate) }
+        $script:cards.Remove($item.n)
+        try { Save-Svc $script:svc } catch { $script:statusBar.Text = "$($item.n) 已删除但配置保存失败：$($_.Exception.Message)" }
+        $script:statusBar.Text = "$($item.n) 已删除"
+        Render-Page
+      } else {
+        # 启停回执：解封按钮与冷却，状态由下一轮探测校正。
+        Update-CardData $item.n $null $null -e $item.e -ack
+      }
+    } else {
+      Update-CardData $item.n $item.st $item.h
+    }
+  }
   # 后台 sc.exe 失败反馈：非空消息覆盖状态栏，否则 4 秒无操作后自动刷新
   $msg = $null
   while ($script:msgQueue.TryDequeue([ref]$msg)) { $script:statusBar.Text = $msg }

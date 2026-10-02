@@ -38,6 +38,7 @@ $tests = @(
   @{ Name = 'service registration'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-add-svc.ps1')) }
   @{ Name = 'config round-trip'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-config.ps1')) }
   @{ Name = 'single instance'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-single-instance.ps1')) }
+  @{ Name = 'remove async'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-remove-async.ps1')) }
 )
 
 foreach ($test in $tests) {

@@ -62,22 +62,8 @@ function Add-SvcFromCli([string]$spec){
   Write-Host "$n 已添加并启动 (port=$p url=$url)"
 }
 
-# 删除服务：先停再删（stop → 轮询 Stopped ≤6s → nssm remove confirm）
-# Wait-Stopped 与 poll.ps1 的 $script:poll 脚本块里那份同构（SYNC: 两处同改）。
-# poll.ps1 的 Wait-Stopped 跑在 runspace 字符串里无法被 UI 线程调用——这里重新定义一份。
-function Wait-Stopped([string]$n,[int]$timeoutMs=6000){
-  $w=0
-  while($w -lt $timeoutMs){
-    try {
-      $s=Get-Service -Name $n -EA Stop
-      if([string]$s.Status -eq 'Stopped'){return $true}
-    } catch {
-      if($_.CategoryInfo.Category -eq 'ObjectNotFound'){return $true}
-    }
-    Start-Sleep -Milliseconds 300; $w+=300
-  }
-  $false
-}
+# Wait-Stopped 抽到 lib/svc-common.ps1，与 poll.ps1 的 runspace 引用同一份实现（原 SYNC 注释消除）。
+. (Join-Path $PSScriptRoot 'svc-common.ps1')
 
 function Remove-NssmService([string]$n){
   sc.exe stop $n 2>&1 | Out-Null
@@ -121,23 +107,17 @@ function Show-Remove([string]$n, $owner){
   $del.Add_Click({
     $script:lastActionAt=[datetime]::Now
     $script:statusBar.Text="正在删除 $n ..."
-    try {
-      Remove-NssmService $n
-    } catch {
-      [System.Windows.MessageBox]::Show($f,$_.Exception.Message,'删除失败','OK','Error') | Out-Null
-      $script:statusBar.Text="$n 删除失败"
-      return
+    # 删除走后台命令队列（act=remove），避免 UI 线程同步等 stop+Wait-Stopped+remove 冻结界面。
+    # 真正的 stop/wait/remove 在 runspace 里执行；这里只关弹窗，回执由 DispatcherTimer 处理。
+    $card = $script:cards[$n]
+    if ($card) {
+      $card.ST='删除中'; $card.Btn.IsEnabled=$false; $card.Btn.Content='删除中'
+      $card.LblSt.Text='删除中'; $card.LblSt.Foreground=[System.Windows.Media.Brushes]::Orange
+      $card.Dot.Fill=[System.Windows.Media.Brushes]::Orange
+      $card.PendingEpoch = (Send-ServiceCommand $n 'remove')
+    } else {
+      Send-ServiceCommand $n 'remove' | Out-Null
     }
-    [Threading.Monitor]::Enter($sync.gate)
-    try { $script:svc.Remove($n) } finally { [Threading.Monitor]::Exit($sync.gate) }
-    # 清掉卡片缓存（发现 1）：否则同名重建会复用旧卡，显示旧端口/URL。
-    $script:cards.Remove($n)
-    try {
-      Save-Svc $script:svc
-    } catch {
-      [System.Windows.MessageBox]::Show($f,"服务已删除但配置保存失败：$($_.Exception.Message)`n请手动从 services.json 移除 $n。",'保存失败','OK','Warning') | Out-Null
-    }
-    $script:statusBar.Text="$n 已删除"
     $f.DialogResult=$true; $f.Close()
   })
 
