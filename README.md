@@ -95,7 +95,18 @@ Copy-Item services.example.json services.json
 | BuddyAPI | 7863 | http://127.0.0.1:7863/panel/ | 独立部署 |
 | TTSShim | 8001 | http://127.0.0.1:8001/health | 本仓 `st-tts-shim/server.mjs`（NSSM `AppDirectory` 指向本目录，`AppEnvironmentExtra` 注入 `TTS_API_KEY`，`AppExit Default=Ignore` 不自动重启） |
 
-> **安全提示（TTS_API_KEY 暴露面）：** NSSM 把 `TTS_API_KEY` 明文写入注册表 `HKLM\SYSTEM\CurrentControlSet\Services\TTSShim\Parameters\AppEnvironmentExtra`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出 65 字符明文密钥。`server.mjs` 支持 `TTS_API_KEY_FILE` 环境变量指向一个仅 Administrators+SYSTEM 可读的密钥文件（优先于 `TTS_API_KEY`），把密钥移出注册表。彻底收紧需由安装脚本把 `Parameters` 键 ACL 收到 `Administrators + SYSTEM`（NSSM 本身不管 ACL）。
+> **安全提示（TTS_API_KEY 暴露面）：** NSSM 把 `TTS_API_KEY` 明文写入注册表 `HKLM\SYSTEM\CurrentControlSet\Services\TTSShim\Parameters\AppEnvironmentExtra`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出 65 字符明文密钥。**推荐用 `TTS_API_KEY_FILE`** 指向一个仅 Administrators+SYSTEM 可读的密钥文件（路径不进注册表，文件权限收口）；`server.mjs` 一旦检测到该变量设置，只从文件读密钥，文件读不出或为空则**拒绝启动，不回落 `TTS_API_KEY`**——防止配了文件却因回落重新把密钥留在注册表。彻底收紧注册表键 ACL 用 `scripts/set-service-params-acl.ps1`（见下）。
+
+### 收紧 Parameters 注册表键 ACL（可选，深度防御）
+
+即便改用 `TTS_API_KEY_FILE`，`Parameters` 键下可能仍有历史 `AppEnvironmentExtra` 残留。本脚本把该键 ACL 从默认的「Users 可读」收紧到 `Administrators + SYSTEM`：
+
+```powershell
+# 管理员 PowerShell
+pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName TTSShim
+```
+
+脚本流程：禁用继承（保留本键显式 ACE、丢掉继承自 `Services` 的 Users 读权限）→ 移除 `BUILTIN\Users` 与 `Everyone` 的所有 Allow ACE → 确保 `Administrators` 与 `SYSTEM` 完全控制 → 读回校验无 Users/Everyone 残留。失败时不自动回退（回退会把权限重新放宽，更危险），提示人工处理。
 
 ## 依赖
 
@@ -120,7 +131,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 ## 测试与截图
 
 ```powershell
-pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 11 项回归
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 12 项 PowerShell 回归
+node --test tests/shim.test.mjs                       # TTSShim node:test 回归（无网络）
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 ```
 
@@ -129,6 +141,8 @@ pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/scree
 按钮与双击共用 `Invoke-CardToggle`，状态校验、8 秒冷却和过渡态只维护一份；`test-card-actions.ps1` 覆盖两个入口的 20 个状态/门闩场景及反馈文案。GUI 与 CLI 的 NSSM 注册配置共用 `Install-NssmService`，各自保留原有输入校验与启动方式。
 
 `Send-ServiceCommand` 统一提交 GUI 命令并触发唤醒；`test-poll-commands.ps1` 用隔离 runspace 验证空闲唤醒、慢探测之间的命令优先、FIFO 与关闭唤醒。正在进行的单次探测或服务命令仍需结束后才能处理后续命令。
+
+CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）+ `node --test tests/shim.test.mjs`（TTSShim 无网络覆盖：缺 key 拒启、`TTS_API_KEY_FILE` 读不出/为空拒启不回落、上游 401 透传、body 超限 413）。
 
 ## 排错
 
@@ -140,7 +154,7 @@ pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/scree
 
 `st-tts-shim/server.mjs` 是一个可选的示例服务本体：StepFun TTS → OpenAI 兼容 `/v1/audio/speech` 薄适配层，零依赖，只靠 Node.js 内置 `http` + 全局 `fetch`。不需要 TTS 的话，从 `services.json` 里删掉 TTSShim 即可，其余功能不受影响。
 
-环境变量（NSSM `AppEnvironmentExtra` 注入 `TTS_API_KEY`，其余可按需加）：
+环境变量（推荐用 `TTS_API_KEY_FILE` 把密钥移出注册表；NSSM `AppEnvironmentExtra` 仅在未配文件时承载 `TTS_API_KEY`）：
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
@@ -150,13 +164,13 @@ pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/scree
 | `TTS_MODEL` | `stepaudio-2.5-tts` | 缺省 model |
 | `TTS_DEFAULT_VOICE` | `lengyanyujie` | 请求未带 voice 时的缺省音色 |
 | `TTS_AUTH_STYLE` | `bearer` | 上游鉴权风格（`bearer` 或原样放 key） |
-| `TTS_API_KEY` / `STEPFUN_API_KEY` | — | 上游密钥，缺失拒绝启动 |
-| `TTS_API_KEY_FILE` | — | 密钥文件路径（优先于 `TTS_API_KEY`）；把密钥移出注册表 |
+| `TTS_API_KEY` / `STEPFUN_API_KEY` | — | 上游密钥（环境变量面，会进注册表）；未设 `TTS_API_KEY_FILE` 时用此面，缺失拒绝启动 |
+| `TTS_API_KEY_FILE` | — | 密钥文件路径（推荐）；**一旦设置，只从文件读，文件读不出/为空则拒启不回落 `TTS_API_KEY`** |
 | `TTS_TIMEOUT_MS` | 120000 | 上游请求超时 |
 
 打穿测试：`pwsh -NoProfile -File st-tts-shim/test-speech.ps1`
 
-> **安全提示（TTS_API_KEY 暴露面）：** NSSM 把 `TTS_API_KEY` 明文写入注册表 `HKLM\SYSTEM\CurrentControlSet\Services\TTSShim\Parameters\AppEnvironmentExtra`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出明文密钥。`server.mjs` 支持 `TTS_API_KEY_FILE` 环境变量指向一个仅 Administrators+SYSTEM 可读的密钥文件（优先于 `TTS_API_KEY`），把密钥移出注册表。彻底收紧需由安装脚本把 `Parameters` 键 ACL 收到 `Administrators + SYSTEM`（NSSM 本身不管 ACL）。
+> **安全提示（TTS_API_KEY 暴露面）：** 见上方「安全提示」与「收紧 Parameters 注册表键 ACL」两节——推荐 `TTS_API_KEY_FILE` + `scripts/set-service-params-acl.ps1` 双管齐下，把密钥既移出注册表、又收紧残留键 ACL。
 
 ## 许可
 

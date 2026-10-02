@@ -15,6 +15,9 @@
 //   TTS_API_KEY       上游密钥（或 STEPFUN_API_KEY），缺失拒绝启动
 //   TTS_API_KEY_FILE  密钥文件路径（优先于 TTS_API_KEY；密钥移出注册表，
 //                     避免 NSSM AppEnvironmentExtra 对 BUILTIN\Users 可读）
+//                     一旦设置，只从文件读密钥；文件读不出或为空则拒绝启动，
+//                     不回落 TTS_API_KEY——防止配置了文件却因回落重新把密钥
+//                     留在注册表里被本机标准用户读出。
 //   TTS_TIMEOUT_MS    上游请求超时（默认 120000）
 //
 // 流式响应客户端断开保护：res.on('error') + 流式段独立 try，
@@ -33,17 +36,23 @@ const TTS_DEFAULT_VOICE = process.env.TTS_DEFAULT_VOICE || 'lengyanyujie';
 const TTS_AUTH_STYLE = (process.env.TTS_AUTH_STYLE || 'bearer').toLowerCase();
 // 密钥文件优先：TTS_API_KEY_FILE 指向一个仅 Administrators+SYSTEM 可读的文件，
 // 密钥不落 NSSM AppEnvironmentExtra（该注册表值对 BUILTIN\Users 可读——发现 2）。
-// 文件读取失败或为空时回落到 TTS_API_KEY / STEPFUN_API_KEY 环境变量。
+// 一旦设置了 TTS_API_KEY_FILE，只从文件读密钥；文件读不出或为空则拒绝启动，
+// 不回落 TTS_API_KEY——防止配置了文件却因回落重新把密钥留在注册表里被本机标准用户读出。
 function resolveApiKey() {
   const keyFile = process.env.TTS_API_KEY_FILE;
   if (keyFile) {
+    let raw = '';
     try {
-      const raw = fs.readFileSync(keyFile, 'utf8').trim();
-      if (raw) return raw;
-      console.error(`[shim] TTS_API_KEY_FILE 指向的文件为空：${keyFile}`);
+      raw = fs.readFileSync(keyFile, 'utf8').trim();
     } catch (err) {
-      console.error(`[shim] 读取 TTS_API_KEY_FILE 失败：${keyFile} (${err?.code || err?.message})，回落到环境变量`);
+      console.error(`[shim] TTS_API_KEY_FILE 已设置但读取失败：${keyFile} (${err?.code || err?.message})；拒绝启动（不回落 TTS_API_KEY，避免密钥留在注册表）。`);
+      return '';
     }
+    if (!raw) {
+      console.error(`[shim] TTS_API_KEY_FILE 指向的文件为空：${keyFile}；拒绝启动。`);
+      return '';
+    }
+    return raw;
   }
   return process.env.TTS_API_KEY || process.env.STEPFUN_API_KEY || '';
 }
@@ -53,7 +62,11 @@ const UPSTREAM_URL = `${TTS_BASE}/audio/speech`;
 const UPSTREAM_TIMEOUT_MS = Number(process.env.TTS_TIMEOUT_MS || 120_000);
 
 if (!API_KEY) {
-  console.error('[shim] 缺少 TTS_API_KEY（或 STEPFUN_API_KEY）环境变量，拒绝启动。');
+  if (process.env.TTS_API_KEY_FILE) {
+    console.error('[shim] TTS_API_KEY_FILE 已设置但密钥不可用，拒绝启动（不回落 TTS_API_KEY，避免密钥留在注册表）。');
+  } else {
+    console.error('[shim] 缺少 TTS_API_KEY（或 STEPFUN_API_KEY）环境变量，拒绝启动。');
+  }
   process.exit(1);
 }
 
@@ -90,11 +103,13 @@ function readBody(req, limit = 1 << 20) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let over = false;
     req.on('data', (c) => {
+      if (over) return; // 超限后停止累加，但不 destroy socket——响应仍要写回
       size += c.length;
       if (size > limit) {
+        over = true;
         reject(new Error('body too large'));
-        req.destroy();
         return;
       }
       chunks.push(c);
