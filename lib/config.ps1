@@ -8,7 +8,11 @@ $script:config = [ordered]@{
   HttpTimeoutMs       = 3000     # HTTP 探测超时（poll.ps1 共享 HttpClient.Timeout，本地面板冷启动宽限）
   CrashLogMaxBytes    = 524288   # gui-crash.log 轮转阈值（512 KiB，超则挪成 .1）
   ToggleCooldownMs    = 8000     # 双击启停冷却（card.ps1 Invoke-CardToggle）
-  WaitStoppedTimeoutMs = 6000    # 重启/删除前轮询 Stopped 的上限（svc-common.ps1 Wait-Stopped）
+  WaitStoppedTimeoutMs = 6000    # 重启/删除前轮询 Stopped 的上限（add-svc.ps1 / poll.ps1 Wait-Stopped）
+  # ---- 可选托盘行为（默认全关，保持历史行为：最小化进任务栏、关闭即退出）----
+  TrayEnabled     = $false   # 总开关；关时下面两项无效，也不加载 WinForms
+  MinimizeToTray  = $false   # 点最小化收进托盘（需 TrayEnabled）
+  CloseToTray     = $false   # 关闭窗口收进托盘而非退出（需 TrayEnabled）
 }
 
 # 可选覆盖：仓根 config.json 存在时按 key 覆盖（未知 key 忽略，类型强转）。
