@@ -1,6 +1,6 @@
 #requires -Version 7.0
 # service-manager-gui.ps1 — NSSM 服务管理 GUI（WPF 重构）
-# 六卡片主视图 · 系统字体 · 双击防抖(8s+健康门闩) · 无黑窗口 · 无托盘
+# 六卡片主视图 · 系统字体 · 双击防抖(8s+健康门闩) · 无黑窗口 · 托盘可选(config.TrayEnabled)
 # 配置: services.json · logs/ · lib/*.ps1
 #
 # 启动路径（任选其一，都不闪黑窗）：
@@ -123,6 +123,7 @@ if (-not (Test-Path -LiteralPath $script:nssm)) {
 # ---- 加载模块 ----
 . "$root\lib\theme.ps1"
 . "$root\lib\util.ps1"
+. "$root\lib\tray.ps1"   # 可选托盘：只定义纯函数与惰性初始化，未启用不加载 WinForms
 . "$root\lib\poll.ps1"
 . "$root\lib\add-svc.ps1"
 . "$root\lib\card.ps1"
@@ -170,6 +171,12 @@ function Stop-Background {
 $win = New-MainWindow
 if (Test-Path -LiteralPath $script:iconPath) {
   $win.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create([Uri]$script:iconPath)
+}
+# 托盘图标：仅在 config.TrayEnabled 时创建（按需加载 WinForms，关闭时零成本）。
+# 在窗口构建后初始化——托盘的「显示主窗口」菜单需要 $win 引用。
+if ($script:config.TrayEnabled) {
+  Initialize-Tray $win
+  Write-CrashLog 'Tray icon initialized'
 }
 # SourceInitialized 后取 hwnd 调 DwmSetWindowAttribute（handle 已创建，最早能设 Mica 的时机）
 $win.Add_SourceInitialized({

@@ -1,7 +1,9 @@
 # lib/xaml.ps1 — 六卡片主视图：3 列 × 2 行，窗口缩放时同步伸展
 # 每页数量从 lib/config.ps1 取（默认 6）；UniformGrid 列数随之计算。
-# 自加载 config：测试 dot-source 本模块时未必先加载 config.ps1，此处自洽
+# 自加载 config / tray：测试 dot-source 本模块时未必先加载，此处自洽。
+# tray.ps1 只定义纯函数与惰性 Initialize-Tray，dot-source 本身不加载 WinForms。
 if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
+if (-not (Get-Command Get-CloseAction -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot 'tray.ps1') }
 $script:PER_PAGE = [int]$script:config.PerPage
 
 function New-MainWindow {
@@ -100,10 +102,25 @@ function New-MainWindow {
       & $script:toggleMax
     } else { $script:window.DragMove() }
   } })
-  $btnMin.Add_Click({ $script:window.WindowState='Minimized' })
+  $btnMin.Add_Click({
+    if ((Get-MinimizeAction $script:config) -eq 'tray') {
+      # 收进托盘：隐藏窗口（不进任务栏），托盘图标已在主入口初始化
+      $script:window.Hide()
+    } else {
+      $script:window.WindowState='Minimized'
+    }
+  })
   $btnMax.Add_Click($script:toggleMax)
   $btnClose.Add_Click({ $script:window.Close() })
-  $win.Add_Closed({ Stop-Background })
+  # 关闭策略：CloseToTray 且非托盘「退出」时取消关闭、隐藏到托盘。
+  # trayExitRequested 由托盘菜单「退出」置位——那条路径必须放行，否则退不掉。
+  $win.Add_Closing({ param($s,$e)
+    if ((Get-CloseAction $script:config) -eq 'tray' -and -not $script:trayExitRequested) {
+      $e.Cancel = $true
+      $script:window.Hide()
+    }
+  })
+  $win.Add_Closed({ Stop-Background; Remove-Tray })
   $btnAdd.Add_Click({ Show-Add $script:window; Render-Page })
   $btnPrev.Add_Click({ if ($script:curPage -gt 0) { $script:curPage--; Render-Page } })
   $btnNext.Add_Click({
