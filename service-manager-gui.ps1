@@ -31,9 +31,13 @@ if ($env:NSSM_PATH -and (Test-Path -LiteralPath $env:NSSM_PATH)) {
 
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force $logDir | Out-Null }
 
+# 可调常量先于 crashLog 加载——Write-CrashLog 首次调用在提权检测处（下方 ~70 行），
+# 早于原模块加载区（~120 行），不提前就会读到未初始化的 $script:config。
+. "$root\lib\config.ps1"
+
 # 启动链路日志必须早于提权和 WPF 加载；仅记录阶段，不记录参数或配置值。
 $script:crashLog = "$logDir\gui-crash.log"
-$script:crashLogMaxBytes = 524288  # 512 KiB；超过则轮转一份 .1（发现 14：无轮转无上限会无限增长）
+$script:crashLogMaxBytes = [int]$script:config.CrashLogMaxBytes  # 默认 512 KiB；超则轮转一份 .1（发现 14）
 function Write-CrashLog([string]$m){
   try {
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') pid=$PID $m`r`n"
@@ -138,6 +142,10 @@ $script:sync = [hashtable]::Synchronized(@{
   stop = $false; gate = [object]::new()
   wake = [Threading.AutoResetEvent]::new($false)
   nssm = $script:nssm
+  # 探测超时注入 runspace（poll.ps1 脚本块从 $sync 读，测试夹具未设时回落默认）
+  tcpTimeoutMs         = [int]$script:config.TcpTimeoutMs
+  httpTimeoutMs        = [int]$script:config.HttpTimeoutMs
+  waitStoppedTimeoutMs = [int]$script:config.WaitStoppedTimeoutMs
 })
 $bgRS = [runspacefactory]::CreateRunspace()
 $bgRS.ApartmentState = 'STA'

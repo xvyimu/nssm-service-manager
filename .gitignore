@@ -4,6 +4,9 @@ logs/*.log
 # 本机实配（服务清单）——仓里只放 services.example.json
 services.json
 
+# 本机实配（可调常量覆盖）——仓里只放 config.example.json
+config.json
+
 # 密钥文件（TTS_API_KEY_FILE 指向，ACL 仅 Administrators+SYSTEM）
 st-tts-shim/.tts-key
 

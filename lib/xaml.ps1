@@ -1,5 +1,8 @@
 # lib/xaml.ps1 — 六卡片主视图：3 列 × 2 行，窗口缩放时同步伸展
-$script:PER_PAGE = 6
+# 每页数量从 lib/config.ps1 取（默认 6）；UniformGrid 列数随之计算。
+# 自加载 config：测试 dot-source 本模块时未必先加载 config.ps1，此处自洽
+if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
+$script:PER_PAGE = [int]$script:config.PerPage
 
 function New-MainWindow {
   $win = New-Object System.Windows.Window -Property @{
@@ -63,7 +66,11 @@ function New-MainWindow {
   [void]$toolbar.Children.Add($actions)
   [System.Windows.Controls.DockPanel]::SetDock($toolbar, 'Top')
   [void]$content.Children.Add($toolbar)
-  $cardPanel = New-Object System.Windows.Controls.Primitives.UniformGrid -Property @{Columns=3; Rows=2}
+  # UniformGrid 列数 = PER_PAGE 的约数里最接近 2 行排满的那个；默认 3 列 × 2 行（PER_PAGE=6）。
+  # 非 6 时取上取整 sqrt：PER_PAGE=4 → 2×2，PER_PAGE=8 → 3×3（3 行），9 → 3×3。
+  $cols = [math]::Ceiling([math]::Sqrt($script:PER_PAGE))
+  $rows = [math]::Ceiling($script:PER_PAGE / $cols)
+  $cardPanel = New-Object System.Windows.Controls.Primitives.UniformGrid -Property @{Columns=$cols; Rows=$rows}
   [void]$content.Children.Add($cardPanel)
   [void]$grid.Children.Add($content); [System.Windows.Controls.Grid]::SetRow($content,1)
 

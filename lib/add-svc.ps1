@@ -1,6 +1,8 @@
 # lib/add-svc.ps1 — 添加服务（GUI 简化 + CLI agent 友好）
 # 人：3 必填（服务名/exe/端口）+ 高级折叠（URL/工作目录/启动参数/env）
 # agent：-Add Name,Port,Exe[,Url,Dir,Args,Env] 不弹 GUI
+# 自加载 config：CLI 模式（-Add）分支不加载 config.ps1，Wait-Stopped 需要默认值
+if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
 
 # GUI/CLI 共用 NSSM 注册与配置；输入校验、错误显示、保存和启动仍由调用方处理。
 function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$envPairs){
@@ -63,6 +65,7 @@ function Add-SvcFromCli([string]$spec){
 }
 
 # Wait-Stopped 抽到 lib/svc-common.ps1，与 poll.ps1 的 runspace 引用同一份实现（原 SYNC 注释消除）。
+# 该实现读 $sync 注入的超时（UI 线程里即 $script:sync.waitStoppedTimeoutMs），无 $sync 时回落 config.ps1。
 . (Join-Path $PSScriptRoot 'svc-common.ps1')
 
 function Remove-NssmService([string]$n){
