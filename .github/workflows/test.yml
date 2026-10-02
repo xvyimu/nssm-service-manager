@@ -1,0 +1,17 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  regression:
+    # WPF/STA 测试需要 Windows runner；pwsh 7 已预装
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run parser check and regression tests
+        shell: pwsh
+        run: ./tests/run-all.ps1

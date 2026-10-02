@@ -1,8 +1,28 @@
-# service-manager
+# nssm-service-manager
+
+[![test](https://github.com/xvyimu/nssm-service-manager/actions/workflows/test.yml/badge.svg)](https://github.com/xvyimu/nssm-service-manager/actions/workflows/test.yml)
 
 本地 NSSM Windows 服务的统一管理 GUI——PowerShell 7 + WPF，卡片式启停/健康探测/日志查看，零外部 npm 依赖。
 
 ![主界面](assets/screenshot.png)
+
+## 快速开始
+
+```powershell
+# 1. 装依赖（NSSM 用 scoop，或自行放置后设 NSSM_PATH）
+scoop install nssm
+
+# 2. 复制示例配置
+Copy-Item services.example.json services.json
+
+# 3. 跑回归测试（不需要管理员）
+pwsh -NoProfile -File tests/run-all.ps1
+
+# 4. 启动 GUI（会弹 UAC，NSSM/sc.exe 需要管理员）
+pwsh -NoProfile -File service-manager-gui.ps1
+```
+
+双击入口是 `launch.vbs`（wscript 无控制台，不闪黑窗）。
 
 ## 文件
 
@@ -21,18 +41,19 @@
 | `st-tts-shim/server.mjs` | TTSShim 服务本体：StepFun TTS → OpenAI 兼容 `/v1/audio/speech` 薄适配层 |
 | `st-tts-shim/test-speech.ps1` | TTSShim 打穿测试脚本 |
 | `tests/run-all.ps1` | 统一执行 PowerShell 语法检查和全部回归测试 |
+| `tests/make-screenshot.ps1` | 离屏渲染主窗口导出 `assets/screenshot.png` |
 | `logs/` | NSSM 服务运行日志（`.out.log` / `.err.log`，git 忽略） |
 
 ## 启动
 
-桌面快捷方式 `服务管理.lnk` → `launch.vbs`（wscript 无控制台，不闪黑窗）→ UAC → 管理员 GUI。
+双击 `launch.vbs`（wscript 无控制台，不闪黑窗）→ UAC → 管理员 GUI。也可以直接 `pwsh -NoProfile -File service-manager-gui.ps1`（非管理员时脚本会用同一个 `launch.vbs` 提权）。
 
-脚本会自动请求 UAC 提权（NSSM/sc.exe 需要管理员权限）。启动时若检测不到 NSSM（`~/scoop/apps/nssm/current/nssm.exe`）会弹窗提示安装。进程声明 DPI Aware，高缩放屏下卡片不模糊。
+NSSM 路径按三档探测：`$env:NSSM_PATH` → `Get-Command nssm.exe` → scoop 安装路径（`~/scoop/apps/nssm/current/nssm.exe`）。都找不到时弹窗提示安装。进程声明 DPI Aware，高缩放屏下卡片不模糊。
 
 ## 配置层（防漂移）
 
 - **`services.json` 是 SSOT**——GUI 运行时增删服务会原子写回它（`$PID.$guid.tmp` → `Replace`）。
-- `lib/util.ps1` 内 `$default` 是**兜底**：仅当 `services.json` 不存在或 JSON 解析失败时使用，并在状态栏提示。**新增服务请走 GUI「添加」或 CLI `-Add`**——NSSM 注册必须由脚本完成（stdout/stderr/stop 超时/启动类型/日志轮转一并设置）。
+- `lib/util.ps1` 的 `Load-Svc` 有回落链：`services.json` → `services.example.json` → 空清单。前者缺失或 JSON 解析失败时读示例清单（并在状态栏提示），首次运行不会是一片空白。**新增服务请走 GUI「添加」或 CLI `-Add`**——NSSM 注册必须由脚本完成（stdout/stderr/stop 超时/启动类型/日志轮转一并设置）。
 
 ## 功能
 
@@ -79,28 +100,12 @@ Copy-Item services.example.json services.json
 ## 依赖
 
 - PowerShell 7（`pwsh`）
-- NSSM 2.24（scoop 安装，路径 `~/scoop/apps/nssm/current/nssm.exe`）
+- NSSM 2.24（scoop 安装，或自备后设 `NSSM_PATH`）
 - Node.js 18+（仅 TTSShim 需要，内置 `http` + 全局 `fetch`，无 npm 依赖）
-
-## 启动排错与本地验证
-
-`launch.vbs` 必须保持纯 ASCII：Windows Script Host 按系统 ANSI 代码页读取，UTF-8 中文注释在部分系统会触发 `800A0400` 编译错误。桌面快捷方式与非管理员 PowerShell 入口共用这个启动器。
-
-`logs/gui-crash.log` 记录管理员状态、WPF 加载、窗口渲染和退出阶段，不记录 CLI 参数或环境变量。只有启动器退出码为 0 不能证明窗口已出现，应检查 `Window content rendered` 或实际窗口。
-
-```powershell
-pwsh -NoProfile -File tests/run-all.ps1
-```
-
-该入口先解析全部 PowerShell 文件，再执行 VBS 编译与 UAC 守卫断言、3×2 布局与缩放、卡片启停门闩、翻页冷却、卡片缓存清理与重建、过渡态竞态保护、后台命令唤醒、菜单和 CLI 注册参数测试。NSSM、服务启停、配置保存及菜单的外部操作采用替身，不会注册测试服务或改动 `services.json`。真实 UAC、系统 Mica 效果与 NSSM 服务生命周期需在本机交互验证。
-
-按钮与双击共用 `Invoke-CardToggle`，状态校验、8 秒冷却和过渡态只维护一份；`test-card-actions.ps1` 覆盖两个入口的 20 个状态/门闩场景及反馈文案。GUI 与 CLI 的 NSSM 注册配置共用 `Install-NssmService`，各自保留原有输入校验与启动方式。
-
-`Send-ServiceCommand` 统一提交 GUI 命令并触发唤醒；`test-poll-commands.ps1` 用隔离 runspace 验证空闲唤醒、慢探测之间的命令优先、FIFO 与关闭唤醒。正在进行的单次探测或服务命令仍需结束后才能处理后续命令。
 
 ## 添加新服务
 
-**GUI**：工具栏「➕ 添加服务」→ 3 必填（服务名/端口/可执行文件）+ 高级折叠（URL/工作目录/启动参数/环境变量）。
+**GUI**：工具栏「添加服务」→ 3 必填（服务名/端口/可执行文件）+ 高级折叠（URL/工作目录/启动参数/环境变量）。
 
 **CLI（agent 友好）**：
 ```
@@ -110,9 +115,30 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 
 环境变量格式 `KEY=VAL,KEY2=VAL2`（GUI）或 `KEY=VAL;KEY2=VAL2`（CLI，分号分隔）。NSSM `AppEnvironmentExtra` 是整列表替换。
 
-## TTSShim 重建
+服务名限 `A-Za-z0-9_.-`，可执行文件路径必须存在——两条入口都校验。
 
-`st-tts-shim/server.mjs` 是 2026-09-27 按 `logs/TTSShim.out.log` 启动横幅与记忆里的行为契约重建的（原版随 `D:\orca\.scratch` 被磁盘清理误删）。零依赖，只靠 Node.js 内置 `http` + 全局 `fetch`。
+## 测试与截图
+
+```powershell
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 11 项回归
+pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
+```
+
+`run-all.ps1` 先解析全部 PowerShell 文件，再执行 VBS 编译与 UAC 守卫断言、3×2 布局与缩放、卡片启停门闩、翻页冷却、卡片缓存清理与重建、过渡态竞态保护、后台命令唤醒、菜单和 CLI 注册参数测试。NSSM、服务启停、配置保存及菜单的外部操作采用替身，不会注册测试服务或改动 `services.json`。真实 UAC、系统 Mica 效果与 NSSM 服务生命周期需在本机交互验证。
+
+按钮与双击共用 `Invoke-CardToggle`，状态校验、8 秒冷却和过渡态只维护一份；`test-card-actions.ps1` 覆盖两个入口的 20 个状态/门闩场景及反馈文案。GUI 与 CLI 的 NSSM 注册配置共用 `Install-NssmService`，各自保留原有输入校验与启动方式。
+
+`Send-ServiceCommand` 统一提交 GUI 命令并触发唤醒；`test-poll-commands.ps1` 用隔离 runspace 验证空闲唤醒、慢探测之间的命令优先、FIFO 与关闭唤醒。正在进行的单次探测或服务命令仍需结束后才能处理后续命令。
+
+## 排错
+
+`launch.vbs` 必须保持纯 ASCII：Windows Script Host 按系统 ANSI 代码页读取，UTF-8 中文注释在部分系统会触发 `800A0400` 编译错误。桌面快捷方式与非管理员 PowerShell 入口共用这个启动器。
+
+`logs/gui-crash.log` 记录管理员状态、WPF 加载、窗口渲染和退出阶段，不记录 CLI 参数或环境变量。只有启动器退出码为 0 不能证明窗口已出现，应检查 `Window content rendered` 或实际窗口。
+
+## 内置 TTSShim（可选）
+
+`st-tts-shim/server.mjs` 是一个可选的示例服务本体：StepFun TTS → OpenAI 兼容 `/v1/audio/speech` 薄适配层，零依赖，只靠 Node.js 内置 `http` + 全局 `fetch`。不需要 TTS 的话，从 `services.json` 里删掉 TTSShim 即可，其余功能不受影响。
 
 环境变量（NSSM `AppEnvironmentExtra` 注入 `TTS_API_KEY`，其余可按需加）：
 
@@ -125,7 +151,13 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 | `TTS_DEFAULT_VOICE` | `lengyanyujie` | 请求未带 voice 时的缺省音色 |
 | `TTS_AUTH_STYLE` | `bearer` | 上游鉴权风格（`bearer` 或原样放 key） |
 | `TTS_API_KEY` / `STEPFUN_API_KEY` | — | 上游密钥，缺失拒绝启动 |
-| `TTS_API_KEY_FILE` | — | 密钥文件路径（优先于 `TTS_API_KEY`）；把密钥移出注册表，避免 `AppEnvironmentExtra` 对 `BUILTIN\Users` 可读 |
+| `TTS_API_KEY_FILE` | — | 密钥文件路径（优先于 `TTS_API_KEY`）；把密钥移出注册表 |
 | `TTS_TIMEOUT_MS` | 120000 | 上游请求超时 |
 
 打穿测试：`pwsh -NoProfile -File st-tts-shim/test-speech.ps1`
+
+> **安全提示（TTS_API_KEY 暴露面）：** NSSM 把 `TTS_API_KEY` 明文写入注册表 `HKLM\SYSTEM\CurrentControlSet\Services\TTSShim\Parameters\AppEnvironmentExtra`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出明文密钥。`server.mjs` 支持 `TTS_API_KEY_FILE` 环境变量指向一个仅 Administrators+SYSTEM 可读的密钥文件（优先于 `TTS_API_KEY`），把密钥移出注册表。彻底收紧需由安装脚本把 `Parameters` 键 ACL 收到 `Administrators + SYSTEM`（NSSM 本身不管 ACL）。
+
+## 许可
+
+MIT，见 `LICENSE`。

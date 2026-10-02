@@ -1,27 +1,31 @@
 # lib/util.ps1 — 配置持久化 · NSSM 操作 · 安全检查 · 日志
 
-# ---- 配置层（services.json 是 SSOT，$default 是兜底）----
-$script:default = [ordered]@{
-  'NewAPI'=@{port=3000;url='http://127.0.0.1:3000'}; 'Router9'=@{port=20128;url='http://127.0.0.1:20128/dashboard'}
-  'OmniRoute'=@{port=20129;url='http://127.0.0.1:20129/dashboard'}; 'CPA'=@{port=8317;url='http://127.0.0.1:8317/management.html'}
-  'WorkBuddy2API'=@{port=7863;url='http://127.0.0.1:7863/panel/'}; 'TTSShim'=@{port=8001;url='http://127.0.0.1:8001/health'}
-}
+# ---- 配置层（services.json 是 SSOT，services.example.json 是兜底）----
+# 兜底直接读仓里的示例清单，不在源码里再抄一份服务名（避免双源漂移）。
 $script:configWarning = $null
 
-function Load-Svc {
-  if (-not (Test-Path $cfg)) { return $script:default }
-  try {
-    $j = Get-Content $cfg -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
-    $o = [ordered]@{}; foreach ($k in $j.Keys) {
-      $p = [int]$j[$k].port; $u = [string]$j[$k].url
-      if ($p -lt 1 -or $p -gt 65535) { throw "$k 端口非法: $p" }
-      $o[$k] = @{ port = $p; url = $u }
-    }
-    $o
-  } catch {
-    $script:configWarning = $_.Exception.Message
-    $script:default
+function Read-SvcFile([string]$path){
+  $j = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
+  $o = [ordered]@{}; foreach ($k in $j.Keys) {
+    $p = [int]$j[$k].port; $u = [string]$j[$k].url
+    if ($p -lt 1 -or $p -gt 65535) { throw "$k 端口非法: $p" }
+    $o[$k] = @{ port = $p; url = $u }
   }
+  $o
+}
+
+function Load-Svc {
+  if (Test-Path $cfg) {
+    try { return Read-SvcFile $cfg }
+    catch { $script:configWarning = $_.Exception.Message }
+  }
+  # 兜底：services.json 缺失或损坏时读示例清单，让首次运行有内容可看
+  $example = Join-Path (Split-Path $cfg -Parent) 'services.example.json'
+  if (Test-Path $example) {
+    try { return Read-SvcFile $example }
+    catch { if (-not $script:configWarning) { $script:configWarning = $_.Exception.Message } }
+  }
+  [ordered]@{}
 }
 
 # 原子写回：$PID.$guid.tmp → Replace（避免写一半停电留下半截 JSON）
