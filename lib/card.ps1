@@ -39,7 +39,9 @@ function Invoke-CardToggle($card, [string]$source='Button') {
   $card.LblSt.Foreground=[System.Windows.Media.Brushes]::Orange
   $card.Dot.Fill=[System.Windows.Media.Brushes]::Orange
   $card.Btn.Content=$card.ST
-  Send-ServiceCommand $name $action
+  # 记录本次命令纪元：Update-CardData 只接受 epoch ≥ 这个值的结果/回执。
+  # 旧探测（epoch 更小或为 0）在过渡态期间直接丢，不再靠方向匹配做症状层补丁。
+  $card.PendingEpoch = (Send-ServiceCommand $name $action)
   $script:statusBar.Text="$name $($card.ST)..."
 }
 
@@ -99,6 +101,7 @@ function New-Card([string]$name, $info){
   $border | Add-Member -NotePropertyMembers @{
     SvcName=$name; Port=$info.port; Url=$info.url
     ST='查询中'; HT=''; LastToggle=[datetime]::MinValue; ReadyToToggle=$false
+    PendingEpoch=0
     Dot=$dot; LblSt=$lblSt; LblUp=$lblUp; Btn=$btn
     PortText=$portText; Endpoint=$endpoint; OpenBtn=$open
   }
@@ -154,14 +157,26 @@ function Update-CardInfo([string]$name, $info){
 }
 
 # 更新卡片数据（由 DispatcherTimer 调用）
-function Update-CardData([string]$n,[string]$st,[string]$h){
+# 调用方据 $item.done 分流：命令完成回执走 -ack 分支，探测结果走普通分支。
+# 普通探测结果不带 epoch（视为 0）；过渡态期间 PendingEpoch>0 时旧探测一律丢弃，
+# 直到命令完成回执解封按钮，下一轮探测自然落到终态。原「方向匹配」症状层补丁消除。
+function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ack){
   if (-not $script:cards.ContainsKey($n)) { return }
   $c = $script:cards[$n]
+  if ($ack) {
+    # 命令完成回执：epoch 低于卡片当前则丢弃（旧命令的回执不应解封新命令的过渡态）。
+    if ($e -lt $c.PendingEpoch) { return }
+    $c.Btn.IsEnabled = $true
+    $c.ReadyToToggle = $true
+    $c.LastToggle = [datetime]::Now
+    return
+  }
   # 过渡态保护（发现 3）：卡片处于启动中/停止中时，在途的旧探测结果不应覆盖
   # 用户刚刚触发的过渡态，也不应重新启用按钮——否则慢停止期间显示与实际不符。
   # 按方向判期望终态：启动中只接受运行中收尾，停止中只接受已停止收尾；
   # 未安装/未知属异常态（服务被卸载或出错），允许通过。
-  # Altitude 注：这是症状层补丁，根因是缺少命令纪元；个人工具暂不引入。
+  # 命令纪元（PendingEpoch）用于 ack 回执过滤：旧命令的回执不应解封新命令的过渡态。
+  # 普通探测仍按方向匹配收尾——服务真正进入终态时应当让过渡态退出。
   $transitionExpect = @{ '启动中' = '运行中'; '停止中' = '已停止' }
   if ($transitionExpect.ContainsKey($c.ST)) {
     $expected = $transitionExpect[$c.ST]

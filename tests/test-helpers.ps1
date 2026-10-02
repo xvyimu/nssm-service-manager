@@ -27,6 +27,7 @@ function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$d
     probeStarted = [Threading.AutoResetEvent]::new($false)
     executed     = [Collections.Concurrent.ConcurrentQueue[object]]::new()
     executedReady = [Threading.AutoResetEvent]::new($false)
+    nssm = 'Invoke-TestNssm'
   })
   $rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState = 'STA'; $rs.Open()
   $rs.SessionStateProxy.SetVariable('sync', $shared)
@@ -43,8 +44,15 @@ function sc.exe {
   [void]`$sync.executedReady.Set()
   `$global:LASTEXITCODE=0
 }
+function Invoke-TestNssm {
+  # remove confirm 等——记一次 nssm 调用，成功退出
+  `$sync.executed.Enqueue([pscustomobject]@{action='nssm';name=`$args[1];probes=`$sync.probeCount})
+  `$global:LASTEXITCODE=0
+}
 "@
   $ps = [powershell]::Create().AddScript($mocks).AddScript($script:poll); $ps.Runspace = $rs
+  # runspace 里 `& $sync.nssm remove ...` 解析到 sync.nssm 字符串 'Invoke-TestNssm'，
+  # 再由 runspace 内定义的同名函数承接。
   [pscustomobject]@{ Sync = $shared; Runspace = $rs; PowerShell = $ps; Handle = $ps.BeginInvoke() }
 }
 

@@ -9,7 +9,11 @@
 # - 结果仍是字符串，runsapce 不持有 UI 对象
 
 # 后台探测脚本块（字符串，在 runspace 里执行）
-$script:poll = @'
+# Wait-Stopped 抽到 lib/svc-common.ps1，与 add-svc.ps1（UI 线程）引用同一份实现。
+# runspace 不能 dot-source 外部文件（脚本块字符串里没有 $PSScriptRoot），构造时把 svc-common.ps1
+# 的文本前置进 $script:poll——UI 线程与后台引用的是同一份源码，原「SYNC: 两处同改」注释消除。
+$script:pollCommon = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'svc-common.ps1')
+$script:poll = $script:pollCommon + @'
 # runspace 内构造一次、复用到退出——HttpClient 本身线程安全
 $http = [System.Net.Http.HttpClient]::new()
 $http.Timeout = [TimeSpan]::FromMilliseconds(3000)
@@ -50,36 +54,38 @@ function Invoke-Sc([string]$verb,[string]$n,[string]$fail){
   $true
 }
 
-# 轮询服务到 Stopped（最多 6s）避免端口未释放；与 add-svc.ps1 的 Wait-Stopped 同构（SYNC: 两处同改）
-function Wait-Stopped([string]$n,[int]$timeoutMs=6000){
-  $w=0
-  while($w -lt $timeoutMs){
-    try {
-      $s=Get-Service -Name $n -EA Stop
-      if([string]$s.Status -eq 'Stopped'){return $true}
-    } catch {
-      # 服务已不存在（ObjectNotFound）= 等同已停止；其他错误（权限等）不掩盖，继续等待
-      if($_.CategoryInfo.Category -eq 'ObjectNotFound'){return $true}
-    }
-    Start-Sleep -Milliseconds 300; $w+=300
-  }
-  $false
-}
-
 function Invoke-PendingCommands {
-  # 执行命令队列（启停全在后台线程）
+  # 执行命令队列（启停与删除全在后台线程，避免 UI 线程同步等待 stop/remove 冻结界面）
   $item=$null
   while(-not $sync.stop -and $sync.cmd.TryDequeue([ref]$item)){
-    $n=[string]$item.n; $act=[string]$item.act
+    $n=[string]$item.n; $act=[string]$item.act; $e=$item.e
     switch($act){
-      'start'   { Invoke-Sc 'start' $n '启动失败' }
-      'stop'    { Invoke-Sc 'stop' $n '停止失败' }
+      'start'   { $ok=Invoke-Sc 'start' $n '启动失败' }
+      'stop'    { $ok=Invoke-Sc 'stop' $n '停止失败' }
       'restart' {
-        if(-not (Invoke-Sc 'stop' $n '停止失败，重启中断')) { break }
+        $ok=$true
+        if(-not (Invoke-Sc 'stop' $n '停止失败，重启中断')) { $ok=$false; break }
         [void](Wait-Stopped $n)
         Start-Sleep -Milliseconds 500  # 端口 TIME_WAIT 余量
-        Invoke-Sc 'start' $n '重启后启动失败'
+        Invoke-Sc 'start' $n '重启后启动失败' | Out-Null
       }
+      'remove' {
+        # 删除走后台：stop → Wait-Stopped ≤6s → nssm remove confirm → 回执带 done=remove
+        # UI 侧（Show-Remove 的 del_Click）入队后立即关弹窗，结果由 ack 回执处理。
+        # $nssm 在 runspace 里不可见——NSSM 路径经 $sync.nssm 从 UI 传入。
+        $ok=$true
+        try {
+          sc.exe stop $n 2>&1 | Out-Null
+          [void](Wait-Stopped $n)
+          $o=& $sync.nssm remove $n confirm 2>&1
+          if($LASTEXITCODE -ne 0){ $sync.msg.Enqueue("$n 删除失败($LASTEXITCODE)"); $ok=$false }
+        } catch { $sync.msg.Enqueue("$n 删除失败: $($_.Exception.Message)"); $ok=$false }
+      }
+    }
+    if ($null -eq $ok) { $ok=$true }  # 兜底：未知 act 不该出现，出现也当成功收尾
+    if ($ok) {
+      # 命令完成回执：把同一命令纪元带回 UI。ack 分支据此解封按钮/冷却或处理删除收尾。
+      $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$null;h=$null;e=$e;done=$true;act=$act})
     }
   }
 }

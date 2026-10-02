@@ -43,10 +43,18 @@ function Save-Svc($s) {
   }
 }
 
+# 命令纪元：每次 Send-ServiceCommand 递增，随命令对象入队；后台执行完把同一 epoch 跟着
+# 结果回 UI。Update-CardData 据此过滤在途旧探测——过渡态期间只接受 epoch ≥ 卡片
+# PendingEpoch 的回执，旧探测（无 epoch）直接丢弃，不再靠「方向匹配」做症状层补丁。
+$script:cmdEpoch = 0
+
 # 所有 GUI 命令统一入队并唤醒后台；队列保留 FIFO，事件只负责结束空闲等待。
 function Send-ServiceCommand([string]$name,[string]$action) {
-  $script:cmdQueue.Enqueue([pscustomobject]@{n=$name;act=$action})
+  $script:cmdEpoch++
+  $e = $script:cmdEpoch
+  $script:cmdQueue.Enqueue([pscustomobject]@{n=$name;act=$action;e=$e})
   [void]$script:sync.wake.Set()
+  $e
 }
 
 # NSSM set 包装：失败抛错
