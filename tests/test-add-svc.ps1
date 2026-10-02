@@ -18,7 +18,11 @@ function Invoke-TestNssm {
 function Save-Svc($data) { $script:saved=$data.Contains('__sm_add_test__') }
 function sc.exe { $script:startArgs=@($args); $global:LASTEXITCODE=0 }
 $script:nssm='Invoke-TestNssm'
-Add-SvcFromCli '__sm_add_test__,8080,C:\test.exe'
+# Add-SvcFromCli 现在做 Test-Path 校验，需要一个真实存在的 exe（NSSM 被 mock，不碰真 exe）
+$fakeExe = Join-Path ([IO.Path]::GetTempPath()) "sm-test-$([guid]::NewGuid().ToString('N')).exe"
+[IO.File]::WriteAllText($fakeExe, 'placeholder', [Text.UTF8Encoding]::new($false))
+try {
+Add-SvcFromCli "__sm_add_test__,8080,$fakeExe"
 if (-not $script:saved) { throw 'Service was not handed to persistence.' }
 if (($script:startArgs -join '|') -ne 'start|__sm_add_test__') { throw 'Service start request missing.' }
 $exitSetting=@($script:calls | Where-Object { $_[0] -eq 'set' -and $_[2] -eq 'AppExit' })
@@ -38,6 +42,7 @@ function Invoke-TestNssmRollback {
 }
 $script:nssm='Invoke-TestNssmRollback'
 $rolled=$false
+# Install-NssmService 不做 Test-Path（仅 Add-SvcFromCli/Show-Add 入口校验），直接用假路径
 try { Install-NssmService '__sm_rollback__' 'C:\rb.exe' $null $null @() } catch { $rolled=$true }
 if (-not $rolled) { throw 'Failing NSSM set should surface the error.' }
 if ($script:removed -ne '__sm_rollback__') { throw 'Half-registered service was not rolled back via nssm remove.' }
@@ -69,9 +74,12 @@ $script:sync = @{gate = [object]::new()}
 $logDir = Join-Path $args[0] "logs"
 $script:nssm = "Invoke-Ok"
 $script:startArgs = $null
+# Add-SvcFromCli 校验 exe 存在；子进程里造一个临时 exe（NSSM 被 mock）
+$fakeExe2 = Join-Path ([IO.Path]::GetTempPath()) "sm-save-fail-$([guid]::NewGuid().ToString('N')).exe"
+[IO.File]::WriteAllText($fakeExe2, 'placeholder', [Text.UTF8Encoding]::new($false))
 function Invoke-Ok { $global:LASTEXITCODE = 0 }
 function Save-Svc($data) { throw "disk full" }
-Add-SvcFromCli "__sm_save_fail__,9091,C:\sf.exe"
+Add-SvcFromCli "__sm_save_fail__,9091,$fakeExe2"
 '@
 [IO.File]::WriteAllText($probe, $probeBody, [Text.UTF8Encoding]::new($false))
 try {
@@ -81,3 +89,4 @@ try {
 if ($code -ne 1) { throw "Save-Svc failure must exit 1 (got $code), not swallow the error or start the service." }
 if ((Get-FileHash -LiteralPath $cfg).Hash -ne $before) { throw 'Test changed services.json.' }
 Write-Output 'PASS: CLI registration, NSSM multi-value arguments, rollback on partial set failure, remove flow (stop→wait→remove), persistence/start boundaries (mocked); config unchanged.'
+} finally { Remove-Item -LiteralPath $fakeExe -Force -EA SilentlyContinue }

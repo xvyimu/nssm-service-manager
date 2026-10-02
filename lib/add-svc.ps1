@@ -30,6 +30,10 @@ function Add-SvcFromCli([string]$spec){
   $parts = $spec -split ','
   if ($parts.Count -lt 3) { Write-Host "用法: -Add Name,Port,Exe[,Url,Dir,Args,Env]"; exit 1 }
   $n=$parts[0].Trim(); $p=[int]$parts[1].Trim(); $exe=$parts[2].Trim()
+  # 服务名字符集：Windows 服务名禁止含 / \ : | 等保留字符，这里收口到安全子集
+  if ($n -notmatch '^[A-Za-z0-9_.-]+$') { Write-Host "服务名含非法字符（仅允许字母数字 . _ -）：$n"; exit 1 }
+  # 可执行文件必须存在，避免注册一个启动即失败的服务
+  if (-not (Test-Path -LiteralPath $exe)) { Write-Host "可执行文件不存在：$exe"; exit 1 }
   $url=if($parts.Count -gt 3){$parts[3].Trim()}else{"http://127.0.0.1:$p"}
   $dir=if($parts.Count -gt 4){$parts[4].Trim()}else{''}
   $par=if($parts.Count -gt 5){$parts[5].Trim()}else{''}
@@ -39,7 +43,7 @@ function Add-SvcFromCli([string]$spec){
   if($p -lt 1 -or $p -gt 65535){ Write-Host "端口非法: $p"; exit 1 }
   if($script:svc.Contains($n)){ Write-Host "$n 已存在"; exit 1 }
   $envPairs=@()
-  if($env){ $envPairs=($env -split ';') | %{ $_.Trim() } | ?{ $_ } }
+  if($env){ $envPairs=($env -split ';') | ForEach-Object { $_.Trim() } | Where-Object { $_ } }
   try {
     Install-NssmService $n $exe $dir $par $envPairs
   } catch { Write-Host "注册失败: $($_.Exception.Message)"; exit 1 }
@@ -59,13 +63,17 @@ function Add-SvcFromCli([string]$spec){
 }
 
 # 删除服务：先停再删（stop → 轮询 Stopped ≤6s → nssm remove confirm）
-# Wait-Stopped 定义在 poll.ps1 的 $script:poll 脚本块里（后台 runspace 侧），
-# Show-Remove 在 UI 线程调用时不会命中那个定义——这里重新定义一份同构函数。
-# 两处独立是刻意的：poll.ps1 的 Wait-Stopped 跑在 runspace 字符串里无法被 UI 线程调用。
+# Wait-Stopped 与 poll.ps1 的 $script:poll 脚本块里那份同构（SYNC: 两处同改）。
+# poll.ps1 的 Wait-Stopped 跑在 runspace 字符串里无法被 UI 线程调用——这里重新定义一份。
 function Wait-Stopped([string]$n,[int]$timeoutMs=6000){
   $w=0
   while($w -lt $timeoutMs){
-    try { $s=Get-Service -Name $n -EA Stop; if([string]$s.Status -eq 'Stopped'){return $true} } catch { return $true }
+    try {
+      $s=Get-Service -Name $n -EA Stop
+      if([string]$s.Status -eq 'Stopped'){return $true}
+    } catch {
+      if($_.CategoryInfo.Category -eq 'ObjectNotFound'){return $true}
+    }
     Start-Sleep -Milliseconds 300; $w+=300
   }
   $false
@@ -137,7 +145,7 @@ function Show-Remove([string]$n, $owner){
   $f.ShowDialog() | Out-Null
 }
 
-# CLI 模式：注册 NSSM 服务并启动，不弹 GUI
+# GUI 添加服务对话框：3 必填 + 高级折叠，注册成功后入队启动命令
 function Show-Add($owner){
   $f = New-Object System.Windows.Window -Property @{
     Title='添加服务'; Width=460; Height=540; WindowStartupLocation='CenterOwner'
@@ -180,11 +188,13 @@ function Show-Add($owner){
     $n=$inName.Text.Trim(); $p=[int]$inPort.Text.Trim(); $exe=$inExe.Text.Trim()
     $url=$inUrl.Text.Trim(); $dir=$inDir.Text.Trim(); $par=$inPar.Text.Trim(); $env=$inEnv.Text.Trim()
     if(-not $n -or -not $exe){ [System.Windows.MessageBox]::Show($f,'服务名和可执行文件必填','错误','OK','Error'); return }
+    if ($n -notmatch '^[A-Za-z0-9_.-]+$') { [System.Windows.MessageBox]::Show($f,"服务名含非法字符（仅允许字母数字 . _ -）：$n",'错误','OK','Error'); return }
+    if (-not (Test-Path -LiteralPath $exe)) { [System.Windows.MessageBox]::Show($f,"可执行文件不存在：$exe",'错误','OK','Error'); return }
     if($p -lt 1 -or $p -gt 65535){ [System.Windows.MessageBox]::Show($f,'端口必须是 1-65535','错误','OK','Error'); return }
     if($script:svc.Contains($n)){ [System.Windows.MessageBox]::Show($f,"$n 已存在",'错误','OK','Error'); return }
     if(-not $url){ $url="http://127.0.0.1:$p" }
     $envPairs=@()
-    if($env){ $envPairs=($env -split ',') | %{ $_.Trim() } | ?{ $_ }
+    if($env){ $envPairs=($env -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
       foreach($pair in $envPairs){
         $kv=$pair -split '=',2
         if($kv.Count -ne 2 -or [string]::IsNullOrWhiteSpace($kv[0])){ [System.Windows.MessageBox]::Show($f,"环境变量格式错误: $pair`n应为 KEY=VAL",'错误','OK','Error'); return }

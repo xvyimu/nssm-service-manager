@@ -79,13 +79,15 @@ function Show-SecurityCheck([string]$n){
   $r = Resolve-ServiceExeDir $path
   $dir = $r.dir; $quoted = $r.quoted
   $permissive = '否'
+  $aclRead = $false
   if ($dir -and (Test-Path $dir)) {
     try {
       $acl = Get-Acl -Path $dir
+      $aclRead = $true
       foreach ($a in $acl.Access) {
         if (@('BUILTIN\Users','Everyone','Users') -contains $a.IdentityReference.Value -and $a.FileSystemRights.ToString() -match 'Write|Modify|FullControl') { $permissive = '是'; break }
       }
-    } catch {}
+    } catch { $permissive = '未知（无法读取 ACL）' }
   }
   $qTxt = if($quoted){'是（已加固）'}else{'否（路径含空格时有提权风险）'}
   $msg = "$n`n`n路径: $path`n`n引号加固: $qTxt`n目录: $dir`n目录 ACL 过宽: $permissive"

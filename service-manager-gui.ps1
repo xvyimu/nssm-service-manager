@@ -15,7 +15,19 @@ param(
 $root = $PSScriptRoot
 $cfg = "$root\services.json"
 $logDir = "$root\logs"
-$script:nssm = "$env:USERPROFILE\scoop\apps\nssm\current\nssm.exe"
+# NSSM 探测：优先 env > Get-Command > scoop 安装路径，避免硬编码 scoop
+$script:nssm = $null
+if ($env:NSSM_PATH -and (Test-Path -LiteralPath $env:NSSM_PATH)) {
+  $script:nssm = $env:NSSM_PATH
+} else {
+  $found = $null
+  try { $found = (Get-Command nssm.exe -EA Stop).Source } catch {}
+  if ($found) { $script:nssm = $found }
+  else {
+    $scoopNssm = "$env:USERPROFILE\scoop\apps\nssm\current\nssm.exe"
+    if (Test-Path -LiteralPath $scoopNssm) { $script:nssm = $scoopNssm }
+  }
+}
 
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force $logDir | Out-Null }
 
@@ -139,8 +151,8 @@ $bgHandle = $bgPS.BeginInvoke()
 function Stop-Background {
   $script:sync.stop = $true
   [void]$script:sync.wake.Set()
-  try { if ($bgHandle.AsyncWaitHandle.WaitOne(1500)) { $bgPS.EndInvoke($bgHandle) } } catch {}
-  try { $bgPS.Stop() } catch {}
+  try { if ($bgHandle.AsyncWaitHandle.WaitOne(1500)) { $bgPS.EndInvoke($bgHandle) } } catch { Write-CrashLog "Background end failed: $($_.Exception.Message)" }
+  try { $bgPS.Stop() } catch { Write-CrashLog "Background stop failed: $($_.Exception.Message)" }
   $bgRS.Close(); $bgRS.Dispose(); $bgPS.Dispose()
   $script:sync.wake.Dispose()
 }

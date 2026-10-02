@@ -31,12 +31,11 @@ try {
 function Measure-RoundLatency([int]$count){
   $w=Start-FakePoll $count 'Running'
   try {
-    $firstItem=[datetime]::UtcNow
-    $allDone=[datetime]::UtcNow
+    $firstItem=$null
     $deadline=[datetime]::UtcNow.AddSeconds(8)
     while ($w.Sync.queue.Count -lt $count -and [datetime]::UtcNow -lt $deadline) {
       Start-Sleep -Milliseconds 20
-      if ($w.Sync.queue.Count -ge 1 -and $firstItem -eq $null) { $firstItem=[datetime]::UtcNow }
+      if ($firstItem -eq $null -and $w.Sync.queue.Count -ge 1) { $firstItem=[datetime]::UtcNow }
     }
     $allDone=[datetime]::UtcNow
     if ($w.Sync.queue.Count -lt $count) { throw "$count-service probe did not complete." }
