@@ -1,8 +1,0 @@
-{
-  "NewAPI":        { "port": 3000,  "url": "http://127.0.0.1:3000" },
-  "Router9":       { "port": 20128, "url": "http://127.0.0.1:20128/dashboard" },
-  "OmniRoute":     { "port": 20129, "url": "http://127.0.0.1:20129/dashboard" },
-  "CPA":           { "port": 8317,  "url": "http://127.0.0.1:8317/management.html" },
-  "WorkBuddy2API": { "port": 7863,  "url": "http://127.0.0.1:7863/panel/" },
-  "TTSShim":       { "port": 8001,  "url": "http://127.0.0.1:8001/health" }
-}

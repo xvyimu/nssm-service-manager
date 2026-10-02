@@ -1,6 +1,8 @@
 # service-manager
 
-本地 NSSM Windows 服务的统一管理 GUI。
+本地 NSSM Windows 服务的统一管理 GUI——PowerShell 7 + WPF，卡片式启停/健康探测/日志查看，零外部 npm 依赖。
+
+![主界面](assets/screenshot.png)
 
 ## 文件
 
@@ -15,7 +17,7 @@
 | `lib/card.ps1` | 卡片构建 + 双击防抖（8s 冷却 + 健康门闩）+ 过渡态保护 + 右键菜单 |
 | `lib/xaml.ps1` | 主窗口外壳（自定义标题栏 + 最大化/双击标题栏 + 工具栏 + 分页 + 状态栏） |
 | `assets/icon.ico` | 自绘齿轮图标（窗口 + 任务栏） |
-| `services.json` | 服务清单 SSOT（名称 → 端口/面板 URL） |
+| `services.example.json` | 服务清单示例（复制为 `services.json` 使用；后者已 git 忽略） |
 | `st-tts-shim/server.mjs` | TTSShim 服务本体：StepFun TTS → OpenAI 兼容 `/v1/audio/speech` 薄适配层 |
 | `st-tts-shim/test-speech.ps1` | TTSShim 打穿测试脚本 |
 | `tests/run-all.ps1` | 统一执行 PowerShell 语法检查和全部回归测试 |
@@ -55,13 +57,21 @@
 
 ## 托管的 6 个服务
 
+`services.json` 是每台机器自己的配置（已 git 忽略，不上传）。克隆后复制 `services.example.json` 为 `services.json` 并按需改：
+
+```
+Copy-Item services.example.json services.json
+```
+
+示例清单（服务名/端口/面板/本体可全改）：
+
 | 服务 | 端口 | 面板 | 本体 |
 |------|------|------|------|
-| NewAPI | 3000 | http://127.0.0.1:3000 | 独立部署 |
-| Router9 | 20128 | http://127.0.0.1:20128/dashboard | 独立部署 |
-| OmniRoute | 20129 | http://127.0.0.1:20129/dashboard | 独立部署 |
-| CPA | 8317 | http://127.0.0.1:8317/management.html | 独立部署 |
-| WorkBuddy2API | 7863 | http://127.0.0.1:7863/panel/ | 独立部署 |
+| MyAPI | 3000 | http://127.0.0.1:3000 | 独立部署 |
+| RouterA | 20128 | http://127.0.0.1:20128/dashboard | 独立部署 |
+| RouterB | 20129 | http://127.0.0.1:20129/dashboard | 独立部署 |
+| ProxyA | 8317 | http://127.0.0.1:8317/management.html | 独立部署 |
+| BuddyAPI | 7863 | http://127.0.0.1:7863/panel/ | 独立部署 |
 | TTSShim | 8001 | http://127.0.0.1:8001/health | 本仓 `st-tts-shim/server.mjs`（NSSM `AppDirectory` 指向本目录，`AppEnvironmentExtra` 注入 `TTS_API_KEY`，`AppExit Default=Ignore` 不自动重启） |
 
 > **安全提示（TTS_API_KEY 暴露面）：** NSSM 把 `TTS_API_KEY` 明文写入注册表 `HKLM\SYSTEM\CurrentControlSet\Services\TTSShim\Parameters\AppEnvironmentExtra`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出 65 字符明文密钥。`server.mjs` 支持 `TTS_API_KEY_FILE` 环境变量指向一个仅 Administrators+SYSTEM 可读的密钥文件（优先于 `TTS_API_KEY`），把密钥移出注册表。彻底收紧需由安装脚本把 `Parameters` 键 ACL 收到 `Administrators + SYSTEM`（NSSM 本身不管 ACL）。

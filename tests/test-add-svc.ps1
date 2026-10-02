@@ -2,7 +2,10 @@
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference='Stop'
 $cfg=Join-Path $RepoRoot 'services.json'
-$before=(Get-FileHash -LiteralPath $cfg).Hash
+# services.json 已 git 忽略——新克隆的仓里不存在。测试需在两种情况下都跑：
+# 存在则记录哈希核对未被改动；不存在则结束时确认仍不存在。
+$cfgExisted = Test-Path -LiteralPath $cfg
+$before = if ($cfgExisted) { (Get-FileHash -LiteralPath $cfg).Hash } else { $null }
 . (Join-Path $RepoRoot 'lib/util.ps1')
 . (Join-Path $RepoRoot 'lib/add-svc.ps1')
 $script:svc=Load-Svc
@@ -87,6 +90,10 @@ try {
   $code = $LASTEXITCODE
 } finally { Remove-Item -LiteralPath $probe -Force -EA SilentlyContinue }
 if ($code -ne 1) { throw "Save-Svc failure must exit 1 (got $code), not swallow the error or start the service." }
-if ((Get-FileHash -LiteralPath $cfg).Hash -ne $before) { throw 'Test changed services.json.' }
+if ($cfgExisted) {
+  if ((Get-FileHash -LiteralPath $cfg).Hash -ne $before) { throw 'Test changed services.json.' }
+} elseif (Test-Path -LiteralPath $cfg) {
+  throw 'Test created services.json where none existed.'
+}
 Write-Output 'PASS: CLI registration, NSSM multi-value arguments, rollback on partial set failure, remove flow (stop→wait→remove), persistence/start boundaries (mocked); config unchanged.'
 } finally { Remove-Item -LiteralPath $fakeExe -Force -EA SilentlyContinue }
