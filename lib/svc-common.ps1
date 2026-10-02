@@ -4,9 +4,17 @@
 # 靠「SYNC: 两处同改」注释人工同步）。poll.ps1 在构造 runspace 脚本时把本文件内容前置进
 # 脚本字符串，add-svc.ps1 直接点源本文件——两边引用的是同一份文本。
 
-# 轮询服务到 Stopped（最多 timeoutMs，默认 6s），用于重启/删除前等端口释放。
+# 轮询服务到 Stopped，用于重启/删除前等端口释放。
+# 超时取值优先级：显式 -timeoutMs > $sync 注入值（UI 线程即 $script:sync.waitStoppedTimeoutMs，
+# runspace 由 poll.ps1 从同一键读出并写回）> $script:config.WaitStoppedTimeoutMs > 6000。
+# 前两级在两条路径上都可见，故 UI 线程与 runspace 走同一份配置，不再各读各的。
 # 服务已不存在（ObjectNotFound）= 等同已停止；其他错误（权限等）不掩盖，继续等待。
-function Wait-Stopped([string]$n,[int]$timeoutMs=6000){
+function Wait-Stopped([string]$n,[int]$timeoutMs=0){
+  if(-not $timeoutMs){
+    if     ($sync -and $sync.waitStoppedTimeoutMs)                    { $timeoutMs = [int]$sync.waitStoppedTimeoutMs }
+    elseif ($script:config -and $script:config.WaitStoppedTimeoutMs)  { $timeoutMs = [int]$script:config.WaitStoppedTimeoutMs }
+    else                                                              { $timeoutMs = 6000 }
+  }
   $w=0
   while($w -lt $timeoutMs){
     try {

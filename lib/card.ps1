@@ -1,5 +1,7 @@
 # lib/card.ps1 — 服务卡片：名称与端口、健康状态、面板入口和启停
-$script:TOGGLE_COOLDOWN_MS = 8000
+# 自加载 config：测试 dot-source 本模块时未必先加载 config.ps1，此处自洽
+if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
+$script:TOGGLE_COOLDOWN_MS = [int]$script:config.ToggleCooldownMs
 
 # 按钮和双击共用校验与状态切换；仅保留各入口原有的反馈文案。
 function Invoke-CardToggle($card, [string]$source='Button') {

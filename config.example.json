@@ -1,0 +1,8 @@
+{
+  "PerPage":              6,
+  "TcpTimeoutMs":         200,
+  "HttpTimeoutMs":        3000,
+  "CrashLogMaxBytes":     524288,
+  "ToggleCooldownMs":     8000,
+  "WaitStoppedTimeoutMs": 6000
+}

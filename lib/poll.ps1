@@ -16,7 +16,13 @@ $script:pollCommon = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'svc
 $script:poll = $script:pollCommon + @'
 # runspace 内构造一次、复用到退出——HttpClient 本身线程安全
 $http = [System.Net.Http.HttpClient]::new()
-$http.Timeout = [TimeSpan]::FromMilliseconds(3000)
+# 超时从 $sync 读（由 UI 线程从 config.ps1 注入）；测试夹具未设时回落默认（200/3000/6000）。
+# 生效值写回 $sync 同一键：UI 侧/测试可见 runspace 实际用的是什么（写回即覆盖原注入值）。
+$tcpMs  = if ($sync.tcpTimeoutMs)        { [int]$sync.tcpTimeoutMs }        else { 200 }
+$httpMs = if ($sync.httpTimeoutMs)       { [int]$sync.httpTimeoutMs }       else { 3000 }
+$waitMs = if ($sync.waitStoppedTimeoutMs){ [int]$sync.waitStoppedTimeoutMs } else { 6000 }
+$http.Timeout = [TimeSpan]::FromMilliseconds($httpMs)
+$sync.tcpTimeoutMs = $tcpMs; $sync.httpTimeoutMs = $httpMs; $sync.waitStoppedTimeoutMs = $waitMs
 
 # sc.exe 不抛异常，只靠 $LASTEXITCODE；包装成 helper，失败时反馈到 UI 状态栏
 # 常见退出码映射（发现 9）：1056=已在运行 / 1062=未启动 / 1060=未安装 / 1051=禁止启动
@@ -150,12 +156,12 @@ while(-not $sync.stop){
     $results = $toProbe | ForEach-Object -Parallel {
       $n=$_.n; $p=$_.port; $url=$_.url
       $httpClient=$using:http
-      # 轻量端口探测：TcpClient 200ms 超时（不用 Get-NetTCPConnection）
+      # 轻量端口探测：TcpClient $tcpMs 超时（不用 Get-NetTCPConnection）
       $listen=$false
       $tcp=[System.Net.Sockets.TcpClient]::new()
       try {
         $iar=$tcp.BeginConnect('127.0.0.1',$p,$null,$null)
-        if($iar.AsyncWaitHandle.WaitOne(200,$false)){ try{$tcp.EndConnect($iar);$listen=$true}catch{} }
+        if($iar.AsyncWaitHandle.WaitOne($tcpMs,$false)){ try{$tcp.EndConnect($iar);$listen=$true}catch{} }
       } finally { try{$tcp.Close()}catch{} }
 
       if(-not $listen){ return [pscustomobject]@{n=$n;h='无响应'} }

@@ -13,8 +13,9 @@ function Get-VisualNodes($node) {
 
 # 起 runspace 跑 poll 脚本块，mock Get-Service 返回指定 Status。
 # $count=服务数，$serviceStatus=mock 返回状态（'Stopped'/'Running'），$delayMs=每次 Get-Service 延迟。
+# $extraSyncKeys=额外塞进 $shared 的键（如 waitStoppedTimeoutMs），BeginInvoke 前合并——poll 开头只读一次。
 # 返回 @{Sync;Runspace;PowerShell;Handle}。Close-FakePoll 清理。
-function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$delayMs = 0) {
+function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$delayMs = 0, [hashtable]$extraSyncKeys = $null) {
   $services = [ordered]@{}
   for ($i = 0; $i -lt $count; $i++) { $services["Fake$i"] = @{ port = 10000 + $i; url = "http://127.0.0.1:10000/fake$i" } }
   $shared = [hashtable]::Synchronized(@{
@@ -29,6 +30,7 @@ function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$d
     executedReady = [Threading.AutoResetEvent]::new($false)
     nssm = 'Invoke-TestNssm'
   })
+  if ($extraSyncKeys) { foreach ($k in $extraSyncKeys.Keys) { $shared[$k] = $extraSyncKeys[$k] } }
   $rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState = 'STA'; $rs.Open()
   $rs.SessionStateProxy.SetVariable('sync', $shared)
   $mocks = @"
