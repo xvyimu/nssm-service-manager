@@ -50,11 +50,17 @@ function Invoke-Sc([string]$verb,[string]$n,[string]$fail){
   $true
 }
 
-# 轮询服务到 Stopped（最多 6s）避免端口未释放；与 add-svc.ps1 的 Wait-Stopped 同构
+# 轮询服务到 Stopped（最多 6s）避免端口未释放；与 add-svc.ps1 的 Wait-Stopped 同构（SYNC: 两处同改）
 function Wait-Stopped([string]$n,[int]$timeoutMs=6000){
   $w=0
   while($w -lt $timeoutMs){
-    try { $s=Get-Service -Name $n -EA Stop; if([string]$s.Status -eq 'Stopped'){return $true} } catch { return $true }
+    try {
+      $s=Get-Service -Name $n -EA Stop
+      if([string]$s.Status -eq 'Stopped'){return $true}
+    } catch {
+      # 服务已不存在（ObjectNotFound）= 等同已停止；其他错误（权限等）不掩盖，继续等待
+      if($_.CategoryInfo.Category -eq 'ObjectNotFound'){return $true}
+    }
     Start-Sleep -Milliseconds 300; $w+=300
   }
   $false
@@ -153,11 +159,11 @@ while(-not $sync.stop){
         $r=$httpClient.GetAsync($url).GetAwaiter().GetResult()
         try { $h=if($r.StatusCode -eq [System.Net.HttpStatusCode]::OK){'正常'}else{'HTTP '+[int]$r.StatusCode} } finally { $r.Dispose() }
       } catch {
+        # 异常归类：refused/connection 类 → 无响应，其余（含超时、DNS 失败等）→ 超时。
+        # 原 timeout 正则与 else 同归 '超时'，是死分支——此处折叠。
         $ex=$_.Exception.InnerException; if(-not $ex){$ex=$_.Exception}
         $msg=[string]$ex.Message
-        if($msg -match 'timed out|超时|Timeout|canceled|任务已取消'){$h='超时'}
-        elseif($msg -match 'refused|unable to connect|连接|connection|ConnectFailure'){$h='无响应'}
-        else{$h='超时'}
+        $h=if($msg -match 'refused|unable to connect|连接|connection|ConnectFailure'){'无响应'}else{'超时'}
       }
       [pscustomobject]@{n=$n;h=$h}
     } -ThrottleLimit 8

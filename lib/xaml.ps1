@@ -83,14 +83,18 @@ function New-MainWindow {
   $script:lblPage=$lblPage; $script:btnPrev=$btnPrev; $script:btnNext=$btnNext
   $script:serviceSummary=$summary; $script:cards=@{}; $script:curPage=0
 
+  # 最大化/还原共用一个切换（按钮与双击标题栏同逻辑）。
+  # 必须存 $script: —— New-MainWindow return 后局部变量脱作用域，
+  # 双击标题栏处理器里的 & $script:toggleMax 才能解析到（PowerShell scriptblock 非闭包）。
+  $script:toggleMax = { $script:window.WindowState = if ($script:window.WindowState -eq 'Maximized') { 'Normal' } else { 'Maximized' } }
   $titleBar.Add_MouseLeftButtonDown({ param($s,$e) if ($e.LeftButton -eq 'Pressed') {
     if ($e.ClickCount -ge 2) {
       # 双击标题栏切换最大化（发现 11）；DragMove 与双击互斥，ClickCount≥2 时不拖动
-      $script:window.WindowState = if ($script:window.WindowState -eq 'Maximized') { 'Normal' } else { 'Maximized' }
+      & $script:toggleMax
     } else { $script:window.DragMove() }
   } })
   $btnMin.Add_Click({ $script:window.WindowState='Minimized' })
-  $btnMax.Add_Click({ $script:window.WindowState = if ($script:window.WindowState -eq 'Maximized') { 'Normal' } else { 'Maximized' } })
+  $btnMax.Add_Click($script:toggleMax)
   $btnClose.Add_Click({ $script:window.Close() })
   $win.Add_Closed({ Stop-Background })
   $btnAdd.Add_Click({ Show-Add $script:window; Render-Page })

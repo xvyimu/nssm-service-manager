@@ -170,11 +170,10 @@ function Update-CardData([string]$n,[string]$st,[string]$h){
   $c.ST = $st; $c.HT = $h
   $running = $st -eq '运行中'
   $healthy = $h -eq '正常'
-  # 状态颜色映射
+  # 状态颜色映射：运行中按健康分档，停止/未安装统一灰，其余（启动中/停止中/未知）橙
   $dotColor = switch ($st) {
     '运行中' { if ($h -eq '正常') { 'Green' } elseif ($h -eq '超时') { 'Orange' } else { 'Red' } }
-    '已停止' { 'Gray' }
-    '未安装' { 'Gray' }
+    { $_ -in @('已停止','未安装') } { 'Gray' }
     default { 'Orange' }
   }
   # 静态画刷已经冻结；这里只替换引用，不修改画刷颜色。
