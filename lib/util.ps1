@@ -1,4 +1,12 @@
 # lib/util.ps1 — 配置持久化 · NSSM 操作 · 安全检查 · 日志
+#
+# 【本模块的作用域约定】本文件的函数体直接读调用方作用域里的 $cfg 与 $logDir
+# （dot-source 时由 service-manager-gui.ps1 / 各测试脚本赋值），不是模块级变量。
+# 因此：(1) 调用方必须在 dot-source 之后赋值，否则函数读到 $null；
+#       (2) 本模块的函数**不得**把参数命名为 $cfg / $logDir 等约定变量——PowerShell
+#           变量名大小写不敏感，参数会遮蔽同名外层变量，回落逻辑会静默失效。
+#           历史事故：Get-LogFiles 曾把参数叫 $LogDir，遮蔽了外层 $logDir，
+#           GUI 日志下拉框自上线起一直为空（d442fcf 修复）。
 
 # ---- 配置层（services.json 是 SSOT，services.example.json 是兜底）----
 # 兜底直接读仓里的示例清单，不在源码里再抄一份服务名（避免双源漂移）。
