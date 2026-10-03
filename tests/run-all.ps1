@@ -47,6 +47,7 @@ $tests = @(
   @{ Name = 'transition race'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-transition-race.ps1')) }
   @{ Name = 'poll commands'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-poll-commands.ps1')) }
   @{ Name = 'parallel probe'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-parallel-probe.ps1')) }
+  @{ Name = 'probe timeout scope'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-probe-timeout-scope.ps1')) }
   @{ Name = 'security parse'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-security-parse.ps1')) }
   @{ Name = 'svc input'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-svc-input.ps1')) }
   @{ Name = 'service registration'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-add-svc.ps1')) }

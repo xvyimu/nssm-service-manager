@@ -157,11 +157,14 @@ while(-not $sync.stop){
       $n=$_.n; $p=$_.port; $url=$_.url
       $httpClient=$using:http
       # 轻量端口探测：TcpClient $tcpMs 超时（不用 Get-NetTCPConnection）
+      # $tcpMs 必须经 $using: 传入——ForEach-Object -Parallel 开新 runspace，
+      # 不继承父作用域变量；裸用 $tcpMs 在此取到 $null，WaitOne(0) 立刻返回 False，
+      # 运行中服务被误判「无响应」变红（启停时 runspace 更忙，0ms 扑空概率上升）。
       $listen=$false
       $tcp=[System.Net.Sockets.TcpClient]::new()
       try {
         $iar=$tcp.BeginConnect('127.0.0.1',$p,$null,$null)
-        if($iar.AsyncWaitHandle.WaitOne($tcpMs,$false)){ try{$tcp.EndConnect($iar);$listen=$true}catch{} }
+        if($iar.AsyncWaitHandle.WaitOne($using:tcpMs,$false)){ try{$tcp.EndConnect($iar);$listen=$true}catch{} }
       } finally { try{$tcp.Close()}catch{} }
 
       if(-not $listen){ return [pscustomobject]@{n=$n;h='无响应'} }
