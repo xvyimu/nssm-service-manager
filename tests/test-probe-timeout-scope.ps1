@@ -16,6 +16,14 @@
 #   带 bug → TCP 探测 WaitOne(0) 失败 → 直接 h='无响应'
 # 所以断言「真监听端口的 h 从不为『无响应』」即可区分；未监听端口仍应为『无响应』
 # （作为夹具自检，确认探测本身在跑）。
+#
+# 真机对照（2026-10-04，24 核，48 个 CPU 燃烧线程模拟启停时的后台繁忙）：
+# 探真运行中的 NewAPI(3000) 与 Router9(20128)，各 20 轮——
+#   修复版（生产代码原样）        40/40 全「正常」，0 次误判
+#   变异版（$using:tcpMs → 裸 $tcpMs）  31/40 误判「无响应」，误判率约 78%
+# 「无响应」在 lib/card.ps1 落到 else → Red，这就是用户看到的红点，链路闭合。
+# 注意变异必须做**文本替换**，不能靠传 tcpTimeoutMs=0：poll.ps1 顶部是
+# `if ($sync.tcpTimeoutMs) {...} else {200}`，if(0) 为假会回落到 200，变异不生效。
 param([string]$RepoRoot=(Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference='Stop'
 . (Join-Path $RepoRoot 'lib/poll.ps1')
