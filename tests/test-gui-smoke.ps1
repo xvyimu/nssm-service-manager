@@ -13,9 +13,21 @@ function Send-CardMouse($card, [Windows.Input.MouseButton]$button, [int]$clicks)
   $card.RaiseEvent($eventArgs)
 }
 
+# 显式夹具：不读本机 services.json——它已 git 忽略，本机实配条数会改变分页行为，
+# 使断言随机器漂移（本机 5 条时第二页断言即失败）。与 make-screenshot.ps1 同约定。
+# Load-Svc 的读取/兜底链由 test-config.ps1 覆盖，本测试只关心 WPF 交互。
+# $cfg 仍按 util.ps1 的作用域约定赋值：该模块函数直接读调用方 $cfg（本测试未走写入路径，
+# 但留着以免将来新增用例时读到 $null 而静默失败）。
 $cfg = Join-Path $RepoRoot 'services.json'
 foreach ($module in 'theme','util','card','xaml') { . (Join-Path $RepoRoot "lib/$module.ps1") }
-$script:svc = Load-Svc
+$script:svc = [ordered]@{
+  'MyAPI'    = @{ port = 3000;  url = 'http://127.0.0.1:3000' }
+  'RouterA'  = @{ port = 20128; url = 'http://127.0.0.1:20128/dashboard' }
+  'RouterB'  = @{ port = 20129; url = 'http://127.0.0.1:20129/dashboard' }
+  'ProxyA'   = @{ port = 8317;  url = 'http://127.0.0.1:8317/management.html' }
+  'BuddyAPI' = @{ port = 7863;  url = 'http://127.0.0.1:7863/panel/' }
+  'ServiceF' = @{ port = 9000;  url = 'http://127.0.0.1:9000/health' }
+}
 $script:cmdQueue = [Collections.Concurrent.ConcurrentQueue[object]]::new()
 $script:sync = @{wake=[Threading.AutoResetEvent]::new($false)}
 # No worker, NSSM, or service calls: exercise actual WPF handlers against the queue.
