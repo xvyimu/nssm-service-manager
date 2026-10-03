@@ -1,0 +1,153 @@
+#requires -Version 7.0
+# 回归：并行探测块里的超时变量必须经 $using: 传入，否则在子 runspace 里取到 $null。
+#
+# 背景：ForEach-Object -Parallel 开新 runspace，不继承父作用域变量。poll.ps1 的
+# 并行块里 $httpClient=$using:http 是对的，但 $tcpMs 曾裸用——子 runspace 里是 $null，
+# WaitOne($null,$false) 等价 WaitOne(0)，TCP 握手没完成就返回 False，运行中服务被
+# 判「无响应」（红点）。启停服务时后台更忙，0ms 扑空概率上升，于是「启停一个服务，
+# 别的运行中服务变红」。
+#
+# 本测试两路：静态扫裸引用（确定性）+ 真监听端口端到端（行为）。
+# 注意 test-parallel-probe.ps1 探的是未监听端口，0ms 与 200ms 结果都是「无响应」，
+# 对这类 bug 天然免疫——所以必须单开一份探真端口的测试。
+#
+# 行为段的判定：真监听端口（接受连接但不应答 HTTP）——
+#   修好后 → TCP 探测成功 → 转 HTTP → 超时 → h='超时'
+#   带 bug → TCP 探测 WaitOne(0) 失败 → 直接 h='无响应'
+# 所以断言「真监听端口的 h 从不为『无响应』」即可区分；未监听端口仍应为『无响应』
+# （作为夹具自检，确认探测本身在跑）。
+#
+# 真机对照（2026-10-04，24 核，48 个 CPU 燃烧线程模拟启停时的后台繁忙）：
+# 探真运行中的 NewAPI(3000) 与 Router9(20128)，各 20 轮——
+#   修复版（生产代码原样）        40/40 全「正常」，0 次误判
+#   变异版（$using:tcpMs → 裸 $tcpMs）  31/40 误判「无响应」，误判率约 78%
+# 「无响应」在 lib/card.ps1 落到 else → Red，这就是用户看到的红点，链路闭合。
+# 注意变异必须做**文本替换**，不能靠传 tcpTimeoutMs=0：poll.ps1 顶部是
+# `if ($sync.tcpTimeoutMs) {...} else {200}`，if(0) 为假会回落到 200，变异不生效。
+param([string]$RepoRoot=(Split-Path $PSScriptRoot -Parent))
+$ErrorActionPreference='Stop'
+. (Join-Path $RepoRoot 'lib/poll.ps1')
+function Assert($condition,[string]$message) { if (-not $condition) { throw $message } }
+
+# ---- 1. 静态：并行块内不得裸用父作用域变量 ----
+# 从 "ForEach-Object -Parallel {" 到 "-ThrottleLimit" 之间即并行块体。
+# 先剥掉注释——注释里提到 $tcpMs 不该算命中（本文件的说明文字就写了它）。
+$rawBlock = [regex]::Match($script:poll, '(?s)ForEach-Object\s+-Parallel\s*\{(.*?)\}\s*-ThrottleLimit').Groups[1].Value
+Assert ($rawBlock.Length -gt 0) 'Could not locate the ForEach-Object -Parallel block in poll.ps1.'
+$block = ($rawBlock -split "`n" | ForEach-Object { $_ -replace '#.*$','' }) -join "`n"
+
+# 通用判定，而非硬编码三个变量名：块内每个 $name 引用，若
+#   - 带作用域前缀（$using: / $script: / $global: …），或
+#   - 在块内被赋值（= 或 foreach 变量），或
+#   - 是自动变量 / 字面量（$null/$true/…），
+# 则安全；否则就是裸引用父作用域变量 → 子 runspace 里取 $null。
+# 硬编码名单的问题：将来加第四个变量忘了 $using: 会静默漏过。
+# 灵敏度已验：原样块残留 0 个；注入假想的 $fakeTimeoutMs 立刻被抓到。
+$names = @{}
+foreach ($m in [regex]::Matches($block, '\$(?:([A-Za-z_]\w*):)?([A-Za-z_]\w*)')) {
+  $scope = $m.Groups[1].Value; $name = $m.Groups[2].Value
+  $k = if ($scope) { $scope + ':' + $name } else { $name }
+  if (-not $names.ContainsKey($k)) { $names[$k] = 0 }
+  $names[$k]++
+}
+$assigned = @{}
+foreach ($m in [regex]::Matches($block, '\$([A-Za-z_]\w*)\s*(?:\+|-|\*|/|%)?=')) { $assigned[$m.Groups[1].Value] = $true }
+foreach ($m in [regex]::Matches($block, 'foreach\s*\(\s*\$([A-Za-z_]\w*)')) { $assigned[$m.Groups[1].Value] = $true }
+$auto = @('_','true','false','null','args','input','this','PSItem','error','host','env','pwd','home','pid','PSHOME','PSScriptRoot','PSCommandPath','MyInvocation','ExecutionContext','StackTrace')
+$residual = @()
+foreach ($k in $names.Keys) {
+  if ($k -match ':') { continue }
+  if ($assigned.ContainsKey($k)) { continue }
+  if ($auto -contains $k) { continue }
+  $residual += $k
+}
+$residual = @($residual | Sort-Object -Unique)
+Assert ($residual.Count -eq 0) "Parallel block references parent-scope variable(s) bare: $($residual -join ', '). Must pass via `$using: (new runspace does not inherit parent scope)."
+# 反向自检：$using:tcpMs 必须还在——否则「全改成字面量」也能让上面通过，但那会丢失可配置性。
+Assert ([regex]::Matches($block, '\$using:tcpMs\b').Count -ge 1) 'Parallel block does not pass $using:tcpMs at all.'
+Write-Output 'PASS: parallel block has no bare parent-scope variable references.'
+
+# ---- 2. 行为：真监听端口 + 真实 poll 脚本块 ----
+$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+$listener.Start()
+$port = $listener.LocalEndpoint.Port
+$held = [System.Collections.Generic.List[System.Net.Sockets.TcpClient]]::new()
+
+# 主线程接受并按住连接，避免 backlog 堆积；不断开（断开会让 HTTP 报 connection 类错）。
+function Invoke-AcceptTick {
+  try {
+    while ($listener.Pending()) { $held.Add($listener.AcceptTcpClient()) }
+  } catch {}
+}
+
+# 3 个真监听 + 3 个未监听；httpTimeoutMs=500 让每轮 HTTP 超时只花 0.5s
+$svc = [ordered]@{}
+for ($i=0; $i -lt 3; $i++) { $svc["Live$i"] = @{ port=$port; url="http://127.0.0.1:$port/" } }
+for ($i=0; $i -lt 3; $i++) { $svc["Dead$i"] = @{ port=(59900+$i); url="http://127.0.0.1:$(59900+$i)/" } }
+
+$shared = [hashtable]::Synchronized(@{
+  svc = $svc
+  gate = [object]::new(); stop = $false
+  queue = [Collections.Concurrent.ConcurrentQueue[object]]::new()
+  cmd   = [Collections.Concurrent.ConcurrentQueue[object]]::new()
+  msg   = [Collections.Concurrent.ConcurrentQueue[string]]::new()
+  wake  = [Threading.AutoResetEvent]::new($false)
+  nssm  = 'Invoke-TestNssm'
+  httpTimeoutMs = 500
+})
+$rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState='STA'; $rs.Open()
+$rs.SessionStateProxy.SetVariable('sync', $shared)
+$mocks = @"
+function Get-Service {
+  [CmdletBinding()]param([string[]]`$Name)
+  foreach (`$n in `$Name) { [pscustomobject]@{ Name=`$n; Status='Running' } }
+}
+"@
+$ps = [powershell]::Create().AddScript($mocks).AddScript($script:poll)
+$ps.Runspace = $rs
+$handle = $ps.BeginInvoke()
+
+try {
+  # 收集真监听端口的探测结果，h 从不为「无响应」；未监听端口应报「无响应」（夹具自检）。
+  # Live/Dead 同轮收——主循环里只留 Live 会把 Dead 挤没，自检就永远过不去。
+  $want = 12; $seen = 0; $bad = 0; $deadSeen = 0; $deadBad = 0; $lastHealth = ''
+  $deadline = [datetime]::UtcNow.AddSeconds(40)
+  while (($seen -lt $want -or $deadSeen -lt 1) -and [datetime]::UtcNow -lt $deadline) {
+    Invoke-AcceptTick
+    [void]$shared.wake.Set()
+    $item = $null
+    while ($shared.queue.TryDequeue([ref]$item)) {
+      if ($item.done) { continue }
+      if ($item.n.StartsWith('Live')) {
+        $lastHealth = [string]$item.h
+        if ($item.h -eq '无响应') { $bad++ }
+        $seen++
+      } else {
+        $deadSeen++
+        if ($item.h -ne '无响应') { $deadBad++ }
+      }
+      if ($seen -ge $want -and $deadSeen -ge 3) { break }
+    }
+    Start-Sleep -Milliseconds 50
+  }
+  Assert ($seen -ge $want) "Live-port results only $seen/$want in 40s; poll loop stalled."
+  Assert ($bad -eq 0) "Listening loopback port judged '无响应' $bad/$seen time(s) (last h='$lastHealth'). TCP timeout not applied — check `$using:tcpMs."
+  Assert ($deadSeen -ge 3) "No results for unlistened ports; probe path did not exercise them."
+  Assert ($deadBad -eq 0) "Unlistened port should be '无响应', got otherwise ($deadBad/$deadSeen)."
+} finally {
+  # 收尾不用 PowerShell.Stop()——它对正在 ForEach-Object -Parallel 的 runspace 会阻塞。
+  # 置 stop + 唤醒，让 poll 自己退出循环，再等句柄。
+  $shared.stop = $true; [void]$shared.wake.Set()
+  try { if ($handle.AsyncWaitHandle.WaitOne(3000)) { $ps.EndInvoke($handle) } } catch {}
+  # 错误流快照必须放在这里，不能放 try 里：$ps.Streams.Error 是 PSDataCollection，
+  # 管道未结束时枚举会一直阻塞（实测 -join 在 2.5s 内不返回，而 .Count 4ms 就返回）。
+  # 在 try 里写 "$($ps.Streams.Error -join '; ')" 会把测试挂死——卡的是那句枚举，不是探测。
+  $errSnapshot = @($ps.Streams.Error)
+  $rs.Close(); $rs.Dispose(); $ps.Dispose(); $shared.wake.Dispose()
+  foreach ($c in $held) { try { $c.Close() } catch {} }
+  $listener.Stop()
+}
+
+Assert ($errSnapshot.Count -eq 0) "Background errors present: $($errSnapshot -join '; ')"
+Write-Output "PASS: listening port never '无响应' ($seen/$seen), unlistened port '无响应' ($deadSeen/$deadSeen)."
+Write-Output 'PASS: probe timeout variables reach the parallel runspace; listening services stay green.'

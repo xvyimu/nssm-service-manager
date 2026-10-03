@@ -1,6 +1,11 @@
 #requires -Version 7.0
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference='Stop'
+# test-tray.ps1 的纯函数段不依赖 WPF；真实 NotifyIcon 段需要 WPF 程序集与消息泵。
+# 单独跑（非经 run-all.ps1 串联）时，前面的 STA 测试不在同一进程，WPF 程序集不会
+# 预先加载——这里显式 Add-Type，避免 theme.ps1 解析 XAML 时报
+# `Unable to find type [System.Windows.Markup.XamlReader]`。
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 . (Join-Path $RepoRoot 'lib/config.ps1')
 . (Join-Path $RepoRoot 'lib/theme.ps1')   # Initialize-Tray 读 $script:iconPath
 . (Join-Path $RepoRoot 'lib/tray.ps1')

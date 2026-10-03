@@ -33,6 +33,25 @@ if ($exitSetting.Count -ne 1 -or ($exitSetting[0] -join '|') -ne 'set|__sm_add_t
   throw 'NSSM AppExit must receive both Default and Ignore.'
 }
 
+# 敏感键名提示分支：CLI 带敏感 env 时，stdout 应含「明文写入注册表」提示并点名该键。
+# 安全相关代码此前只有纯函数单测，这条补 CLI 端到端断言（mock NSSM，不碰真服务）。
+# Write-Host 走信息流（stream 6），用 6>&1 并入输出流才能被 Out-String 捕获。
+# 放在 AppExit 断言之后：这些调用会往 $script:calls 塞别的服务的 set 记录，会盖掉 __sm_add_test__。
+$script:calls.Clear()
+$script:saved = $false
+$script:startArgs = $null
+$cliOut = (Add-SvcFromCli "__sm_warn_test__,8090,$fakeExe,http://127.0.0.1:8090,,,MY_API_KEY=sk-test" 6>&1 | Out-String)
+if ($cliOut -notmatch '明文写入注册表') { throw "CLI should warn sensitive key goes to registry. Output: $cliOut" }
+if ($cliOut -notmatch 'MY_API_KEY') { throw "CLI warning should name the sensitive key. Output: $cliOut" }
+# _FILE + 路径值不提示；_FILE + 非路径值仍提示（值形态双判）
+$script:calls.Clear()
+$cliOutPath = (Add-SvcFromCli "__sm_warn_path__,8091,$fakeExe,http://127.0.0.1:8091,,,MY_TOKEN_FILE=C:\keys\t.k" 6>&1 | Out-String)
+if ($cliOutPath -match '明文写入注册表') { throw "_FILE with path value should NOT warn. Output: $cliOutPath" }
+$script:calls.Clear()
+$cliOutNoPath = (Add-SvcFromCli "__sm_warn_nopath__,8092,$fakeExe,http://127.0.0.1:8092,,,MY_TOKEN_FILE=sk-live-xxx" 6>&1 | Out-String)
+if ($cliOutNoPath -notmatch '明文写入注册表') { throw "_FILE with non-path value SHOULD warn. Output: $cliOutNoPath" }
+
+
 # 回滚路径：install 成功后某个 set 失败，应 remove 残骸并抛错。
 $script:calls.Clear()
 $script:removed=$null

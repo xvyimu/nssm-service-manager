@@ -4,8 +4,9 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $RepoRoot 'lib/util.ps1')
 
 # Load-Svc / Read-SvcFile 测试：services.json 是 SSOT，services.example.json 是兜底。
-# util.ps1 在函数体里直接读 $cfg / $logDir（从 dot-source 的调用方作用域取），
-# 因此测试必须在 dot-source 之后再赋值 $cfg，否则函数看到的是 $null。
+# util.ps1 在函数体里直接读 $cfg / $logDir（从 dot-source 的调用方作用域取；
+# 完整约定与参数命名禁区见 util.ps1 顶部注释），因此测试必须在 dot-source 之后再
+# 赋值 $cfg，否则函数看到的是 $null。
 $tmpDir = Join-Path ([IO.Path]::GetTempPath()) "sm-cfg-test-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Force $tmpDir | Out-Null
 $cfg = Join-Path $tmpDir 'services.json'

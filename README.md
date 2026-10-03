@@ -25,6 +25,8 @@ pwsh -NoProfile -File service-manager-gui.ps1
 
 双击入口是 `launch.vbs`（wscript 无控制台，不闪黑窗）。
 
+这是一个通用的本地 Windows 服务管理工具——不绑定任何特定服务。把你要管的本地服务写进 `services.json`，GUI 就管它们的启停和健康探测。要不要托管哪个服务、几个服务，完全由你定。
+
 ## 文件
 
 | 文件 | 作用 |
@@ -43,8 +45,7 @@ pwsh -NoProfile -File service-manager-gui.ps1
 | `assets/icon.ico` | 自绘齿轮图标（窗口 + 任务栏） |
 | `services.example.json` | 服务清单示例（复制为 `services.json` 使用；后者已 git 忽略） |
 | `config.example.json` | 可调常量示例（复制为 `config.json` 使用；后者已 git 忽略） |
-| `st-tts-shim/server.mjs` | TTSShim 服务本体：StepFun TTS → OpenAI 兼容 `/v1/audio/speech` 薄适配层 |
-| `st-tts-shim/test-speech.ps1` | TTSShim 打穿测试脚本 |
+| `scripts/set-service-params-acl.ps1` | 收紧 NSSM 服务 `Parameters` 注册表键 ACL（移除 `BUILTIN\Users` 读权限，见下） |
 | `tests/run-all.ps1` | 统一执行 PowerShell 语法检查和全部回归测试 |
 | `tests/make-screenshot.ps1` | 离屏渲染主窗口导出 `assets/screenshot.png` |
 | `logs/` | NSSM 服务运行日志（`.out.log` / `.err.log`，git 忽略） |
@@ -62,7 +63,7 @@ NSSM 路径按三档探测：`$env:NSSM_PATH` → `Get-Command nssm.exe` → sco
 
 ## 功能
 
-- 六张服务卡片以 3 列 × 2 行填满主区域，窗口缩放时同步伸展；单页隐藏分页按钮
+- 卡片以网格填满主区域（默认 3 列 × 2 行六张，`PerPage` 可调），窗口缩放时同步伸展；单页隐藏分页按钮
 - Microsoft YaHei UI + Consolas 系统字体，无需安装字体或启动时枚举
 - 浅色高对比卡片，原生非 layered 窗口支持系统 Mica 背景；主题色统一收口到 `lib/theme.ps1` 的 `$script:T`，改色只动一份
 - 每张卡：服务名、端口、URL、状态圆点、健康说明、打开面板、启停按钮
@@ -81,7 +82,7 @@ NSSM 路径按三档探测：`$env:NSSM_PATH` → `Get-Command nssm.exe` → sco
 - 删除服务后卡片缓存清零，同名重建显示新端口/URL；配置变更后翻页命中缓存也刷新
 - 默认关闭即退出、最小化到任务栏；需要常驻可开托盘（见「可调常量」的 `TrayEnabled` / `MinimizeToTray` / `CloseToTray`）
 
-## 托管的 6 个服务
+## 托管的服务
 
 `services.json` 是每台机器自己的配置（已 git 忽略，不上传）。克隆后复制 `services.example.json` 为 `services.json` 并按需改：
 
@@ -91,27 +92,50 @@ Copy-Item services.example.json services.json
 
 示例清单（服务名/端口/面板/本体可全改）：
 
-| 服务 | 端口 | 面板 | 本体 |
-|------|------|------|------|
-| MyAPI | 3000 | http://127.0.0.1:3000 | 独立部署 |
-| RouterA | 20128 | http://127.0.0.1:20128/dashboard | 独立部署 |
-| RouterB | 20129 | http://127.0.0.1:20129/dashboard | 独立部署 |
-| ProxyA | 8317 | http://127.0.0.1:8317/management.html | 独立部署 |
-| BuddyAPI | 7863 | http://127.0.0.1:7863/panel/ | 独立部署 |
-| TTSShim | 8001 | http://127.0.0.1:8001/health | 本仓 `st-tts-shim/server.mjs`（NSSM `AppDirectory` 指向本目录，`AppEnvironmentExtra` 注入 `TTS_API_KEY`，`AppExit Default=Ignore` 不自动重启） |
+| 服务 | 端口 | 面板 |
+|------|------|------|
+| MyAPI | 3000 | http://127.0.0.1:3000 |
+| RouterA | 20128 | http://127.0.0.1:20128/dashboard |
+| RouterB | 20129 | http://127.0.0.1:20129/dashboard |
+| ProxyA | 8317 | http://127.0.0.1:8317/management.html |
+| BuddyAPI | 7863 | http://127.0.0.1:7863/panel/ |
+| ServiceF | 9000 | http://127.0.0.1:9000/health |
 
-> **安全提示（TTS_API_KEY 暴露面）：** NSSM 把 `TTS_API_KEY` 明文写入注册表 `HKLM\SYSTEM\CurrentControlSet\Services\TTSShim\Parameters\AppEnvironmentExtra`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出 65 字符明文密钥。**推荐用 `TTS_API_KEY_FILE`** 指向一个仅 Administrators+SYSTEM 可读的密钥文件（路径不进注册表，文件权限收口）；`server.mjs` 一旦检测到该变量设置，只从文件读密钥，文件读不出或为空则**拒绝启动，不回落 `TTS_API_KEY`**——防止配了文件却因回落重新把密钥留在注册表。彻底收紧注册表键 ACL 用 `scripts/set-service-params-acl.ps1`（见下）。
+> **环境变量与注册表密钥暴露面：** NSSM 把 `AppEnvironmentExtra` 明文写入注册表 `HKLM\SYSTEM\CurrentControlSet\Services\<服务名>\Parameters\AppEnvironmentExtra`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出你填进去的环境变量明文。**凡含密钥、令牌、口令的变量（如 `*_API_KEY` / `*_TOKEN` / `*SECRET` / `*PASSWORD` / `*ACCESS_KEY` / `*CREDENTIAL` / `*PRIVATE_KEY` / `*PASSPHRASE`），不要直接填进环境变量框**——改为让服务本体从独立的密钥文件（仅 Administrators+SYSTEM 可读）读取，文件路径不进注册表。GUI 与 CLI 在你填写此类键名时会提示这一点；`*_FILE` 后缀仅在值看起来像路径时才跳过提示，否则照样警告（键名后缀不等于值就是路径）。彻底收紧注册表键 ACL 用 `scripts/set-service-params-acl.ps1`（见下）。
 
-### 收紧 Parameters 注册表键 ACL（可选，深度防御）
+### 从旧版 TTS 管理器升级
 
-即便改用 `TTS_API_KEY_FILE`，`Parameters` 键下可能仍有历史 `AppEnvironmentExtra` 残留。本脚本把该键 ACL 从默认的「Users 可读」收紧到 `Administrators + SYSTEM`：
+本工具曾是 TTS 服务的专用管理器，`st-tts-shim/` 与 `services.json` 里的 `TTSShim` 条目已从版本控制移除。如果你的本机仍残留旧安装，按以下步骤清理（**管理员 PowerShell**）：
 
 ```powershell
-# 管理员 PowerShell
+# 1. 删除旧的 NSSM 服务（含 HKLM\SYSTEM\CurrentControlSet\Services\TTSShim 整棵键，
+#    Parameters 子键也随之消失。Start=3 已禁用的话 stop 可省）
+sc.exe stop TTSShim
+nssm remove TTSShim confirm
+
+# 2. 删除本机 shim 目录（已 git 忽略，不会影响仓库）
+Remove-Item -Recurse -Force D:\service-manager\st-tts-shim
+
+# 3. 从 services.json 删掉 TTSShim 条目（或直接用 GUI「添加」重建你要的新服务）
+
+# 4. 仅当第 1 步未能删除服务键（键仍残留）时，才需收紧残留 Parameters 键 ACL
 pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName TTSShim
 ```
 
-脚本流程：禁用继承（保留本键显式 ACE、丢掉继承自 `Services` 的 Users 读权限）→ 移除 `BUILTIN\Users` 与 `Everyone` 的所有 Allow ACE → 确保 `Administrators` 与 `SYSTEM` 完全控制 → 读回校验无 Users/Everyone 残留。失败时不自动回退（回退会把权限重新放宽，更危险），提示人工处理。
+第 1 步成功时第 4 步必然报「注册表键不存在」并 exit 1——那是预期，服务键已随服务一起删掉了。
+
+新克隆机器不会受影响——`st-tts-shim/` 不在版本控制里，`services.example.json` 的示例已改为通用条目。
+
+### 收紧 Parameters 注册表键 ACL（可选，深度防御）
+
+`Parameters` 键下可能有历史 `AppEnvironmentExtra` 残留。本脚本把该键 ACL 从默认的「Users 可读」收紧到 `Administrators + SYSTEM`：
+
+```powershell
+# 管理员 PowerShell
+pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName <服务名>
+```
+
+脚本流程：禁用继承（保留本键显式 ACE、丢掉继承自 `Services` 的 Users 读权限）→ 移除 `BUILTIN\Users` 与 `Everyone` 的所有 ACE → 确保 `Administrators` 与 `SYSTEM` 完全控制 → 读回校验无 Users/Everyone 残留 ACE（Allow 与 Deny 都查）。失败时不自动回退（回退会把权限重新放宽，更危险），提示人工处理。
 
 ## 可调常量（config.json）
 
@@ -141,7 +165,6 @@ Copy-Item config.example.json config.json
 
 - PowerShell 7（`pwsh`）
 - NSSM 2.24（scoop 安装，或自备后设 `NSSM_PATH`）
-- Node.js 18+（仅 TTSShim 需要，内置 `http` + 全局 `fetch`，无 npm 依赖）
 
 ## 添加新服务
 
@@ -160,8 +183,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 ## 测试与截图
 
 ```powershell
-pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 15 项 PowerShell 回归
-node --test tests/shim.test.mjs                       # TTSShim node:test 回归（无网络）
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 16 项 PowerShell 回归
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 ```
 
@@ -177,35 +199,15 @@ pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/scree
 
 `Send-ServiceCommand` 统一提交 GUI 命令并触发唤醒；`test-poll-commands.ps1` 用隔离 runspace 验证空闲唤醒、慢探测之间的命令优先、FIFO 与关闭唤醒。正在进行的单次探测或服务命令仍需结束后才能处理后续命令。
 
-CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）+ `node --test tests/shim.test.mjs`（TTSShim 无网络覆盖：缺 key 拒启、`TTS_API_KEY_FILE` 读不出/为空拒启不回落、上游 401 透传、body 超限 413）。
+`test-probe-timeout-scope.ps1` 守并行探测块的 runspace 作用域：`ForEach-Object -Parallel` 开新 runspace，不继承父作用域变量，超时变量必须经 `$using:` 传入。裸用 `$tcpMs` 会让子 runspace 取到 `$null`，`WaitOne($null,$false)` 等价 `WaitOne(0)`，TCP 握手没完成就判「无响应」——该状态在 `card.ps1` 落到红色分支，于是「启停一个服务，别的运行中服务变红」。测试两路：静态扫并行块裸引用（剥注释后不误报），行为段用真监听端口 + 真 poll 脚本块端到端验证。`test-parallel-probe.ps1` 探的是未监听端口，0ms 与 200ms 结果都是「无响应」，对这类 bug 天然免疫，故单开一份。
+
+CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）。
 
 ## 排错
 
 `launch.vbs` 必须保持纯 ASCII：Windows Script Host 按系统 ANSI 代码页读取，UTF-8 中文注释在部分系统会触发 `800A0400` 编译错误。桌面快捷方式与非管理员 PowerShell 入口共用这个启动器。
 
 `logs/gui-crash.log` 记录管理员状态、WPF 加载、窗口渲染和退出阶段，不记录 CLI 参数或环境变量。只有启动器退出码为 0 不能证明窗口已出现，应检查 `Window content rendered` 或实际窗口。
-
-## 内置 TTSShim（可选）
-
-`st-tts-shim/server.mjs` 是一个可选的示例服务本体：StepFun TTS → OpenAI 兼容 `/v1/audio/speech` 薄适配层，零依赖，只靠 Node.js 内置 `http` + 全局 `fetch`。不需要 TTS 的话，从 `services.json` 里删掉 TTSShim 即可，其余功能不受影响。
-
-环境变量（推荐用 `TTS_API_KEY_FILE` 把密钥移出注册表；NSSM `AppEnvironmentExtra` 仅在未配文件时承载 `TTS_API_KEY`）：
-
-| 变量 | 默认 | 说明 |
-|------|------|------|
-| `PORT` | 8001 | 监听端口 |
-| `HOST` | 127.0.0.1 | 绑定地址 |
-| `TTS_BASE` | `https://api.stepfun.com/step_plan/v1` | 上游 base |
-| `TTS_MODEL` | `stepaudio-2.5-tts` | 缺省 model |
-| `TTS_DEFAULT_VOICE` | `lengyanyujie` | 请求未带 voice 时的缺省音色 |
-| `TTS_AUTH_STYLE` | `bearer` | 上游鉴权风格（`bearer` 或原样放 key） |
-| `TTS_API_KEY` / `STEPFUN_API_KEY` | — | 上游密钥（环境变量面，会进注册表）；未设 `TTS_API_KEY_FILE` 时用此面，缺失拒绝启动 |
-| `TTS_API_KEY_FILE` | — | 密钥文件路径（推荐）；**一旦设置，只从文件读，文件读不出/为空则拒启不回落 `TTS_API_KEY`** |
-| `TTS_TIMEOUT_MS` | 120000 | 上游请求超时 |
-
-打穿测试：`pwsh -NoProfile -File st-tts-shim/test-speech.ps1`
-
-> **安全提示（TTS_API_KEY 暴露面）：** 见上方「安全提示」与「收紧 Parameters 注册表键 ACL」两节——推荐 `TTS_API_KEY_FILE` + `scripts/set-service-params-acl.ps1` 双管齐下，把密钥既移出注册表、又收紧残留键 ACL。
 
 ## 许可
 

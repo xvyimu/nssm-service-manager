@@ -13,7 +13,7 @@ $script:svc = [ordered]@{
   'RouterB'  = @{ port = 20129; url = 'http://127.0.0.1:20129/dashboard' }
   'ProxyA'   = @{ port = 8317;  url = 'http://127.0.0.1:8317/management.html' }
   'BuddyAPI' = @{ port = 7863;  url = 'http://127.0.0.1:7863/panel/' }
-  'TTSShim'  = @{ port = 8001;  url = 'http://127.0.0.1:8001/health' }
+  'ServiceF' = @{ port = 9000;  url = 'http://127.0.0.1:9000/health' }
 }
 $script:cmdQueue = [Collections.Concurrent.ConcurrentQueue[object]]::new()
 $script:sync = @{ wake = [Threading.AutoResetEvent]::new($false) }
@@ -25,7 +25,7 @@ try {
   # 填一批有代表性的状态，让截图体现颜色分档
   $states = @(
     @('MyAPI','运行中','正常'), @('RouterA','运行中','正常'), @('RouterB','运行中','超时'),
-    @('ProxyA','已停止',''), @('BuddyAPI','运行中','无响应'), @('TTSShim','运行中','正常')
+    @('ProxyA','已停止',''), @('BuddyAPI','运行中','无响应'), @('ServiceF','运行中','正常')
   )
   foreach ($s in $states) { Update-CardData $s[0] $s[1] $s[2] }
   $script:statusBar.Text = "$(Get-Date -Format 'HH:mm:ss')  状态自动刷新"
