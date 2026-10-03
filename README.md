@@ -108,7 +108,8 @@ Copy-Item services.example.json services.json
 本工具曾是 TTS 服务的专用管理器，`st-tts-shim/` 与 `services.json` 里的 `TTSShim` 条目已从版本控制移除。如果你的本机仍残留旧安装，按以下步骤清理（**管理员 PowerShell**）：
 
 ```powershell
-# 1. 删除旧的 NSSM 服务（Start=3 已禁用的话 stop 可省）
+# 1. 删除旧的 NSSM 服务（含 HKLM\SYSTEM\CurrentControlSet\Services\TTSShim 整棵键，
+#    Parameters 子键也随之消失。Start=3 已禁用的话 stop 可省）
 sc.exe stop TTSShim
 nssm remove TTSShim confirm
 
@@ -117,9 +118,11 @@ Remove-Item -Recurse -Force D:\service-manager\st-tts-shim
 
 # 3. 从 services.json 删掉 TTSShim 条目（或直接用 GUI「添加」重建你要的新服务）
 
-# 4. 可选：收紧残留 Parameters 注册表键 ACL（见下一节）
+# 4. 仅当第 1 步未能删除服务键（键仍残留）时，才需收紧残留 Parameters 键 ACL
 pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName TTSShim
 ```
+
+第 1 步成功时第 4 步必然报「注册表键不存在」并 exit 1——那是预期，服务键已随服务一起删掉了。
 
 新克隆机器不会受影响——`st-tts-shim/` 不在版本控制里，`services.example.json` 的示例已改为通用条目。
 
