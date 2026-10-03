@@ -94,6 +94,17 @@ try {
     Assert ($svcRot.Count -eq 2) "My.Service should pick up rotated log, got $($svcRot.Count)"
     # 不存在的服务返回空，不抛错
     Assert ((Get-LogFiles 'NoSuch' $logTmp).Count -eq 0) 'absent service should yield empty list'
+
+    # ---- 单参调用：不传 LogPath，靠动态作用域回落外层 $logDir（GUI 走的就是这条） ----
+    # 回归防护：参数若取名 $LogDir 会遮蔽同名的外层 $logDir（PS 变量名大小写不敏感），
+    # 回落变成自己赋给自己，GUI 日志下拉框永远为空。这里把 $logDir 指到同一临时目录验证。
+    $savedLogDir = $logDir
+    try {
+      $logDir = $logTmp
+      $oneArg = Get-LogFiles 'My.Service'
+      Assert ($oneArg.Count -eq 2) "single-arg call must fall back to outer `$logDir, got $($oneArg.Count)"
+      Assert (@($oneArg | Where-Object { $_.Path -like '*My.Service.out.log' }).Count -eq 1) 'single-arg fallback must find the current log'
+    } finally { $logDir = $savedLogDir }
   } finally { Remove-Item -LiteralPath $logTmp -Recurse -Force -EA SilentlyContinue }
 
   # ---- Get-NssmSetSpec：参数组合（AppExit 双 token / Env 多 token / 可选键省略） ----

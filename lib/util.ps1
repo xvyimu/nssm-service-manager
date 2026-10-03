@@ -107,16 +107,18 @@ function Show-SecurityCheck([string]$n){
 # 枚举当前 + 轮转日志：out/err 是当前，out-YYYYMMDDHHMMSS.log / err-*.log 是轮转
 # 服务名允许含 . 与 -（Test-SvcInput 的 [A-Za-z0-9_.-]），正则里这些是元字符——
 # 必须先 [regex]::Escape 再插，否则 "My.Service" 的 . 会匹配任意字符，跨服务串台。
-# 参数化 LogDir：可单测，不依赖 Show-Log 的闭包作用域。
-function Get-LogFiles([string]$n, [string]$LogDir){
-  if(-not $LogDir){ $LogDir = $logDir }
-  if(-not $LogDir -or -not (Test-Path -LiteralPath $LogDir)){ return @() }
+# 参数名必须是 $LogPath 不能是 $LogDir：PowerShell 变量名大小写不敏感，参数一旦叫
+# $LogDir 就会遮蔽同名（不区分大小写）的外层 $logDir，下面那句回落变成自己赋给自己，
+# GUI 的单参调用永远拿到 $null。改名后回落才能经动态作用域读到调用方的 $logDir。
+function Get-LogFiles([string]$n, [string]$LogPath){
+  if(-not $LogPath){ $LogPath = $logDir }
+  if(-not $LogPath -or -not (Test-Path -LiteralPath $LogPath)){ return @() }
   $esc = [regex]::Escape($n)
   $current = @()
   $rotated = @()
   # -Filter 走 Windows shell 通配（非正则），点号原样匹配；用 $n 不用 $esc。
   $pattern = "{0}.*.log" -f $n
-  $files = @(Get-ChildItem -LiteralPath $LogDir -Filter $pattern -File -EA SilentlyContinue |
+  $files = @(Get-ChildItem -LiteralPath $LogPath -Filter $pattern -File -EA SilentlyContinue |
     Sort-Object LastWriteTime -Descending)
   foreach ($f in $files) {
     $base = $f.BaseName  # e.g. "MyAPI.out" or "MyAPI.out-20260930120000"
