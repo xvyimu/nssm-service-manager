@@ -106,6 +106,33 @@ function Show-SecurityCheck([string]$n){
   [System.Windows.MessageBox]::Show($msg,"$n 安全检查",'OK',$(if($quoted -and $permissive -eq '否'){'Information'}else{'Warning'})) | Out-Null
 }
 
+# 枚举当前 + 轮转日志：out/err 是当前，out-YYYYMMDDHHMMSS.log / err-*.log 是轮转
+# 服务名允许含 . 与 -（Test-SvcInput 的 [A-Za-z0-9_.-]），正则里这些是元字符——
+# 必须先 [regex]::Escape 再插，否则 "My.Service" 的 . 会匹配任意字符，跨服务串台。
+# 参数化 LogDir：可单测，不依赖 Show-Log 的闭包作用域。
+function Get-LogFiles([string]$n, [string]$LogDir){
+  if(-not $LogDir){ $LogDir = $logDir }
+  if(-not $LogDir -or -not (Test-Path -LiteralPath $LogDir)){ return @() }
+  $esc = [regex]::Escape($n)
+  $current = @()
+  $rotated = @()
+  # -Filter 走 Windows shell 通配（非正则），点号原样匹配；用 $n 不用 $esc。
+  $pattern = "{0}.*.log" -f $n
+  $files = @(Get-ChildItem -LiteralPath $LogDir -Filter $pattern -File -EA SilentlyContinue |
+    Sort-Object LastWriteTime -Descending)
+  foreach ($f in $files) {
+    $base = $f.BaseName  # e.g. "MyAPI.out" or "MyAPI.out-20260930120000"
+    # 锚到行首：服务名本身的点号已转义，不会吞掉相邻服务名；行尾按 out/err 或轮转后缀分档。
+    if ($base -match "^$esc\.(out|err)$") {
+      $current += [pscustomobject]@{ Path=$f.FullName; Label="$($matches[1]) (当前)"; Size=$f.Length }
+    } elseif ($base -match "^$esc\.(out|err)-") {
+      $rotated += [pscustomobject]@{ Path=$f.FullName; Label="$($matches[1]) 轮转 $($f.LastWriteTime.ToString('MM-dd HH:mm'))"; Size=$f.Length }
+    }
+  }
+  # 当前在前，轮转按时间倒序
+  @($current) + @($rotated)
+}
+
 # ---- 日志查看器（闭包 hashtable 持久切换状态）----
 # 发现 5：除当前 .out.log / .err.log 外，加轮转历史下拉（nssm AppRotateFiles 产生的
 # .out-*.log / .err-*.log），并在标题栏显示文件大小。22 个轮转文件此前在 GUI 中不可见。
@@ -124,25 +151,6 @@ function Show-Log([string]$n, $owner){
   $state = @{ Current = 'out'; File = $null }
   $combo = New-Object System.Windows.Controls.ComboBox -Property @{ Margin='4,2'; MinWidth=220 }
   $refreshBtn = New-Object System.Windows.Controls.Button -Property @{ Content='🔄 刷新'; Margin='4,2' }
-
-  # 枚举当前 + 轮转日志：out/err 是当前，out-YYYYMMDDHHMMSS.log / err-*.log 是轮转
-  function Get-LogFiles([string]$n){
-    $current = @()
-    $rotated = @()
-    $pattern = "{0}.{1}.log" -f $n, '*'
-    $files = @(Get-ChildItem -LiteralPath $logDir -Filter $pattern -File -EA SilentlyContinue |
-      Sort-Object LastWriteTime -Descending)
-    foreach ($f in $files) {
-      $base = $f.BaseName  # e.g. "TTSShim.out" or "TTSShim.out-20260930120000"
-      if ($base -match "\.$n\.(out|err)$") {
-        $current += [pscustomobject]@{ Path=$f.FullName; Label="$($matches[1]) (当前)"; Size=$f.Length }
-      } elseif ($base -match "\.$n\.(out|err)-") {
-        $rotated += [pscustomobject]@{ Path=$f.FullName; Label="$($matches[1]) 轮转 $($f.LastWriteTime.ToString('MM-dd HH:mm'))"; Size=$f.Length }
-      }
-    }
-    # 当前在前，轮转按时间倒序
-    @($current) + @($rotated)
-  }
 
   $load = {
     $box.Clear()

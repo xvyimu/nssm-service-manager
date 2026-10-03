@@ -33,6 +33,24 @@ function Test-EnvPairs([object[]]$pairs){
   $null
 }
 
+# 扫 env 项里的敏感键名（GUI/CLI 共用，提示性，不阻断）。返回命中项的键名列表，无则空。
+# 命中 *_API_KEY / *_TOKEN / *SECRET / *PASSWORD 这类键名时，值会随 NSSM AppEnvironmentExtra
+# 明文进注册表 HKLM\...\Parameters，该键 ACL 默认 BUILTIN\Users 可读——本机标准用户能读出。
+# *_FILE 后缀跳过（让服务本体从独立密钥文件读，路径不进注册表）。
+function Find-SensitiveEnvKeys([object[]]$pairs){
+  if(-not $pairs){ return @() }
+  $hits = @()
+  foreach($pair in $pairs){
+    $kv = $pair -split '=',2
+    if($kv.Count -ne 2){ continue }
+    $key = $kv[0].Trim()
+    if($key -match '(?i)API_KEY|TOKEN|SECRET|PASSWORD'){
+      if($key -notmatch '(?i)_FILE$'){ $hits += $key }
+    }
+  }
+  $hits
+}
+
 # NSSM 注册后需要 set 的键值序列（不含 install 与失败回滚）。抽出来是为可单测参数组合：
 # AppExit 双 token、AppEnvironmentExtra 多 token 这类容易被展开方式搞错的地方。
 function Get-NssmSetSpec([string]$n,[string]$dir,[string]$par,[object[]]$envPairs){
@@ -87,6 +105,13 @@ function Add-SvcFromCli([string]$spec){
   try {
     Install-NssmService $n $exe $dir $par $envPairs
   } catch { Write-Host "注册失败: $($_.Exception.Message)"; exit 1 }
+  # 敏感键名提示：明文密钥会进注册表 AppEnvironmentExtra（BUILTIN\Users 可读）。
+  # CLI 不阻断，只把命中键名列出来提示用户改用 *_FILE。
+  $sensitive = Find-SensitiveEnvKeys $envPairs
+  if ($sensitive.Count) {
+    Write-Host "提示: 以下环境变量将明文写入注册表（BUILTIN\Users 可读）：$($sensitive -join ', ')"
+    Write-Host "      推荐改用 *_FILE 路径让服务本体从密钥文件读，文件权限收口到 Administrators+SYSTEM。"
+  }
   [Threading.Monitor]::Enter($sync.gate)
   try { $script:svc[$n]=@{port=$p;url=$url} } finally { [Threading.Monitor]::Exit($sync.gate) }
   try {
@@ -220,6 +245,14 @@ function Show-Add($owner){
     $envPairs = ConvertTo-EnvPairs $env ','
     $envErr = Test-EnvPairs $envPairs
     if($envErr){ [System.Windows.MessageBox]::Show($f,$envErr,'错误','OK','Error'); return }
+    # 敏感键名提示：明文密钥会进注册表 AppEnvironmentExtra（BUILTIN\Users 可读）。
+    # 不阻断注册（用户可能确有需要），提示改用 *_FILE 让服务本体从密钥文件读。
+    $sensitive = Find-SensitiveEnvKeys $envPairs
+    if($sensitive.Count){
+      $tip = "以下环境变量将明文写入注册表（BUILTIN\Users 可读）：`n$($sensitive -join ', ')`n`n推荐改用 *_FILE 路径让服务本体从密钥文件读，文件权限收口到 Administrators+SYSTEM。`n仍要继续注册吗？"
+      $choice = [System.Windows.MessageBox]::Show($f,$tip,'敏感键名提示','OKCancel','Warning')
+      if($choice -ne 'OK'){ return }
+    }
     try {
       Install-NssmService $n $exe $dir $par $envPairs
     } catch {
