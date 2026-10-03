@@ -29,21 +29,43 @@ $ErrorActionPreference='Stop'
 . (Join-Path $RepoRoot 'lib/poll.ps1')
 function Assert($condition,[string]$message) { if (-not $condition) { throw $message } }
 
-# ---- 1. 静态：并行块内不得裸用 $tcpMs / $httpMs / $waitMs ----
+# ---- 1. 静态：并行块内不得裸用父作用域变量 ----
 # 从 "ForEach-Object -Parallel {" 到 "-ThrottleLimit" 之间即并行块体。
 # 先剥掉注释——注释里提到 $tcpMs 不该算命中（本文件的说明文字就写了它）。
 $rawBlock = [regex]::Match($script:poll, '(?s)ForEach-Object\s+-Parallel\s*\{(.*?)\}\s*-ThrottleLimit').Groups[1].Value
 Assert ($rawBlock.Length -gt 0) 'Could not locate the ForEach-Object -Parallel block in poll.ps1.'
 $block = ($rawBlock -split "`n" | ForEach-Object { $_ -replace '#.*$','' }) -join "`n"
-foreach ($v in 'tcpMs','httpMs','waitMs') {
-  # 裸引用 = 前面不是 $using: 也不是 $script: 的 $v。
-  # 正则用单引号拼接，避免 PowerShell 把 "$using:" 当变量解析。
-  $bare  = [regex]::Matches($block, '(?<![\w:])\$' + $v + '\b')
-  $using = [regex]::Matches($block, '\$using:' + $v + '\b')
-  Assert ($bare.Count -eq 0) "Parallel block references `$$v bare ($($bare.Count)x); must use `$using:$v (new runspace does not inherit parent scope)."
-  if ($v -eq 'tcpMs') { Assert ($using.Count -ge 1) "Parallel block does not pass `$using:$v at all." }
+
+# 通用判定，而非硬编码三个变量名：块内每个 $name 引用，若
+#   - 带作用域前缀（$using: / $script: / $global: …），或
+#   - 在块内被赋值（= 或 foreach 变量），或
+#   - 是自动变量 / 字面量（$null/$true/…），
+# 则安全；否则就是裸引用父作用域变量 → 子 runspace 里取 $null。
+# 硬编码名单的问题：将来加第四个变量忘了 $using: 会静默漏过。
+# 灵敏度已验：原样块残留 0 个；注入假想的 $fakeTimeoutMs 立刻被抓到。
+$names = @{}
+foreach ($m in [regex]::Matches($block, '\$(?:([A-Za-z_]\w*):)?([A-Za-z_]\w*)')) {
+  $scope = $m.Groups[1].Value; $name = $m.Groups[2].Value
+  $k = if ($scope) { $scope + ':' + $name } else { $name }
+  if (-not $names.ContainsKey($k)) { $names[$k] = 0 }
+  $names[$k]++
 }
-Write-Output 'PASS: parallel block has no bare timeout-variable references.'
+$assigned = @{}
+foreach ($m in [regex]::Matches($block, '\$([A-Za-z_]\w*)\s*(?:\+|-|\*|/|%)?=')) { $assigned[$m.Groups[1].Value] = $true }
+foreach ($m in [regex]::Matches($block, 'foreach\s*\(\s*\$([A-Za-z_]\w*)')) { $assigned[$m.Groups[1].Value] = $true }
+$auto = @('_','true','false','null','args','input','this','PSItem','error','host','env','pwd','home','pid','PSHOME','PSScriptRoot','PSCommandPath','MyInvocation','ExecutionContext','StackTrace')
+$residual = @()
+foreach ($k in $names.Keys) {
+  if ($k -match ':') { continue }
+  if ($assigned.ContainsKey($k)) { continue }
+  if ($auto -contains $k) { continue }
+  $residual += $k
+}
+$residual = @($residual | Sort-Object -Unique)
+Assert ($residual.Count -eq 0) "Parallel block references parent-scope variable(s) bare: $($residual -join ', '). Must pass via `$using: (new runspace does not inherit parent scope)."
+# 反向自检：$using:tcpMs 必须还在——否则「全改成字面量」也能让上面通过，但那会丢失可配置性。
+Assert ([regex]::Matches($block, '\$using:tcpMs\b').Count -ge 1) 'Parallel block does not pass $using:tcpMs at all.'
+Write-Output 'PASS: parallel block has no bare parent-scope variable references.'
 
 # ---- 2. 行为：真监听端口 + 真实 poll 脚本块 ----
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
