@@ -91,11 +91,9 @@ function Show-SecurityCheck([string]$n){
   $r = Resolve-ServiceExeDir $path
   $dir = $r.dir; $quoted = $r.quoted
   $permissive = '否'
-  $aclRead = $false
   if ($dir -and (Test-Path $dir)) {
     try {
       $acl = Get-Acl -Path $dir
-      $aclRead = $true
       foreach ($a in $acl.Access) {
         if (@('BUILTIN\Users','Everyone','Users') -contains $a.IdentityReference.Value -and $a.FileSystemRights.ToString() -match 'Write|Modify|FullControl') { $permissive = '是'; break }
       }
@@ -124,9 +122,9 @@ function Get-LogFiles([string]$n, [string]$LogDir){
     $base = $f.BaseName  # e.g. "MyAPI.out" or "MyAPI.out-20260930120000"
     # 锚到行首：服务名本身的点号已转义，不会吞掉相邻服务名；行尾按 out/err 或轮转后缀分档。
     if ($base -match "^$esc\.(out|err)$") {
-      $current += [pscustomobject]@{ Path=$f.FullName; Label="$($matches[1]) (当前)"; Size=$f.Length }
+      $current += [pscustomobject]@{ Path=$f.FullName; Label="$($matches[1]) (当前)" }
     } elseif ($base -match "^$esc\.(out|err)-") {
-      $rotated += [pscustomobject]@{ Path=$f.FullName; Label="$($matches[1]) 轮转 $($f.LastWriteTime.ToString('MM-dd HH:mm'))"; Size=$f.Length }
+      $rotated += [pscustomobject]@{ Path=$f.FullName; Label="$($matches[1]) 轮转 $($f.LastWriteTime.ToString('MM-dd HH:mm'))" }
     }
   }
   # 当前在前，轮转按时间倒序
@@ -135,7 +133,7 @@ function Get-LogFiles([string]$n, [string]$LogDir){
 
 # ---- 日志查看器（闭包 hashtable 持久切换状态）----
 # 发现 5：除当前 .out.log / .err.log 外，加轮转历史下拉（nssm AppRotateFiles 产生的
-# .out-*.log / .err-*.log），并在标题栏显示文件大小。22 个轮转文件此前在 GUI 中不可见。
+# .out-*.log / .err-*.log）。22 个轮转文件此前在 GUI 中不可见。
 function Show-Log([string]$n, $owner){
   $f2 = New-Object System.Windows.Window -Property @{
     Title = "$n 日志"; Width = 760; Height = 520; WindowStartupLocation='CenterOwner'
@@ -148,7 +146,7 @@ function Show-Log([string]$n, $owner){
   }
   $lt = New-Object System.Windows.Controls.StackPanel -Property @{ Orientation='Horizontal' }
   # 当前日志 + 轮转历史下拉；切换时重新加载
-  $state = @{ Current = 'out'; File = $null }
+  $state = @{ File = $null }
   $combo = New-Object System.Windows.Controls.ComboBox -Property @{ Margin='4,2'; MinWidth=220 }
   $refreshBtn = New-Object System.Windows.Controls.Button -Property @{ Content='🔄 刷新'; Margin='4,2' }
 
@@ -189,7 +187,7 @@ function Show-Log([string]$n, $owner){
   & $fillCombo $null
   $combo.Add_SelectionChanged({
     $item = $combo.SelectedItem
-    if ($item -and $item.Tag) { $state.Current = ''; $state.File = [string]$item.Tag; & $load }
+    if ($item -and $item.Tag) { $state.File = [string]$item.Tag; & $load }
   }.GetNewClosure())
   $refreshBtn.Add_Click({
     # 刷新下拉（轮转文件可能新增）并重载当前
