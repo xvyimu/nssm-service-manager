@@ -101,7 +101,27 @@ Copy-Item services.example.json services.json
 | BuddyAPI | 7863 | http://127.0.0.1:7863/panel/ |
 | ServiceF | 9000 | http://127.0.0.1:9000/health |
 
-> **环境变量与注册表密钥暴露面：** NSSM 把 `AppEnvironmentExtra` 明文写入注册表 `HKLM\SYSTEM\CurrentControlSet\Services\<服务名>\Parameters\AppEnvironmentExtra`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出你填进去的环境变量明文。**凡含密钥、令牌、口令的变量（如 `*_API_KEY` / `*_TOKEN` / `*SECRET` / `*PASSWORD`），不要直接填进环境变量框**——改为让服务本体从独立的密钥文件（仅 Administrators+SYSTEM 可读）读取，文件路径不进注册表。GUI 与 CLI 在你填写此类键名时会提示这一点。彻底收紧注册表键 ACL 用 `scripts/set-service-params-acl.ps1`（见下）。
+> **环境变量与注册表密钥暴露面：** NSSM 把 `AppEnvironmentExtra` 明文写入注册表 `HKLM\SYSTEM\CurrentControlSet\Services\<服务名>\Parameters\AppEnvironmentExtra`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出你填进去的环境变量明文。**凡含密钥、令牌、口令的变量（如 `*_API_KEY` / `*_TOKEN` / `*SECRET` / `*PASSWORD` / `*ACCESS_KEY` / `*CREDENTIAL` / `*PRIVATE_KEY` / `*PASSPHRASE`），不要直接填进环境变量框**——改为让服务本体从独立的密钥文件（仅 Administrators+SYSTEM 可读）读取，文件路径不进注册表。GUI 与 CLI 在你填写此类键名时会提示这一点；`*_FILE` 后缀仅在值看起来像路径时才跳过提示，否则照样警告（键名后缀不等于值就是路径）。彻底收紧注册表键 ACL 用 `scripts/set-service-params-acl.ps1`（见下）。
+
+### 从旧版 TTS 管理器升级
+
+本工具曾是 TTS 服务的专用管理器，`st-tts-shim/` 与 `services.json` 里的 `TTSShim` 条目已从版本控制移除。如果你的本机仍残留旧安装，按以下步骤清理（**管理员 PowerShell**）：
+
+```powershell
+# 1. 删除旧的 NSSM 服务（Start=3 已禁用的话 stop 可省）
+sc.exe stop TTSShim
+nssm remove TTSShim confirm
+
+# 2. 删除本机 shim 目录（已 git 忽略，不会影响仓库）
+Remove-Item -Recurse -Force D:\service-manager\st-tts-shim
+
+# 3. 从 services.json 删掉 TTSShim 条目（或直接用 GUI「添加」重建你要的新服务）
+
+# 4. 可选：收紧残留 Parameters 注册表键 ACL（见下一节）
+pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName TTSShim
+```
+
+新克隆机器不会受影响——`st-tts-shim/` 不在版本控制里，`services.example.json` 的示例已改为通用条目。
 
 ### 收紧 Parameters 注册表键 ACL（可选，深度防御）
 

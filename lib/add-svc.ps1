@@ -34,9 +34,11 @@ function Test-EnvPairs([object[]]$pairs){
 }
 
 # 扫 env 项里的敏感键名（GUI/CLI 共用，提示性，不阻断）。返回命中项的键名列表，无则空。
-# 命中 *_API_KEY / *_TOKEN / *SECRET / *PASSWORD 这类键名时，值会随 NSSM AppEnvironmentExtra
+# 命中 *_API_KEY / *_TOKEN / *SECRET / *PASSWORD / *ACCESS_KEY / *CREDENTIAL /
+# *PRIVATE_KEY / *PASSPHRASE 等键名时，值会随 NSSM AppEnvironmentExtra
 # 明文进注册表 HKLM\...\Parameters，该键 ACL 默认 BUILTIN\Users 可读——本机标准用户能读出。
-# *_FILE 后缀跳过（让服务本体从独立密钥文件读，路径不进注册表）。
+# *_FILE 后缀本意是「让服务本体从独立密钥文件读，路径不进注册表」——但仅在值看起来像路径时
+# 才跳过；否则视为有人把真密钥塞进了 *_FILE 变量，照样提示（键名后缀不等于值就是路径）。
 function Find-SensitiveEnvKeys([object[]]$pairs){
   if(-not $pairs){ return @() }
   $hits = @()
@@ -44,8 +46,9 @@ function Find-SensitiveEnvKeys([object[]]$pairs){
     $kv = $pair -split '=',2
     if($kv.Count -ne 2){ continue }
     $key = $kv[0].Trim()
-    if($key -match '(?i)API_KEY|TOKEN|SECRET|PASSWORD'){
-      if($key -notmatch '(?i)_FILE$'){ $hits += $key }
+    if($key -match '(?i)API_KEY|TOKEN|SECRET|PASSWORD|ACCESS_KEY|CREDENTIAL|PRIVATE_KEY|PASSPHRASE|PWD'){
+      $looksLikePath = $kv[1] -match '^[A-Za-z]:[\\/]|^\\\\|^\.{1,2}[\\/]|^/'
+      if($key -notmatch '(?i)_FILE$' -or -not $looksLikePath){ $hits += $key }
     }
   }
   $hits

@@ -69,9 +69,15 @@ try {
   Assert ($hits.Count -eq 0) 'no sensitive key names should yield no hits'
   $hits = Find-SensitiveEnvKeys @('MY_API_KEY=sk-123','B=2','DB_PASSWORD=xyz','MY_TOKEN=abc','NORMAL=1')
   Assert (($hits -join '|') -eq 'MY_API_KEY|DB_PASSWORD|MY_TOKEN') "expected MY_API_KEY/DB_PASSWORD/MY_TOKEN, got $($hits -join '|')"
-  # *_FILE 后缀跳过
+  # *_FILE 后缀 + 值是路径 → 跳过（路径不进注册表，本意成立）
   $hits = Find-SensitiveEnvKeys @('MY_API_KEY_FILE=C:\keys\my.key')
-  Assert ($hits.Count -eq 0) '_FILE keys should be skipped'
+  Assert ($hits.Count -eq 0) '_FILE keys with path values should be skipped'
+  # *_FILE 后缀 + 值不是路径（像真密钥） → 仍提示，键名后缀不等于值就是路径
+  $hits = Find-SensitiveEnvKeys @('MY_API_KEY_FILE=sk-live-123456')
+  Assert (($hits -join '|') -eq 'MY_API_KEY_FILE') '_FILE keys with non-path values should still be flagged'
+  # 扩展键名清单：ACCESS_KEY / CREDENTIAL / PRIVATE_KEY / PASSPHRASE / PWD
+  $hits = Find-SensitiveEnvKeys @('AWS_ACCESS_KEY_ID=AKIA...','MY_CREDENTIAL=user:pass','PRIVATE_KEY=-----BEGIN','JWT_PASSPHRASE=abc','DB_PWD=secret')
+  Assert (($hits -join '|') -eq 'AWS_ACCESS_KEY_ID|MY_CREDENTIAL|PRIVATE_KEY|JWT_PASSPHRASE|DB_PWD') "expected expanded patterns, got $($hits -join '|')"
   # 空/空壳入参
   Assert ((Find-SensitiveEnvKeys @()).Count -eq 0) 'empty pair list should yield no hits'
   Assert ((Find-SensitiveEnvKeys $null).Count -eq 0) 'null should yield no hits'
@@ -132,7 +138,7 @@ try {
   } elseif (Test-Path -LiteralPath $cfg) {
     throw 'Test created services.json where none existed.'
   }
-  Write-Output 'PASS: Test-SvcInput (name/exe/port/dup + order), ConvertTo-EnvPairs (sep/trim/drop-empty), Test-EnvPairs (format/APPDATA), Find-SensitiveEnvKeys (sensitive-name detection + _FILE skip), Get-LogFiles (regex-escaped service names), Get-NssmSetSpec (AppExit dual-token, env multi-token, optional-key omission, array-typed values).'
+  Write-Output 'PASS: Test-SvcInput (name/exe/port/dup + order), ConvertTo-EnvPairs (sep/trim/drop-empty), Test-EnvPairs (format/APPDATA), Find-SensitiveEnvKeys (sensitive-name detection + _FILE path-aware skip + expanded patterns), Get-LogFiles (regex-escaped service names), Get-NssmSetSpec (AppExit dual-token, env multi-token, optional-key omission, array-typed values).'
 } finally {
   Remove-Item -LiteralPath $fakeExe -Force -EA SilentlyContinue
 }

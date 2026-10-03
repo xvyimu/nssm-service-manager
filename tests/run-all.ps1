@@ -1,12 +1,25 @@
 #requires -Version 7.0
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference='Stop'
+
+# 收集失败继续跑下一项，避免一个环境性/偶发失败掩掉后续结果
+# （如沙箱挡 [IO.File]::Replace 导致 config round-trip 挂掉，后面 4 项根本没跑）。
+# 解析阶段若挂了，后面的测试也无从执行——解析失败仍按硬错误直接抛。
+$script:failures = @()
 
 function Invoke-Check([string]$label, [scriptblock]$action) {
   Write-Output "== $label =="
-  & $action
+  try {
+    & $action
+  } catch {
+    if ($label -eq 'PowerShell parser') { throw }
+    $script:failures += @{ Label=$label; Error=$_.Exception.Message }
+    Write-Output "FAIL: $label — $($_.Exception.Message)"
+    return
+  }
   if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
-    throw "$label failed with exit code $LASTEXITCODE."
+    $script:failures += @{ Label=$label; Error="exit code $LASTEXITCODE" }
+    Write-Output "FAIL: $label — exit code $LASTEXITCODE"
   }
 }
 
@@ -49,4 +62,10 @@ foreach ($test in $tests) {
   Invoke-Check $test.Name { & pwsh @arguments }
 }
 
+if ($script:failures.Count) {
+  Write-Output ""
+  Write-Output "== $($script:failures.Count) failure(s) =="
+  foreach ($f in $script:failures) { Write-Output "  - $($f.Label): $($f.Error)" }
+  exit 1
+}
 Write-Output "PASS: $($tests.Count) regression tests and parser check completed."
