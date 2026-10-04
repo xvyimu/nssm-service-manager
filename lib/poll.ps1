@@ -103,20 +103,15 @@ while(-not $sync.stop){
   try { $snap = @($sync.svc.Keys) } finally { [Threading.Monitor]::Exit($sync.gate) }
 
   # 批量查询服务状态（发现 7）：一次 Get-Service 拿回全部，避免每服务一次 SCM 往返。
-  # 缺失的服务（未安装）会被 Get-Service 抛 ObjectNotFound，下面逐个兜底。
+  # 只要有任一名字不存在，Get-Service 就整批抛 ObjectNotFound（实测：不是部分返回，
+  # 赋值都完不成）——故 catch 退回逐个查询，在那里区分「未安装」与「未知」。
   $svcStatus = @{}
   if ($snap.Count) {
     try {
-      $found = Get-Service -Name $snap -EA Stop
       # Get-Service 可能返回单个对象或数组；统一成数组再按 Name 索引
-      $foundList = @($found)
-      foreach ($s in $foundList) { $svcStatus[$s.Name] = [string]$s.Status }
-      # 批量查询漏掉的服务（未安装）单独兜底
-      foreach ($n in $snap) {
-        if (-not $svcStatus.ContainsKey($n)) { $svcStatus[$n] = $null }
-      }
+      foreach ($s in @(Get-Service -Name $snap -EA Stop)) { $svcStatus[$s.Name] = [string]$s.Status }
     } catch {
-      # 整批失败（极少见）：退回逐个查询
+      # 整批失败（任一服务未安装即触发）：退回逐个查询
       foreach ($n in $snap) {
         try { $svcStatus[$n] = [string](Get-Service -Name $n -EA Stop).Status } catch { $svcStatus[$n] = $null }
       }
