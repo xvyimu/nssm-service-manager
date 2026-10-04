@@ -1,0 +1,129 @@
+# PROJECT.md — service-manager 架构与设计决策
+
+> 仓库 SSOT：代码是行为真相，本文件是**为什么这么做**的真相。代码改了行为不改这里就是漂移。
+> 产品表入口：`D:\projects\README.md`。本仓在那张表里登记的「跑在哪」= Windows 原生（绑 WPF / sc.exe / nssm.exe / wsl.exe，不进 WSL）。
+
+## 一句话定位
+
+PowerShell 7 + WPF 的本地 Windows 服务管理 GUI。卡片式启停 / 健康探测 / 日志查看，零外部 npm 依赖。管两类对象：
+
+- **NSSM 服务**（默认）：`sc.exe` 查状态 + `nssm.exe` 注册/删除 + TCP/HTTP 双档健康探测
+- **WSL 发行版**（`type: "wsl"`）：`wsl.exe --list --quiet --running` 查状态 + `-d <distro>` 启动 + `--shutdown` 停止
+
+## 技术栈选型理由
+
+| 选型 | 为什么不是别的 |
+|------|---------------|
+| PowerShell 7 + WPF | 本机已装 pwsh；WPF 卡片渲染比 WinForms 灵活，Mica 玻璃背景走原生 DWM API；不用 Electron（重）也不用 WinForms（卡片样式受限） |
+| NSSM | Windows 原生 `sc.exe` 不能给任意 exe 加日志重定向和轮转；NSSM 补这两块，是社区事实标准 |
+| `ProcessStartInfo` 重定向 raw bytes | `wsl.exe --list` 输出 UTF-16LE，PowerShell 默认按 ANSI 解会乱码；不重定向 bytes 拿不到正确发行版名 |
+| 后台 runspace + ConcurrentQueue | UI 线程绝不碰 I/O（`Get-Service` / `TcpClient` / `HttpClient` / `wsl.exe` 都可能阻塞）；结果回队列，DispatcherTimer 400ms 轮询取 |
+| `ForEach-Object -Parallel` 探测 | 6 服务串行 TCP+HTTP 最坏 19 秒；并行后最坏 3.2 秒（HTTP 超时上限） |
+| 单实例 Mutex | 重复双击启动器是常见操作；Mutex 进程级，崩溃自动释放，不卡死 |
+| 配置层示例+实配分离 | `services.json` / `config.json` 每台机器自定，已 git 忽略；示例进仓保证克隆即跑 |
+
+## 模块拓扑
+
+```
+service-manager-gui.ps1（主入口：CLI 分支 + 提权 + 模块加载 + 窗口启动）
+├─ lib/config.ps1     可调常量收口（PerPage/超时/轮转/冷却/托盘）
+├─ lib/theme.ps1      系统字体、主题色 $script:T、按钮模板、Mica P/Invoke
+├─ lib/util.ps1       配置持久化（Read-SvcFile/Load-Svc/Save-Svc）、NSSM 操作、
+│                     安全检查（Resolve-ServiceExeDir/Show-SecurityCheck）、日志查看器（Show-Log）
+├─ lib/svc-common.ps1 UI 与 runspace 共用的 Wait-Stopped（只此一份）
+├─ lib/poll.ps1       后台 runspace 脚本块：Get-Service 批量 + TcpClient + HttpClient 并行探测
+│                     + sc.exe 退出码映射 + WSL 状态探测与启停
+├─ lib/add-svc.ps1    添加服务（GUI + CLI）+ 删除服务 + Install-NssmService + 纯函数族
+├─ lib/tray.ps1       可选托盘（纯函数 Get-CloseAction/Get-MinimizeAction + 惰性 Initialize-Tray）
+├─ lib/card.ps1       卡片构建 + 双击防抖 + 过渡态保护 + 右键菜单 + WSL 卡片适配
+└─ lib/xaml.ps1       主窗口外壳（标题栏 + 工具栏 + 分页 + 状态栏）
+```
+
+加载顺序在 `service-manager-gui.ps1` 里固定：config → theme → util → tray → poll → add-svc → card → xaml。config 必须最早（Write-CrashLog 首次调用在提权检测处，早于模块加载区）。card 与 xaml 自加载 config 是为单测 dot-source 时不依赖完整顺序。
+
+## 关键数据流
+
+### 探测流（后台 → UI）
+
+```
+后台 runspace（poll.ps1 脚本块）
+  循环：Invoke-PendingCommands → 拷 svc 快照 → 批量 Get-Service → 收集 → 并行探测 → 入队
+                                        ↓
+                          ConcurrentQueue $sync.queue
+                                        ↓
+UI DispatcherTimer 400ms tick → TryDequeue → Update-CardData
+```
+
+### 命令流（UI → 后台）
+
+```
+UI 点击 → Invoke-CardToggle → Send-ServiceCommand
+  → cmdEpoch++ → 入 $sync.cmd 队列 → wake.Set() 唤醒后台
+                                        ↓
+后台 Invoke-PendingCommands → TryDequeue → 分流（wsl / nssm）→ 执行 → 入 queue 带 done=true
+                                        ↓
+UI DispatcherTimer → ack 分支 → 解封按钮 + 冷却
+```
+
+### 命令纪元（epoch）
+
+每次 `Send-ServiceCommand` 递增 `$script:cmdEpoch`，随命令对象入队；后台执行完把同一 epoch 跟着结果回 UI。`Update-CardData` 据此过滤在途旧探测——过渡态期间只接受 epoch ≥ 卡片 `PendingEpoch` 的回执，旧探测（无 epoch）直接丢弃。
+
+这是为了解决一个竞态：用户点「停止」，服务慢停止期间旧探测仍报「运行中」，不该覆盖用户刚触发的「停止中」过渡态。原方案靠「方向匹配」做症状层补丁（启动中只接受运行中收尾），现在用 epoch 过滤更干净——旧探测一律丢，直到命令完成回执解封按钮，下一轮探测自然落到终态。
+
+## 设计决策
+
+### 1. UI 线程不碰 I/O
+
+`Get-Service` 拉 NetTCPIP CIM provider（常驻 +10MB）、`TcpClient` 可能阻塞、`HttpClient` 可能超时 3 秒、`wsl.exe` 冷启动 2.5 秒——任何一个放 UI 线程都会冻结界面。全部挪到后台 runspace，结果经 ConcurrentQueue 回 UI 侧 DispatcherTimer 取。
+
+### 2. Wait-Stopped 只此一份
+
+原 `poll.ps1` 的 runspace 字符串里一份 `Wait-Stopped`、`add-svc.ps1` 里一份，靠「SYNC: 两处同改」注释人工同步。抽到 `lib/svc-common.ps1`：`poll.ps1` 构造 runspace 时把本文件内容前置进脚本字符串，`add-svc.ps1` 直接 dot-source——两边引用同一份文本。
+
+### 3. WSL 只管发行版层，不碰 WSLService
+
+`WSLService` 是系统服务，停它需要管理员。本工具刻意只管发行版层：`wsl.exe -d <distro> echo ready` 启动（普通用户即可）、`wsl.exe --shutdown` 停止（同样不需管理员）。这样把 WSL 纳管到 GUI 后，启停 WSL 与启停 NSSM 服务走同一套卡片交互，无需为 WSL 单独提权。
+
+副作用：别的程序（VS Code Remote-WSL、Orca 的 IPC worker）会非周期性拉起 WSL。GUI 显示「已停止」后又被拉起不是 bug，是外部进程在用它。
+
+### 4. WSL 用 `--shutdown` 而非 `-t <distro>`
+
+`wsl -t <distro>` 要逐个停发行版里的进程，约 10 秒；`wsl.exe --shutdown` 直接关 WSL 子系统，<1 秒。单发行版场景效果相同（反正只有一个发行版）。多发行版场景下 `--shutdown` 会停掉所有发行版——当前设计假设单发行版，多发行版是已知限制。
+
+### 5. WSL 探测走 raw bytes 解码
+
+`wsl.exe --list --quiet --running` 输出是 UTF-16LE。PowerShell 重定向进程输出默认按 ANSI 解，拿到的是乱码，`-contains $distro` 永远 false，WSL 永远显示「已停止」。`Get-WslState` 用 `ProcessStartInfo` 重定向 `BaseStream` 到 MemoryStream，再 `Unicode.GetString` 解码——绕开 PowerShell 的编码层。
+
+### 6. Save-Svc 不落 type/distro
+
+`Save-Svc` 只落 NSSM 字段（`port`/`url`），不落 `type`/`distro`——保持 `services.json` 对 NSSM 服务的前向兼容（老版本 GUI 不认 `type` 也不会坏）。副作用：WSL 条目手编进 `services.json` 后，NSSM 服务的增删触发的 `Save-Svc` 会把 WSL 条目的 `type` 丢掉。当前实现里 `Save-Svc` 全量写回 `$script:svc`，而 `$script:svc` 是 `Load-Svc` 读入的完整对象（含 `type`/`distro`）——所以实际不会丢。但 schema 上 `Save-Svc` 没显式落 `type`，这是已知的不对称：读时透传，写时靠全量对象兜底。
+
+### 7. 配置层示例+实配分离
+
+`services.json` / `config.json` 每台机器自定，已 git 忽略；`services.example.json` / `config.example.json` 进仓保证克隆即跑。`Load-Svc` 回落链：`services.json` → `services.example.json` → 空清单。前者缺失或 JSON 解析失败时读示例清单（并在状态栏提示），首次运行不会是一片空白。
+
+### 8. 单实例 Mutex 进程级
+
+重复双击启动器是常见操作。Mutex 是进程级的，进程退出 OS 自动释放，不会卡死。`AbandonedMutexException`（前一个实例被任务管理器杀掉或崩溃时）当成「已获取」——否则第二个实例也起不来。
+
+### 9. 删除走后台命令队列
+
+NSSM remove 是 stop → Wait-Stopped ≤6s → nssm remove confirm，同步执行会冻结 UI。删删除走后台命令队列（`act=remove`），UI 线程只关弹窗，回执由 DispatcherTimer 处理（从 svc 与卡片缓存移除，落盘配置，刷新分页）。
+
+### 10. 敏感键名检测不阻断
+
+`Find-SensitiveEnvKeys` 检测 `*_API_KEY` / `*_TOKEN` 等键名，提示用户改用 `*_FILE` 路径让服务本体从密钥文件读。不阻断注册——用户可能确有需要。`*_FILE` 后缀仅在值看起来像路径时才跳过提示，否则照样警告（键名后缀不等于值就是路径）。
+
+## 已知限制
+
+- WSL 多发行版：`--shutdown` 会停掉所有发行版，当前设计假设单发行版
+- WSL 条目只能手编进 `services.json`，不走 GUI「添加」或 CLI `-Add`
+- 真实 UAC、系统 Mica 效果与 NSSM 服务生命周期需在本机交互验证（单测用替身）
+- `launch.vbs` 必须保持纯 ASCII（Windows Script Host 按系统 ANSI 代码页读取，UTF-8 中文注释在部分系统触发 `800A0400`）
+
+## 测试
+
+`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 16 项回归测试。详见 README「测试与截图」节。
+
+CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）。

@@ -16,8 +16,11 @@ function Read-SvcFile([string]$path){
   $j = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
   $o = [ordered]@{}; foreach ($k in $j.Keys) {
     $p = [int]$j[$k].port; $u = [string]$j[$k].url
-    if ($p -lt 1 -or $p -gt 65535) { throw "$k 端口非法: $p" }
-    $o[$k] = @{ port = $p; url = $u }
+    $t = [string]$j[$k].type      # 未设 → ""，按 nssm 处理（现有行为）
+    $d = [string]$j[$k].distro     # wsl 类型专用：发行版名
+    # wsl 类型不探端口，port=0 合法；其余类型保持 1-65535 校验
+    if ($t -ne 'wsl' -and ($p -lt 1 -or $p -gt 65535)) { throw "$k 端口非法: $p" }
+    $o[$k] = @{ port = $p; url = $u; type = $t; distro = $d }
   }
   $o
 }
@@ -37,6 +40,10 @@ function Load-Svc {
 }
 
 # 原子写回：$PID.$guid.tmp → Replace（避免写一半停电留下半截 JSON）
+# Save-Svc 只落 NSSM 字段（port/url），不落 type/distro——保持 services.json 对 NSSM
+# 服务的前向兼容（老版本 GUI 不认 type 也不会坏）。WSL 等外部类型由 Read-SvcFile 读入，
+# 但 Save-Svc 回写时按 NSSM schema 写，外部类型条目会丢 type——故本函数仅由 add-svc.ps1
+# 在 NSSM 服务增删时调用，WSL 条目手编进 services.json 不走 Save-Svc。
 function Save-Svc($s) {
   $json  = $s | ConvertTo-Json -Depth 5
   $tmp   = "$cfg.$PID.$([guid]::NewGuid()).tmp"
