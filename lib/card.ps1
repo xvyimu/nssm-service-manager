@@ -104,7 +104,7 @@ function New-Card([string]$name, $info){
   # 防抖状态（挂在 Border 上）
   $border | Add-Member -NotePropertyMembers @{
     SvcName=$name; Port=$info.port; Url=$info.url
-    ST='查询中'; HT=''; LastToggle=[datetime]::MinValue; ReadyToToggle=$false
+    ST='查询中'; LastToggle=[datetime]::MinValue; ReadyToToggle=$false
     PendingEpoch=0
     Dot=$dot; LblSt=$lblSt; LblUp=$lblUp; Btn=$btn
     PortText=$portText; Endpoint=$endpoint; OpenBtn=$open
@@ -187,7 +187,7 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
     $expected = $transitionExpect[$c.ST]
     if ($st -ne $expected -and $st -notin @('未安装','未知')) { return }
   }
-  $c.ST = $st; $c.HT = $h
+  $c.ST = $st
   $running = $st -eq '运行中'
   $healthy = $h -eq '正常'
   # 状态颜色映射：运行中按健康分档，停止/未安装统一灰，其余橙

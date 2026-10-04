@@ -12,8 +12,7 @@
 # Wait-Stopped 抽到 lib/svc-common.ps1，与 add-svc.ps1（UI 线程）引用同一份实现。
 # runspace 不能 dot-source 外部文件（脚本块字符串里没有 $PSScriptRoot），构造时把 svc-common.ps1
 # 的文本前置进 $script:poll——UI 线程与后台引用的是同一份源码，原「SYNC: 两处同改」注释消除。
-$script:pollCommon = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'svc-common.ps1')
-$script:poll = $script:pollCommon + @'
+$script:poll = (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'svc-common.ps1')) + @'
 # runspace 内构造一次、复用到退出——HttpClient 本身线程安全
 $http = [System.Net.Http.HttpClient]::new()
 # 超时从 $sync 读（由 UI 线程从 config.ps1 注入）；测试夹具未设时回落默认（200/3000/6000）。
