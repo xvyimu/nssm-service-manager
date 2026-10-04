@@ -28,12 +28,9 @@ function Invoke-CardToggle($card, [string]$source='Button') {
   }
   $action=if ($state -eq '运行中') { 'stop' } else { 'start' }
   if ($action -eq 'stop' -and -not $card.ReadyToToggle) {
-    # wsl 类型无健康门闩（IsWsl 时 ReadyToToggle 在运行中即为 true），此处对 wsl 不拦截
-    if (-not [bool]$card.IsWsl) {
-      $detail=if ($detailed) { '（健康非正常）' } else { '' }
-      $script:statusBar.Text="$name 服务未就绪$detail，暂不能关闭"
-      return
-    }
+    $detail=if ($detailed) { '（健康非正常）' } else { '' }
+    $script:statusBar.Text="$name 服务未就绪$detail，暂不能关闭"
+    return
   }
 
   $card.ST=if ($action -eq 'stop') { '停止中' } else { '启动中' }
@@ -66,20 +63,17 @@ function New-Card([string]$name, $info){
     Text=$name; FontFamily=$script:cjkFont; FontSize=19; FontWeight='SemiBold'; Foreground=$script:T.Fg
     VerticalAlignment='Center'; TextTrimming='CharacterEllipsis'; ToolTip=$name; Margin='0,0,8,0'
   }
-  # wsl 类型不显示端口徽章和 URL 端点（无端口无面板）——用发行版名替代端口徽章，
-  # 用空字符串隐藏 endpoint 行（Text 为空时 TextBlock 不占可见空间）。
-  $isWsl = [string]$info.type -eq 'wsl'
+  # 端口徽章与 endpoint 行：端口号与面板 URL
   $port=New-Object System.Windows.Controls.Border -Property @{Background=$script:T.PortBg; CornerRadius=4; Padding='7,3'; VerticalAlignment='Center'}
-  $portText=New-Object System.Windows.Controls.TextBlock -Property @{Text=$(if($isWsl){$info.distro}else{":$($info.port)"}); FontFamily=$script:fontMono; FontSize=12; Foreground=$script:T.Dim}
+  $portText=New-Object System.Windows.Controls.TextBlock -Property @{Text=":$($info.port)"; FontFamily=$script:fontMono; FontSize=12; Foreground=$script:T.Dim}
   $port.Child=$portText
   [void]$heading.Children.Add($lblName); [void]$heading.Children.Add($port)
   [System.Windows.Controls.Grid]::SetColumn($port,1)
   [void]$grid.Children.Add($heading)
 
-  $endpointText = if($isWsl){''}else{$info.url}
   $endpoint=New-Object System.Windows.Controls.TextBlock -Property @{
-    Text=$endpointText; FontFamily=$script:fontMono; FontSize=12; Foreground=$script:T.Dim
-    Margin='0,8,0,0'; TextTrimming='CharacterEllipsis'; ToolTip=$endpointText
+    Text=$info.url; FontFamily=$script:fontMono; FontSize=12; Foreground=$script:T.Dim
+    Margin='0,8,0,0'; TextTrimming='CharacterEllipsis'; ToolTip=$info.url
   }
   [void]$grid.Children.Add($endpoint); [System.Windows.Controls.Grid]::SetRow($endpoint,1)
   $state=New-Object System.Windows.Controls.StackPanel -Property @{VerticalAlignment='Center'; Margin='0,12,0,12'}
@@ -97,8 +91,7 @@ function New-Card([string]$name, $info){
     HorizontalAlignment='Left'; Background='Transparent'; BorderThickness='0'; Foreground=$script:T.Accent
     Tag=$info.url; IsEnabled=(-not [string]::IsNullOrWhiteSpace($info.url))
   }
-  # wsl 类型无面板可开，隐藏「打开面板」按钮（Collapse 不占空间）
-  if ($isWsl) { $open.Visibility = [System.Windows.Visibility]::Collapsed }
+  # 无面板 URL 时禁用「打开面板」（IsEnabled 由 url 是否为空决定）
   $open.Add_Click({ if ($this.Tag) { Start-Process ([string]$this.Tag) } })
   $btn=New-Object System.Windows.Controls.Button -Property @{
     Content='启动'; FontFamily=$script:cjkFont; FontSize=12; Padding='14,6'
@@ -110,11 +103,11 @@ function New-Card([string]$name, $info){
 
   # 防抖状态（挂在 Border 上）
   $border | Add-Member -NotePropertyMembers @{
-    SvcName=$name; Port=$info.port; Url=$info.url; Type=[string]$info.type; Distro=[string]$info.distro
+    SvcName=$name; Port=$info.port; Url=$info.url
     ST='查询中'; HT=''; LastToggle=[datetime]::MinValue; ReadyToToggle=$false
     PendingEpoch=0
     Dot=$dot; LblSt=$lblSt; LblUp=$lblUp; Btn=$btn
-    PortText=$portText; Endpoint=$endpoint; OpenBtn=$open; IsWsl=$isWsl
+    PortText=$portText; Endpoint=$endpoint; OpenBtn=$open
   }
   # 按钮持有卡片引用，Click 里直接取，省得爬 VisualTree
   $btn.Tag = $border
@@ -129,14 +122,8 @@ function New-Card([string]$name, $info){
   $border.Add_MouseRightButtonDown({
     param($s,$e)
     $n = $s.SvcName
-    $isWsl = [bool]$s.IsWsl
     $ctx = New-Object System.Windows.Controls.ContextMenu
-    # wsl 类型不支持重启/日志/安全检查（非 NSSM 服务，这些操作无意义），只留启停与删除
-    $items = if ($isWsl) {
-      @(@('启动','start'),@('停止','stop'),@('删除','remove'))
-    } else {
-      @(@('启动','start'),@('停止','stop'),@('重启','restart'),@('面板','open'),@('日志','log'),@('安全检查','security'),@('删除','remove'))
-    }
+    $items = @(@('启动','start'),@('停止','stop'),@('重启','restart'),@('面板','open'),@('日志','log'),@('安全检查','security'),@('删除','remove'))
     foreach ($d in $items) {
       $mi = New-Object System.Windows.Controls.MenuItem -Property @{Header=$d[0]; Tag=$d[1]+'|'+$n}
       if ($d[1] -eq 'remove') { $mi.Foreground = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(192,57,43)) }
@@ -166,17 +153,12 @@ function New-Card([string]$name, $info){
 function Update-CardInfo([string]$name, $info){
   if (-not $script:cards.ContainsKey($name)) { return }
   $c = $script:cards[$name]
-  $c.Port = $info.port; $c.Url = $info.url; $c.Type = [string]$info.type; $c.Distro = [string]$info.distro
-  $isWsl = [string]$info.type -eq 'wsl'
-  # IsWsl 是 New-Card 里从 type 派生的缓存值，配置变更命中缓存时必须同步刷新——
-  # 否则 Update-CardData / Invoke-CardToggle 读到旧值，WSL 卡片走 NSSM 健康门闩逻辑。
-  $c.IsWsl = $isWsl
-  $c.PortText.Text = if($isWsl){$info.distro}else{":$($info.port)"}
-  $c.Endpoint.Text = if($isWsl){''}else{$info.url}
-  $c.Endpoint.ToolTip = if($isWsl){''}else{$info.url}
+  $c.Port = $info.port; $c.Url = $info.url
+  $c.PortText.Text = ":$($info.port)"
+  $c.Endpoint.Text = $info.url
+  $c.Endpoint.ToolTip = $info.url
   $c.OpenBtn.Tag = $info.url
   $c.OpenBtn.IsEnabled = (-not [string]::IsNullOrWhiteSpace($info.url))
-  $c.OpenBtn.Visibility = if($isWsl){[System.Windows.Visibility]::Collapsed}else{[System.Windows.Visibility]::Visible}
 }
 
 # 更新卡片数据（由 DispatcherTimer 调用）
@@ -207,9 +189,8 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
   }
   $c.ST = $st; $c.HT = $h
   $running = $st -eq '运行中'
-  # wsl 类型无 HTTP 健康探测——运行中即健康（绿），无「无响应/超时」分档
-  $healthy = if ([bool]$c.IsWsl) { $running } else { $h -eq '正常' }
-  # 状态颜色映射：运行中按健康分档（wsl 直接绿），停止/未安装统一灰，其余橙
+  $healthy = $h -eq '正常'
+  # 状态颜色映射：运行中按健康分档，停止/未安装统一灰，其余橙
   $dotColor = switch ($st) {
     '运行中' { if ($healthy) { 'Green' } elseif ($h -eq '超时') { 'Orange' } else { 'Red' } }
     { $_ -in @('已停止','未安装') } { 'Gray' }
@@ -222,12 +203,7 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
   $c.LblSt.Foreground = $brush
 
   # 健康文字
-  $c.LblUp.Text = if ([bool]$c.IsWsl) {
-    # wsl 类型：运行中显示发行版名，已停止显示提示，其余沿用通用逻辑
-    if ($running) { $c.Distro + ' 运行中' }
-    elseif ($st -eq '已停止') { '随时可以启动' }
-    else { $h }
-  } elseif ($running -and $healthy) {
+  $c.LblUp.Text = if ($running -and $healthy) {
     '服务响应正常'
   } elseif ($running) {
     $h

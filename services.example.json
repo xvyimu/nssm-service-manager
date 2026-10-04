@@ -4,6 +4,5 @@
   "RouterB":   { "port": 20129, "url": "http://127.0.0.1:20129/dashboard" },
   "ProxyA":    { "port": 8317,  "url": "http://127.0.0.1:8317/management.html" },
   "BuddyAPI":  { "port": 7863,  "url": "http://127.0.0.1:7863/panel/" },
-  "ServiceF":  { "port": 9000,  "url": "http://127.0.0.1:9000/health" },
-  "WSL":       { "type": "wsl", "distro": "Ubuntu-24.04", "port": 0, "url": "" }
+  "ServiceF":  { "port": 9000,  "url": "http://127.0.0.1:9000/health" }
 }

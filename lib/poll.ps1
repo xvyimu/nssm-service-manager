@@ -24,56 +24,6 @@ $waitMs = if ($sync.waitStoppedTimeoutMs){ [int]$sync.waitStoppedTimeoutMs } els
 $http.Timeout = [TimeSpan]::FromMilliseconds($httpMs)
 $sync.tcpTimeoutMs = $tcpMs; $sync.httpTimeoutMs = $httpMs; $sync.waitStoppedTimeoutMs = $waitMs
 
-# ---- WSL 类型：发行版状态探测与启停（不跑 Get-Service / TCP / HTTP）----
-# wsl --list --quiet --running 输出是 UTF-16LE，PowerShell 默认按 ANSI 解会乱码——
-# 用 ProcessStartInfo 重定向 raw bytes，再 Unicode.GetString 解码。
-# 停止时输出空（0 字节），运行时含发行版名（每行一个）。
-function Get-WslState([string]$distro){
-  if(-not $distro){ return '未安装' }
-  $psi = [Diagnostics.ProcessStartInfo]::new('wsl.exe','--list --quiet --running')
-  $psi.UseShellExecute = $false
-  $psi.RedirectStandardOutput = $true
-  # 不设 StandardOutputEncoding：我们走 BaseStream → MemoryStream → Unicode.GetString
-  # 手动解码（UTF-16LE），不读 StandardOutput 流——设了那个属性是死代码。
-  $p = [Diagnostics.Process]::Start($psi)
-  $ms = [System.IO.MemoryStream]::new()
-  try { $p.StandardOutput.BaseStream.CopyTo($ms) } catch {}
-  $p.WaitForExit()
-  $bytes = $ms.ToArray()
-  $p.Dispose(); $ms.Dispose()
-  $out = [System.Text.Encoding]::Unicode.GetString($bytes).Trim([char]0).Trim()
-  $lines = $out -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-  if ($lines -contains $distro) { 'Running' } else { 'Stopped' }
-}
-
-# WSL 启停：start 拉起发行版（-d，冷启动 ~2.5s，命令本身同步返回后才算启动完成）；
-# stop 用 --shutdown（比 -t 快 10 倍，单发行版场景效果相同）。
-# 失败不抛——反馈到 UI 状态栏，与 Invoke-Sc 对称。
-function Invoke-WslCommand([string]$action,[string]$distro){
-  $exe = 'wsl.exe'
-  # 不用 $args 作变量名：PowerShell 里 $args 是自动变量（接收未绑定参数），
-  # 局部赋值会遮蔽它，虽在此函数无实参透传场景不致踩，但避坑比省一个字母值钱。
-  $wslArgs = if ($action -eq 'start') { @('-d', $distro, 'echo', 'ready') }
-          elseif ($action -eq 'stop') { @('--shutdown') }
-          else { return $false }
-  $psi = [Diagnostics.ProcessStartInfo]::new($exe, ($wslArgs -join ' '))
-  $psi.UseShellExecute = $false
-  $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError = $true
-  $psi.StandardOutputEncoding = [System.Text.Encoding]::Unicode
-  $psi.StandardErrorEncoding = [System.Text.Encoding]::Unicode
-  $p = [Diagnostics.Process]::Start($psi)
-  $p.WaitForExit()
-  $code = $p.ExitCode
-  $p.Dispose()
-  if ($code -ne 0) {
-    $reason = "wsl $action 失败(exit=$code)"
-    $sync.msg.Enqueue("$distro $reason")
-    return $false
-  }
-  $true
-}
-
 # sc.exe 不抛异常，只靠 $LASTEXITCODE；包装成 helper，失败时反馈到 UI 状态栏
 # 常见退出码映射（发现 9）：1056=已在运行 / 1062=未启动 / 1060=未安装 / 1051=禁止启动
 function Convert-ScExitCode([int]$code){
@@ -115,17 +65,6 @@ function Invoke-PendingCommands {
   $item=$null
   while(-not $sync.stop -and $sync.cmd.TryDequeue([ref]$item)){
     $n=[string]$item.n; $act=[string]$item.act; $e=$item.e
-    # 分流：wsl 类型走 Invoke-WslCommand，其余走原 NSSM 路径（sc.exe）
-    $info = $null
-    [Threading.Monitor]::Enter($sync.gate)
-    try { $info = $sync.svc[$n] } finally { [Threading.Monitor]::Exit($sync.gate) }
-    $isWsl = $info -and [string]$info.type -eq 'wsl'
-    if ($isWsl) {
-      $ok = Invoke-WslCommand $act ([string]$info.distro)
-      if ($null -eq $ok) { $ok=$true }
-      if ($ok) { $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$null;h=$null;e=$e;done=$true;act=$act}) }
-      continue
-    }
     switch($act){
       'start'   { $ok=Invoke-Sc 'start' $n '启动失败' }
       'stop'    { $ok=Invoke-Sc 'stop' $n '停止失败' }
@@ -166,28 +105,21 @@ while(-not $sync.stop){
 
   # 批量查询服务状态（发现 7）：一次 Get-Service 拿回全部，避免每服务一次 SCM 往返。
   # 缺失的服务（未安装）会被 Get-Service 抛 ObjectNotFound，下面逐个兜底。
-  # wsl 类型不在 Win32_Service 里，跳过批量查询，收集阶段单独走 Get-WslState。
   $svcStatus = @{}
   if ($snap.Count) {
-    $nssmNames = @($snap | Where-Object {
-      [Threading.Monitor]::Enter($sync.gate)
-      try { $i = $sync.svc[$_]; [string]$i.type -ne 'wsl' } finally { [Threading.Monitor]::Exit($sync.gate) }
-    })
-    if ($nssmNames.Count) {
-      try {
-        $found = Get-Service -Name $nssmNames -EA Stop
-        # Get-Service 可能返回单个对象或数组；统一成数组再按 Name 索引
-        $foundList = @($found)
-        foreach ($s in $foundList) { $svcStatus[$s.Name] = [string]$s.Status }
-        # 批量查询漏掉的服务（未安装）单独兜底
-        foreach ($n in $nssmNames) {
-          if (-not $svcStatus.ContainsKey($n)) { $svcStatus[$n] = $null }
-        }
-      } catch {
-        # 整批失败（极少见）：退回逐个查询
-        foreach ($n in $nssmNames) {
-          try { $svcStatus[$n] = [string](Get-Service -Name $n -EA Stop).Status } catch { $svcStatus[$n] = $null }
-        }
+    try {
+      $found = Get-Service -Name $snap -EA Stop
+      # Get-Service 可能返回单个对象或数组；统一成数组再按 Name 索引
+      $foundList = @($found)
+      foreach ($s in $foundList) { $svcStatus[$s.Name] = [string]$s.Status }
+      # 批量查询漏掉的服务（未安装）单独兜底
+      foreach ($n in $snap) {
+        if (-not $svcStatus.ContainsKey($n)) { $svcStatus[$n] = $null }
+      }
+    } catch {
+      # 整批失败（极少见）：退回逐个查询
+      foreach ($n in $snap) {
+        try { $svcStatus[$n] = [string](Get-Service -Name $n -EA Stop).Status } catch { $svcStatus[$n] = $null }
       }
     }
   }
@@ -203,15 +135,6 @@ while(-not $sync.stop){
     [Threading.Monitor]::Enter($sync.gate)
     try { $info = $sync.svc[$n] } finally { [Threading.Monitor]::Exit($sync.gate) }
     if (-not $info) { continue }
-
-    # wsl 类型：不走 Get-Service / TCP / HTTP，直接查发行版状态入队
-    if ([string]$info.type -eq 'wsl') {
-      $wst = Get-WslState ([string]$info.distro)
-      $cst = Convert-ServiceStatus $wst
-      $h = if ($wst -eq 'Running') { "$($info.distro) 运行中" } else { '' }
-      $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$cst;h=$h})
-      continue
-    }
 
     $st = Convert-ServiceStatus ([string]$svcStatus[$n])
     if (-not $svcStatus[$n]) {

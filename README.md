@@ -2,7 +2,7 @@
 
 [![test](https://github.com/xvyimu/nssm-service-manager/actions/workflows/test.yml/badge.svg)](https://github.com/xvyimu/nssm-service-manager/actions/workflows/test.yml)
 
-本地 Windows 服务的统一管理 GUI——PowerShell 7 + WPF，卡片式启停/健康探测/日志查看，零外部 npm 依赖。既管 NSSM 服务（sc.exe / nssm.exe），也管 WSL 发行版（`wsl.exe`，不碰 `WSLService`、不需管理员）。
+本地 Windows 服务的统一管理 GUI——PowerShell 7 + WPF，卡片式启停/健康探测/日志查看，零外部 npm 依赖。管 NSSM 服务（sc.exe / nssm.exe）。
 
 ![主界面](assets/screenshot.png)
 
@@ -27,10 +27,9 @@ pwsh -NoProfile -File service-manager-gui.ps1
 
 这是一个通用的本地 Windows 服务管理工具——不绑定任何特定服务。把你要管的本地服务写进 `services.json`，GUI 就管它们的启停和健康探测。要不要托管哪个服务、几个服务，完全由你定。
 
-支持两类条目：
+条目形状：
 
-- **NSSM 服务**（默认）：走 `sc.exe` 状态查询 + `nssm.exe` 注册/删除，TCP + HTTP 双档健康探测，端口徽章显示 `:端口号`。
-- **WSL 发行版**（`type: "wsl"`）：走 `wsl.exe --list --quiet --running` 探测发行版状态，`-d <distro>` 启动 / `--shutdown` 停止。端口徽章显示发行版名，不探 TCP/HTTP，运行中即健康（绿）。只管发行版层，不碰 `WSLService`（那个需管理员，本工具刻意不碰）——普通用户即可启停 WSL。
+- **NSSM 服务**：走 `sc.exe` 状态查询 + `nssm.exe` 注册/删除，TCP + HTTP 双档健康探测，端口徽章显示 `:端口号`。
 
 ## 文件
 
@@ -40,12 +39,12 @@ pwsh -NoProfile -File service-manager-gui.ps1
 | `service-manager-gui.ps1` | 主入口：CLI 分支 + 提权 + 模块加载 + 窗口启动 |
 | `lib/theme.ps1` | 系统字体、主题色、按钮样式、Mica P/Invoke |
 | `lib/util.ps1` | 配置持久化、NSSM 操作、安全检查、日志查看器 |
-| `lib/poll.ps1` | 后台 runspace 探测脚本块（Get-Service 批量 + TcpClient + HttpClient 三档健康，sc.exe 退出码映射，WSL 发行版状态探测与启停） |
+| `lib/poll.ps1` | 后台 runspace 探测脚本块（Get-Service 批量 + TcpClient + HttpClient 三档健康，sc.exe 退出码映射） |
 | `lib/add-svc.ps1` | 添加服务（GUI 简化 + CLI agent 友好）+ 删除服务（输入全名确认）+ `Remove-NssmService` |
 | `lib/svc-common.ps1` | UI 线程与后台 runspace 共用的服务操作原语（`Wait-Stopped` 只此一份，poll.ps1 构造 runspace 时前置其文本） |
 | `lib/config.ps1` | 可调常量集中收口（每页卡片数 / 探测超时 / 日志轮转 / 双击冷却 / 托盘开关），默认值内嵌，`config.json` 覆盖 |
 | `lib/tray.ps1` | 可选托盘图标（`TrayEnabled` 打开才加载 WinForms）+ 关闭/最小化策略纯函数 |
-| `lib/card.ps1` | 卡片构建 + 双击防抖（8s 冷却 + 健康门闩）+ 过渡态保护 + 右键菜单 + WSL 卡片适配（端口徽章显示发行版名、隐藏面板按钮、右键菜单精简） |
+| `lib/card.ps1` | 卡片构建 + 双击防抖（8s 冷却 + 健康门闩）+ 过渡态保护 + 右键菜单 |
 | `lib/xaml.ps1` | 主窗口外壳（自定义标题栏 + 最大化/双击标题栏 + 工具栏 + 分页 + 状态栏） |
 | `assets/icon.ico` | 自绘齿轮图标（窗口 + 任务栏） |
 | `services.example.json` | 服务清单示例（复制为 `services.json` 使用；后者已 git 忽略） |
@@ -73,14 +72,14 @@ NSSM 路径按三档探测：`$env:NSSM_PATH` → `Get-Command nssm.exe` → sco
 - 浅色高对比卡片，原生非 layered 窗口支持系统 Mica 背景；主题色统一收口到 `lib/theme.ps1` 的 `$script:T`，改色只动一份
 - 每张卡：服务名、端口、URL、状态圆点、健康说明、打开面板、启停按钮
 - 标题栏：最小化 / 最大化（按钮 + 双击标题栏切换）/ 关闭
-- 健康三档：`正常`（绿）/ `超时`（橙，服务在但响应慢）/ `无响应`（红，端口未监听或连接被拒）；HTTP 超时 3 秒；WSL 类型无 HTTP 探测，运行中即健康（绿）
+- 健康三档：`正常`（绿）/ `超时`（橙，服务在但响应慢）/ `无响应`（红，端口未监听或连接被拒）；HTTP 超时 3 秒
 - 双击卡片 = 启停切换，8 秒冷却 + 健康门闩（只有运行中+健康=正常才允许双击关闭）
 - 过渡态保护：卡片处于启动中/停止中时，在途的旧探测结果不覆盖用户刚触发的过渡态，直到同方向的终态探测到达才收尾
-- 右键卡片 = 启动/停止/重启/面板/日志/安全检查/删除（删除需输入完整服务名确认，红字标注；删除走后台命令队列，UI 不冻结）；WSL 类型右键只留启停与删除（非 NSSM 服务，重启/日志/安全检查无意义）
+- 右键卡片 = 启动/停止/重启/面板/日志/安全检查/删除（删除需输入完整服务名确认，红字标注；删除走后台命令队列，UI 不冻结）
 - 单实例互斥：重复双击启动器只保留第一个窗口，第二个静默退出（Mutex 进程级，崩溃后自动释放）
 - 重启走 stop→轮询 Stopped（最多 6s）→start，避免端口未释放导致 bind 失败
 - 工具栏：添加服务 / 上一页 / 下一页
-- 后台 runspace 探测（`Get-Service` 批量查询 + TcpClient + HttpClient 并行探测，UI 线程只取结果、刷新卡片；WSL 类型走 `wsl.exe --list --quiet --running` 单独探测，跳过批量 `Get-Service`）
+- 后台 runspace 探测（`Get-Service` 批量查询 + TcpClient + HttpClient 并行探测，UI 线程只取结果、刷新卡片）
 - GUI 命令统一入队并唤醒后台；每次服务探测之间优先处理命令，避免等待整轮探测和固定空闲间隔
 - `sc.exe` 失败时状态栏显示映射后的中文原因（1056 已在运行 / 1060 服务未安装 等），而非裸数字
 - 日志查看器支持轮转历史下拉（NSSM `AppRotateFiles` 产生的 `*.out-*.log` / `*.err-*.log`），切换并刷新
@@ -106,38 +105,7 @@ Copy-Item services.example.json services.json
 | BuddyAPI | 7863 | http://127.0.0.1:7863/panel/ |
 | ServiceF | 9000 | http://127.0.0.1:9000/health |
 
-> **环境变量与注册表密钥暴露面：** NSSM 把 `AppEnvironmentExtra` 明文写入注册表 `HKLM\SYSTEM\CurrentControlSet\Services\<服务名>\Parameters\AppEnvironmentExtra`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出你填进去的环境变量明文。**凡含密钥、令牌、口令的变量（如 `*_API_KEY` / `*_TOKEN` / `*SECRET` / `*PASSWORD` / `*ACCESS_KEY` / `*CREDENTIAL` / `*PRIVATE_KEY` / `*PASSPHRASE`），不要直接填进环境变量框**——改为让服务本体从独立的密钥文件（仅 Administrators+SYSTEM 可读）读取，文件路径不进注册表。GUI 与 CLI 在你填写此类键名时会提示这一点；`*_FILE` 后缀仅在值看起来像路径时才跳过提示，否则照样警告（键名后缀不等于值就是路径）。彻底收紧注册表键 ACL 用 `scripts/set-service-params-acl.ps1`（见下）。WSL 类型不写注册表、不持有环境变量，本节不适用。
-
-### WSL 发行版纳管
-
-`services.json` 里加一条 `type: "wsl"` 即可把 WSL 发行版作为卡片纳管：
-
-```json
-"WSL": { "type": "wsl", "distro": "Ubuntu-24.04", "port": 0, "url": "" }
-```
-
-字段说明：
-
-| 字段 | 必填 | 作用 |
-|------|------|------|
-| `type` | 是 | 固定 `"wsl"`，区分于默认的 NSSM 服务 |
-| `distro` | 是 | 发行版名，与 `wsl.exe --list` 输出一致（如 `Ubuntu-24.04`） |
-| `port` | 否 | 固定 `0`，仅占位（WSL 不探端口） |
-| `url` | 否 | 留空，面板按钮自动隐藏 |
-
-行为差异（相对 NSSM 卡片）：
-
-- 端口徽章位置显示发行版名而非 `:端口`
-- 不跑 `Get-Service` / TCP / HTTP 探测；`wsl.exe --list --quiet --running` 输出含 `distro` 即判「运行中」
-- 启动用 `wsl.exe -d <distro> echo ready`（冷启动约 2.5 秒，命令同步返回后即就绪）
-- 停止用 `wsl.exe --shutdown`（比 `wsl -t <distro>` 快约 10 倍，单发行版场景效果相同——`-t` 要逐个停发行版里的进程，`--shutdown` 直接关 WSL 子系统）
-- 右键菜单只有「启动 / 停止 / 删除」三项（重启/日志/安全检查对非 NSSM 服务无意义）
-- 运行中即健康（绿），无「无响应/超时」分档
-- **不碰 `WSLService`**：那个系统服务需要管理员才能停，本工具刻意只管发行版层，普通用户即可启停。注意：别的程序（如 VS Code Remote-WSL、Orca 的 IPC worker）会非周期性拉起 WSL——GUI 显示「已停止」后又被拉起不是 bug，是外部进程在用它。
-
-`wsl.exe --list --quiet --running` 的输出是 UTF-16LE 编码（PowerShell 默认按 ANSI 解会乱码）。`lib/poll.ps1` 的 `Get-WslState` 用 `ProcessStartInfo` 重定向 raw bytes，再 `Unicode.GetString` 解码，绕开这个坑。
-
-WSL 条目手编进 `services.json`，不走 GUI「添加」或 CLI `-Add`（那两条路径只注册 NSSM 服务）。`Save-Svc` 回写时按 NSSM schema 落 `port`/`url`，会丢 `type`/`distro`——故 WSL 条目只能手编，删了 `type` 字段会被当 NSSM 处理。
+> **环境变量与注册表密钥暴露面：** NSSM 把 `AppEnvironmentExtra` 明文写入注册表 `HKLM\SYSTEM\CurrentControlSet\Services\<服务名>\Parameters\AppEnvironmentExtra`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出你填进去的环境变量明文。**凡含密钥、令牌、口令的变量（如 `*_API_KEY` / `*_TOKEN` / `*SECRET` / `*PASSWORD` / `*ACCESS_KEY` / `*CREDENTIAL` / `*PRIVATE_KEY` / `*PASSPHRASE`），不要直接填进环境变量框**——改为让服务本体从独立的密钥文件（仅 Administrators+SYSTEM 可读）读取，文件路径不进注册表。GUI 与 CLI 在你填写此类键名时会提示这一点；`*_FILE` 后缀仅在值看起来像路径时才跳过提示，否则照样警告（键名后缀不等于值就是路径）。彻底收紧注册表键 ACL 用 `scripts/set-service-params-acl.ps1`（见下）。
 
 ### 从旧版 TTS 管理器升级
 

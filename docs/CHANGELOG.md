@@ -3,26 +3,24 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
-## [Unreleased] — WSL 发行版纳管
+## [Unreleased] — 移除 WSL 纳管
 
-### 新增
+### 移除
 
-- **WSL 类型卡片**：`services.json` 支持 `type: "wsl"` 字段，把 WSL 发行版作为卡片纳管 GUI。普通用户即可启停 WSL，不需管理员（不碰 `WSLService`）。
-- `Get-WslState`（`lib/poll.ps1`）：用 `ProcessStartInfo` 重定向 `wsl.exe --list --quiet --running` 的 raw bytes，`Unicode.GetString` 解码——绕开 PowerShell 默认 ANSI 解码导致 UTF-16LE 输出乱码的坑。
-- `Invoke-WslCommand`（`lib/poll.ps1`）：`-d <distro> echo ready` 启动（冷启动约 2.5 秒），`--shutdown` 停止（比 `wsl -t <distro>` 快约 10 倍）。
-- `Invoke-PendingCommands` 分流：wsl 类型走 `Invoke-WslCommand`，其余走原 NSSM 路径（`sc.exe`）。
-- `Read-SvcFile`（`lib/util.ps1`）透传 `type`/`distro`，wsl 类型允许 `port=0`。
-- 卡片 UI 适配（`lib/card.ps1`）：端口徽章显示发行版名、隐藏 endpoint 行、隐藏「打开面板」按钮、右键菜单精简为启停+删除、健康逻辑（运行中即绿）。
+- **WSL 发行版纳管整体下线**：`services.json` 不再支持 `type: "wsl"`，工具回到只管理 NSSM 服务一类对象。
+  - 删 `lib/poll.ps1` 的 `Get-WslState` / `Invoke-WslCommand` 与 `Invoke-PendingCommands` 的 wsl 分流，收集阶段的 wsl 分支，以及批量 `Get-Service` 前的 `$nssmNames` 过滤。
+  - 删 `lib/util.ps1` `Read-SvcFile` 对 `type`/`distro` 的透传与「wsl 免端口校验」分流。
+  - 删 `lib/card.ps1` 的 `IsWsl`/`Type`/`Distro` 卡片属性与全部 wsl 分支（端口徽章、endpoint 隐藏、面板按钮隐藏、右键菜单精简、健康门闩、`Update-CardInfo`/`Update-CardData` 刷新）。
+  - 删 `tests/test-wsl.ps1`（从 `run-all.ps1` 摘除，回归项 17 → 16），删 `docs/audit-*-wsl-*.md` / `.log` 五份 WSL 审计留痕。
+  - `services.json` / `services.example.json` 去掉 WSL 条目。
 
 ### 为什么
 
-把 WSL 启停从命令行挪到 GUI——和 NSSM 服务走同一套卡片交互，不用单独记命令。关键约束是**不碰 `WSLService`**：那个系统服务要管理员才能停，本工具刻意只管发行版层，普通用户即可启停。
+WSL 发行版纳管引入了一整套与 NSSM 路径并列的类型分支（探测、启停、卡片、菜单、健康判定），但实际只用得上「启停一个发行版」。为这一条用途维持两套类型分流的复杂度不值——需要时直接 `wsl -d <distro>` 即可。移除后 `type`/`distro` 成为普通 NSSM 条目读不到的多余字段，代码与配置一并清理，回到单一类型。
 
-### 已知限制
+### 影响
 
-- 多发行版场景 `--shutdown` 会停掉所有发行版（当前设计假设单发行版）
-- WSL 条目只能手编进 `services.json`，不走 GUI「添加」或 CLI `-Add`
-- 别的程序（VS Code Remote-WSL、Orca 的 IPC worker）会非周期性拉起 WSL——显示「已停止」后又被拉起不是 bug
+- 旧 `services.json` 里残留的 `type: "wsl"` 条目会被 `Read-SvcFile` 当作普通服务处理，`port=0` 触发「端口非法」并让 `Load-Svc` 回落到示例清单。迁移：手动删掉该条目。
 
 ## [0.5.0] — 2026-10-04：并行探测 runspace 作用域修复
 
