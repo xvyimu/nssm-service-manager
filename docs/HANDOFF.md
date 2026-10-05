@@ -2,17 +2,42 @@
 # HANDOFF
 
 > **更新日：** 2026-10-05
-> **状态：** 进行中（P0-1 / P0-2 / P1 / P2 / P4 已落地并提交；P3 未做，判定收益过小）
+> **状态：** 进行中（P0-1 / P0-2 / P1 / P2 / P4 已落地；P3 未做，判定收益过小。本轮 T1–T7 已落地并提交，见下节）
 > 本文件**无日期后缀**（带日期会让链接永久腐烂）。当前在哪一天由上一行回答。
 
 ---
 
-## 上一段做到哪
+## 上一段做到哪（本轮 T1–T7）
+
+按 `service-manager-修复任务-提示词.md` 的七条任务逐条修复，各一个提交（基线 `eca4b86` 起）：
+
+| 任务 | 提交 | 说明 |
+|------|------|------|
+| T1 | `c1526fd` | 过渡态没有失败出口，卡片会永久卡死。三层补齐：`poll.ps1` 回执带 `ok`（成功失败都 Enqueue）；`gui` 的 ack 分支按 `ok` 分流、失败回滚；`card.ps1` 加 `ToggleTimeoutMs` 超时逃生 |
+| T2 | `3ebaf86` | `Invoke-ServiceStart` 对 `StartPending` 友好：与 `Running` 同组直接返回，不再回落 `sc.exe` 取回 1056 → 「启动失败(1056 已在运行)」的矛盾文案 |
+| T3 | `338457d` | 在途命令也算活跃：刚下发命令的那一轮用 `ProbeIntervalMs`，不再走 15s 空闲长睡眠 |
+| T4 | `eb01d2e` | 状态栏消息加显示租约，不被同一 tick 的自动刷新吞掉；tick 主体抽成 `util.ps1` 的 `Update-StatusTick` 以便直测 |
+| T5 | `057e164` | Dispatcher 异常兜底补状态栏提示（截断 80 字符，整段包 try/catch） |
+| T6 | `428e22a` | remove 回执里「配置保存失败」提示不再被「已删除」覆盖 |
+| T7 | `ead4bba` | 订正日志保留注释口径（选 (a)：实现是对的，注释错）+ 补 `test-log-retention.ps1`（该函数此前零覆盖） |
+| 收尾 | `cba78eb` | 删掉 T4 遗留的重复 DispatcherTimer 注释行 |
+| 收尾 | `223d066` | `ToggleTimeoutMs` 注释不写未实测的耗时数字 |
+
+新增测试三个：`test-transition-failure.ps1`、`test-status-lease.ps1`、`test-log-retention.ps1`。
+回归从 27 项增至 33 项 PASS；解析文件 34 → 37。唯一失败项仍是 `single-instance` 环境敏感问题。
+
+**未验（如实标注，留给真机）**：真实 UAC 提权、Mica、NSSM 服务生命周期；交互式点击触发
+Dispatcher 异常时状态栏的表现；启动失败路径（SCM 1053）的真实耗时——`ToggleTimeoutMs=30000`
+是否够大取决于它，配置注释里已按「未实测」标注。
+
+---
+
+## 上一段做到哪（审计复核那轮，基线 34 文件 + 27 项）
 
 审计复核 + 修复 + 结构拆分 + 精简，全部已提交并推送到
 `origin/refactor/generic-tool-and-audit-fixes`（推送走 SSH-443，见文末「坑」）。
 
-基线自跑：`pwsh -NoProfile -File tests/run-all.ps1` → 解析 34 文件 + 27 项 PASS。
+基线自跑（**当时**）：`pwsh -NoProfile -File tests/run-all.ps1` → 解析 34 文件 + 27 项 PASS。
 唯一失败项 `single-instance` 为 **pre-existing 环境敏感问题**（见 Blockers）。
 
 外部审计报告给了 P0-1 / P0-2 两个崩溃口和一些性能主张。复核结论：**两个崩溃口成立，
@@ -232,7 +257,7 @@ backup-guard 只碰 `~/.claude`。故**不做默认迁移**。
 - `D:\service-manager\lib\poll.ps1` —— P0-2 的 `Invoke-PendingCommands` / `Invoke-Sc` / `Convert-ScExitCode`；P1 的轮询周期。
 - `D:\service-manager\lib\util.ps1` —— P0-1 的 `Open-PanelUrl` 落点；P1 的 `Remove-RotatedLogs` 落点；`Get-LogFiles` 的轮转档识别可复用。
 - `D:\service-manager\lib\config.ps1` —— P2 / P4 的收口键落点。
-- `D:\service-manager\tests\run-all.ps1` —— 回归入口，改完必跑（解析检查 + 16 项）。
+- `D:\service-manager\tests\run-all.ps1` —— 回归入口，改完必跑（解析检查 + 19 项）。
 - `D:\service-manager\docs\PROJECT.md` —— 架构与设计决策 SSOT，动结构时同步。
 
 ## 决策与坑（本次新增）

@@ -65,5 +65,15 @@ try {
   Assert ($shown.Length -le 90) "Long UI error not truncated: length=$($shown.Length)."
   Assert ($shown.EndsWith('…')) 'Truncated UI error should end with an ellipsis.'
 
-  Write-Output 'PASS: status messages hold a display lease; auto-refresh neither swallows them nor is permanently blocked; UI errors surface truncated.'
+  # ---- 6. Open-PanelUrl 失败也带租约，且不被日志写入的失败连累 ----
+  # 该路径原为直接赋 Text，与 T4 修的同类问题；且 catch 体里 Write-CrashLog 在
+  # 早期/异常场景下自身可能抛——故提示必须先于日志写入，各自包住。
+  function Write-CrashLog([string]$m) { throw 'log path broken' }   # 逼出日志失败
+  function Start-Process([string]$f) { throw 'no browser' }
+  $script:msgUntil=$null
+  Open-PanelUrl 'http://example.invalid/'
+  Assert ($script:statusBar.Text -eq '打开面板失败：no browser') "Panel failure text wrong: '$($script:statusBar.Text)'."
+  Assert ($script:msgUntil -gt [datetime]::Now) 'Panel failure message did not take a display lease.'
+
+  Write-Output 'PASS: status messages hold a display lease; auto-refresh neither swallows them nor is permanently blocked; UI/panel errors surface truncated and leased.'
 } finally { $win.Close(); $script:sync.wake.Dispose() }

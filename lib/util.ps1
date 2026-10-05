@@ -81,8 +81,12 @@ function Open-PanelUrl([string]$url){
   if ([string]::IsNullOrWhiteSpace($url)) { return }
   try { Start-Process $url -EA Stop }
   catch {
-    Write-CrashLog "Open-PanelUrl 失败: $($_.Exception.GetType().FullName): $($_.Exception.Message)"
-    if ($script:statusBar) { $script:statusBar.Text = "打开面板失败：$($_.Exception.Message)" }
+    # 先给用户可见的提示、再记日志，且各自包住——用户的提示不该被日志写入的失败连累
+    # （Write-CrashLog 自身依赖 $logDir/配置，早期或异常场景下可能抛）。
+    # 走 Set-StatusMessage 而非直接赋 Text：带显示租约，否则用户没在操作时会被下一帧
+    # 自动刷新吞掉（与 T4 修的同类问题：失败提示必须留得住）。
+    try { Set-StatusMessage "打开面板失败：$($_.Exception.Message)" } catch {}
+    try { Write-CrashLog "Open-PanelUrl 失败: $($_.Exception.GetType().FullName): $($_.Exception.Message)" } catch {}
   }
 }
 

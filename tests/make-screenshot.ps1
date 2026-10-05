@@ -28,7 +28,9 @@ try {
     @('ProxyA','已停止',''), @('BuddyAPI','运行中','无响应'), @('ServiceF','运行中','正常')
   )
   foreach ($s in $states) { Update-CardData $s[0] $s[1] $s[2] }
-  $script:statusBar.Text = "$(Get-Date -Format 'HH:mm:ss')  状态自动刷新"
+  # 截图用状态栏文案：走 Set-StatusMessage 与生产代码同一条路径（含显示租约），
+  # 免得截图里的状态栏与真实运行时的不一致。
+  Set-StatusMessage "$(Get-Date -Format 'HH:mm:ss')  状态自动刷新"
 
   $win.WindowStartupLocation = 'Manual'
   $win.Left = -20000; $win.Top = -20000

@@ -77,3 +77,16 @@ function Close-FakePoll($worker) {
   $worker.PowerShell.Stop(); $worker.PowerShell.Dispose(); $worker.Runspace.Dispose()
   foreach ($name in 'wake', 'executedReady', 'probeStarted') { $worker.Sync[$name].Dispose() }
 }
+
+# 等一条**命令回执**（done=$true）出队，最多等 $TimeoutSec 秒；超时返回 $null。
+# 队列里混着普通探测结果（无 done 字段）——必须过滤，否则会取到探测结果并误判回执内容。
+# test-poll-commands / test-transition-failure 都用这段，抽出来免得两处各抄一份后漂移。
+function Wait-FakePollAck($worker, [int]$TimeoutSec = 4) {
+  $deadline = [datetime]::UtcNow.AddSeconds($TimeoutSec)
+  while ([datetime]::UtcNow -lt $deadline) {
+    $x = $null
+    while ($worker.Sync.queue.TryDequeue([ref]$x)) { if ($x.done) { return $x } }
+    Start-Sleep -Milliseconds 20
+  }
+  $null
+}

@@ -27,13 +27,7 @@ try {
   # 找**命令回执**（done=$true）——队列里混着普通探测结果（无 done 字段），不能混为一谈。
   # 修前 HEAD 只在 $ok 时 Enqueue，失败命令一条 done 都发不出来：若不过滤，会从队列里
   # 取到一条探测结果并误报「Ack shape wrong」，红了但红得不准。
-  $ack=$null
-  $deadline=[datetime]::UtcNow.AddSeconds(4)
-  while (-not $ack -and [datetime]::UtcNow -lt $deadline) {
-    $x=$null
-    while ($worker.Sync.queue.TryDequeue([ref]$x)) { if ($x.done) { $ack=$x; break } }
-    if (-not $ack) { Start-Sleep -Milliseconds 20 }
-  }
+  $ack = Wait-FakePollAck $worker
   Assert ($null -ne $ack) 'Failing command produced no ack at all — card has no failure exit.'
   Assert ($ack.act -eq 'stop') "Ack shape wrong: $ack"
   Assert ($ack.e -eq 7) "Ack epoch mismatch: got $($ack.e)"

@@ -49,8 +49,12 @@ if (Test-Path -LiteralPath $script:configPath) {
       }
     }
   } catch {
-    # 配置解析失败不阻断启动——用默认值。错误记进 configWarning（GUI 加载后弹框），
-    # 若 statusBar 已就绪（将来加载顺序变动）也同步显示。Load-Svc 尊重已设的 configWarning（util.ps1 不覆盖）。
+    # 配置解析失败不阻断启动——用默认值。错误记进 configWarning，由 GUI 加载完成后弹框。
+    # 下面那句 statusBar 直写在正常启动路径下**不会执行**：本文件在主脚本第 34 行加载，
+    # 而 $script:statusBar 要到 New-MainWindow（223 行）才建。保留它是给「调用方先建窗口
+    # 再加载 config」的将来顺序变动兜底；那时也不该带租约（Set-StatusMessage 定义在 util.ps1，
+    # 本文件之前，此刻尚不可用）。
+    # Load-Svc 尊重已设的 configWarning（util.ps1 不覆盖）。
     $msg = "config.json 无效：$($_.Exception.Message)，用默认配置"
     if (-not $script:configWarning) { $script:configWarning = $msg }
     if ($script:statusBar) { $script:statusBar.Text = $msg }

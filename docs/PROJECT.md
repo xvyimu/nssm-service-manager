@@ -124,6 +124,6 @@ NSSM remove 是 stop → Wait-Stopped ≤6s → nssm remove confirm，同步执�
 
 ## 测试
 
-`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 16 项回归测试。详见 README「测试与截图」节。
+`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 19 项回归测试。详见 README「测试与截图」节。
 
 CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）。

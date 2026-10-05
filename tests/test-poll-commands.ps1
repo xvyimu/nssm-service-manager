@@ -58,14 +58,8 @@ try {
   Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Worker did not start.'
   $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='start';e=11})
   [void]$worker.Sync.wake.Set()
-  # 等回执（done=$true）
-  $ack=$null
-  $deadline=[datetime]::UtcNow.AddSeconds(4)
-  while (-not $ack -and [datetime]::UtcNow -lt $deadline) {
-    $x=$null
-    while ($worker.Sync.queue.TryDequeue([ref]$x)) { if ($x.done) { $ack=$x; break } }
-    if (-not $ack) { Start-Sleep -Milliseconds 20 }
-  }
+  # 等回执（done=$true）——过滤掉普通探测结果，见 Wait-FakePollAck 说明
+  $ack = Wait-FakePollAck $worker
   Assert ($null -ne $ack) 'Start command against StartPending produced no ack.'
   Assert ($ack.ok -eq $true) "StartPending should be treated as already starting (ok=true), got ok=$($ack.ok)."
   # 不得调用 sc.exe：$sync.executed 里不该有 start 记录
