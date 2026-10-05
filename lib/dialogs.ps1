@@ -45,10 +45,10 @@ function Show-Remove([string]$n, $owner){
     # 真正的 stop/wait/remove 在 runspace 里执行；这里只关弹窗，回执由 DispatcherTimer 处理。
     $card = $script:cards[$n]
     if ($card) {
-      $card.ST='删除中'; $card.Btn.IsEnabled=$false; $card.Btn.Content='删除中'
-      $card.LblSt.Text='删除中'; $card.LblSt.Foreground=[System.Windows.Media.Brushes]::Orange
-      $card.Dot.Fill=[System.Windows.Media.Brushes]::Orange
-      $card.PendingEpoch = (Send-ServiceCommand $n 'remove')
+      # 过渡态设置与启停共用（card.ps1 Set-CardTransition）——曾因两处字段集不一致
+      # 漏了 LastToggle/ReadyToToggle，配合 Update-CardData 守卫缺失导致删除中卡片被刷回。
+      $epoch = Send-ServiceCommand $n 'remove'
+      Set-CardTransition $card '删除中' $epoch (Get-Date)
     } else {
       Send-ServiceCommand $n 'remove' | Out-Null
     }

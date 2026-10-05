@@ -57,5 +57,19 @@ try {
   Assert ($card.ST -eq '运行中' -and $card.Btn.IsEnabled) 'Terminal state not applied after transition.'
   Assert ($card.Btn.Content -eq '停止') 'Terminal button label wrong.'
 
+  # ---- 删除中的过渡态：探测结果一律不得覆盖 ----
+  # 删除走后台 stop → Wait-Stopped ≤6s → nssm remove confirm；期间探测每轮都到。
+  # 删除中与启动中/停止中不同：它没有「期望终态」——终态由 remove 回执决定
+  # （ack 分支清 svc/cards + Render-Page），期间任何探测结果（含「未安装」，
+  # 那只是删除过程中的中间态）都不该改写卡片或重新点亮按钮。
+  $card.LastToggle=[datetime]::MinValue
+  Update-CardData 'TestService' '已停止' ''
+  $card.ST='删除中'; $card.Btn.IsEnabled=$false; $card.Btn.Content='删除中'
+  Update-CardData 'TestService' '已停止' ''
+  Assert ($card.ST -eq '删除中') "In-flight probe overwrote 删除中: ST=$($card.ST)."
+  Assert (-not $card.Btn.IsEnabled) 'Probe re-enabled button while deleting.'
+  Update-CardData 'TestService' '未安装' ''
+  Assert ($card.ST -eq '删除中') "未安装 probe overwrote 删除中: ST=$($card.ST)."
+
   Write-Output 'PASS: in-flight probe results do not overwrite transition states; terminal state still applies.'
 } finally { $win.Close(); $script:sync.wake.Dispose() }

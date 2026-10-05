@@ -3,6 +3,23 @@
 if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
 $script:TOGGLE_COOLDOWN_MS = [int]$script:config.ToggleCooldownMs
 
+# 把卡片置为过渡态：状态文字、按钮、指示灯统一转橙并禁用操作，记录命令纪元。
+# 启停（本文件）与删除（dialogs.ps1）共用——两处字段集曾不一致：删除路径漏了
+# LastToggle / ReadyToToggle，配合 Update-CardData 的守卫缺失，导致删除进行中
+# 探测结果到达时卡片被刷回「已停止」且按钮重新点亮。
+# $at 由调用方给（启停用函数入口捕获的 $now，删除用触发时刻），保持各自原时间语义。
+function Set-CardTransition($card, [string]$state, [int]$epoch, [datetime]$at){
+  $card.ST=$state
+  $card.LastToggle=$at
+  $card.Btn.IsEnabled=$false
+  $card.Btn.Content=$state
+  $card.ReadyToToggle=$false
+  $card.LblSt.Text=$state
+  $card.LblSt.Foreground=[System.Windows.Media.Brushes]::Orange
+  $card.Dot.Fill=[System.Windows.Media.Brushes]::Orange
+  $card.PendingEpoch=$epoch
+}
+
 # 按钮和双击共用校验与状态切换；仅保留各入口原有的反馈文案。
 function Invoke-CardToggle($card, [string]$source='Button') {
   $name=$card.SvcName
@@ -33,18 +50,13 @@ function Invoke-CardToggle($card, [string]$source='Button') {
     return
   }
 
-  $card.ST=if ($action -eq 'stop') { '停止中' } else { '启动中' }
-  $card.LastToggle=$now
-  $card.Btn.IsEnabled=$false
-  $card.ReadyToToggle=$false
-  $card.LblSt.Text=$card.ST
-  $card.LblSt.Foreground=[System.Windows.Media.Brushes]::Orange
-  $card.Dot.Fill=[System.Windows.Media.Brushes]::Orange
-  $card.Btn.Content=$card.ST
   # 记录本次命令纪元：Update-CardData 只接受 epoch ≥ 这个值的结果/回执。
   # 旧探测（epoch 更小或为 0）在过渡态期间直接丢，不再靠方向匹配做症状层补丁。
+  # 顺序与原实现一致：先置 UI 过渡态，再入队命令（入队返回值作纪元）。
+  $state = if ($action -eq 'stop') { '停止中' } else { '启动中' }
+  Set-CardTransition $card $state 0 $now
   $card.PendingEpoch = (Send-ServiceCommand $name $action)
-  $script:statusBar.Text="$name $($card.ST)..."
+  $script:statusBar.Text="$name $state..."
 }
 
 function New-Card([string]$name, $info){
@@ -176,6 +188,12 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
     $c.LastToggle = [datetime]::Now
     return
   }
+  # 删除中：终态由 remove 回执决定（主脚本 ack 分支清 svc/cards + Render-Page），
+  # 与启动/停止不同——它没有「期望终态」可等。期间探测每轮都到，且删除本就先 stop，
+  # 探测必然先报「已停止」，随后可能报「未安装」——两者都只是过程中的中间态。
+  # 故此处一律丢弃，不套用下面的方向匹配（否则卡片会从「删除中」闪回「已停止」
+  # 并重新点亮按钮，用户还能对一个正在删除的服务下命令）。
+  if ($c.ST -eq '删除中') { return }
   # 过渡态保护（发现 3）：卡片处于启动中/停止中时，在途的旧探测结果不应覆盖
   # 用户刚刚触发的过渡态，也不应重新启用按钮——否则慢停止期间显示与实际不符。
   # 按方向判期望终态：启动中只接受运行中收尾，停止中只接受已停止收尾；
