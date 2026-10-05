@@ -47,4 +47,34 @@ try {
   Assert ($worker.Handle.AsyncWaitHandle.WaitOne(1500)) 'Shutdown did not wake idle poll.'
   [void]$worker.PowerShell.EndInvoke($worker.Handle)
 } finally { Close-FakePoll $worker }
+
+# ---- 启动命令遇 StartPending：应视作已在启动，不调 sc.exe、不产生失败消息 ----
+# 修前：StartPending 落到 $svc.Start() 抛 MethodInvocationException，回落 sc.exe 取回
+# 1056 → 状态栏出现「启动失败(1056 已在运行)」这种自相矛盾的文案。
+# 触发路径真实：card.ps1 右键菜单的「启动」直接 Send-ServiceCommand，不经 ST 门闩。
+# 替身 ServiceController 经 $sync.newSc 注入（runspace 里无法替身化 .NET 构造函数）。
+$worker=Start-FakePoll 1 'Stopped' 0 $null 0 'StartPending'
+try {
+  Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Worker did not start.'
+  $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='start';e=11})
+  [void]$worker.Sync.wake.Set()
+  # 等回执（done=$true）
+  $ack=$null
+  $deadline=[datetime]::UtcNow.AddSeconds(4)
+  while (-not $ack -and [datetime]::UtcNow -lt $deadline) {
+    $x=$null
+    while ($worker.Sync.queue.TryDequeue([ref]$x)) { if ($x.done) { $ack=$x; break } }
+    if (-not $ack) { Start-Sleep -Milliseconds 20 }
+  }
+  Assert ($null -ne $ack) 'Start command against StartPending produced no ack.'
+  Assert ($ack.ok -eq $true) "StartPending should be treated as already starting (ok=true), got ok=$($ack.ok)."
+  # 不得调用 sc.exe：$sync.executed 里不该有 start 记录
+  $calls=@($worker.Sync.executed | ForEach-Object { $_.action })
+  Assert ($calls -notcontains 'start') "StartPending fell through to sc.exe start: $($calls -join ',')."
+  # 不得产生失败消息
+  $msgs=@($worker.Sync.msg.ToArray())
+  Assert ($msgs.Count -eq 0) "StartPending produced failure message(s): $($msgs -join ' | ')."
+  Write-Output 'PASS: StartPending treated as already-starting (no sc.exe, no failure message, ok=true).'
+} finally { Close-FakePoll $worker }
+
 Write-Output 'PASS: wakeup, priority between probes, FIFO, and idle shutdown; no real services or network used.'

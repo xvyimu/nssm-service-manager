@@ -15,8 +15,11 @@ function Get-VisualNodes($node) {
 # $count=服务数，$serviceStatus=mock 返回状态（'Stopped'/'Running'），$delayMs=每次 Get-Service 延迟。
 # $extraSyncKeys=额外塞进 $shared 的键（如 waitStoppedTimeoutMs），BeginInvoke 前合并——poll 开头只读一次。
 # $scExitCode=非零时让替身 sc.exe 返回该退出码（模拟启停失败；默认 0=成功）。
+# $controllerStatus=非空时给 runspace 注入 $sync.newSc='New-TestSc'，由替身 ServiceController
+#   返回该状态（如 StartPending）。真实 ServiceController 构造在 runspace 里无法替身化，
+#   中间态只能从这里进；未设时 poll 走真实 ServiceController。
 # 返回 @{Sync;Runspace;PowerShell;Handle}。Close-FakePoll 清理。
-function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$delayMs = 0, [hashtable]$extraSyncKeys = $null, [int]$scExitCode = 0) {
+function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$delayMs = 0, [hashtable]$extraSyncKeys = $null, [int]$scExitCode = 0, [string]$controllerStatus = '') {
   $services = [ordered]@{}
   for ($i = 0; $i -lt $count; $i++) { $services["Fake$i"] = @{ port = 10000 + $i; url = "http://127.0.0.1:10000/fake$i" } }
   $shared = [hashtable]::Synchronized(@{
@@ -32,6 +35,7 @@ function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$d
     nssm = 'Invoke-TestNssm'
     scExitCode = $scExitCode
   })
+  if ($controllerStatus) { $shared.newSc = 'New-TestSc' }
   if ($extraSyncKeys) { foreach ($k in $extraSyncKeys.Keys) { $shared[$k] = $extraSyncKeys[$k] } }
   $rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState = 'STA'; $rs.Open()
   $rs.SessionStateProxy.SetVariable('sync', $shared)
@@ -52,6 +56,14 @@ function Invoke-TestNssm {
   # remove confirm 等——记一次 nssm 调用，成功退出
   `$sync.executed.Enqueue([pscustomobject]@{action='nssm';name=`$args[1];probes=`$sync.probeCount})
   `$global:LASTEXITCODE=0
+}
+function New-TestSc {
+  # 替身 ServiceController：只实现 Invoke-ServiceStart 用到的 Status 与 finally 里的 Dispose。
+  # 用 Add-Member 挂 ScriptMethod，避免为 ScriptMethod 构造 pscustomobject 的语法噪音。
+  param([string]`$n)
+  `$o = [pscustomobject]@{ Status = '$controllerStatus' }
+  `$o | Add-Member -MemberType ScriptMethod -Name Dispose -Value { }
+  `$o
 }
 "@
   $ps = [powershell]::Create().AddScript($mocks).AddScript($script:poll); $ps.Runspace = $rs

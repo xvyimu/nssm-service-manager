@@ -81,10 +81,18 @@ function Invoke-Sc([string]$verb,[string]$n,[string]$fail){
 function Invoke-ServiceStart([string]$n,[string]$fail='启动失败'){
   $svc = $null
   try {
-    $svc = [System.ServiceProcess.ServiceController]::new($n)
+    # 构造点可注入：$sync.newSc 给出 runspace 内一个函数名时用它（同 $sync.nssm 的约定）。
+    # runspace 里无法替身化 .NET 构造函数，测试要构造 StartPending 状态的替身只能从这里进；
+    # 未设时走真实 ServiceController，生产路径零开销。
+    $svc = if ($sync.newSc) { & $sync.newSc $n } else { [System.ServiceProcess.ServiceController]::new($n) }
     $status = [string]$svc.Status
     if ([string]::IsNullOrEmpty($status)) { return (Invoke-Sc 'start' $n $fail) }
-    if ($status -eq 'Running') { return $true }   # 等价 sc.exe 1056
+    # Running 与 StartPending 同组：服务已在（或正在）启动，Start() 对这两种状态都会抛
+    # MethodInvocationException，回落 sc.exe 取回 1056 → 状态栏出现「启动失败(1056 已在运行)」
+    # 这种自相矛盾的文案。触发路径真实：card.ps1 右键菜单的「启动」直接 Send-ServiceCommand，
+    # 不经 Invoke-CardToggle 的 ST 门闩，故 StartPending 能落到这里。
+    # 视作「已在启动」直接成功返回：不产生失败消息，也不白付一次 sc.exe 往返。
+    if ($status -in @('Running','StartPending')) { return $true }
     $svc.Start()                                  # 立即返回，不等 RUNNING
     return $true
   } catch {
