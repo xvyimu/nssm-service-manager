@@ -24,20 +24,34 @@ PowerShell 7 + WPF 的本地 Windows 服务管理 GUI。卡片式启停 / 健康
 
 ```
 service-manager-gui.ps1（主入口：CLI 分支 + 提权 + 模块加载 + 窗口启动）
-├─ lib/config.ps1     可调常量收口（PerPage/超时/轮转/冷却/托盘）
+├─ lib/config.ps1     可调常量收口（PerPage/超时/轮转/冷却/托盘/日志保留）
 ├─ lib/theme.ps1      系统字体、主题色 $script:T、按钮模板、Mica P/Invoke
-├─ lib/util.ps1       配置持久化（Read-SvcFile/Load-Svc/Save-Svc）、NSSM 操作、
-│                     安全检查（Resolve-ServiceExeDir/Show-SecurityCheck）、日志查看器（Show-Log）
+├─ lib/util.ps1       配置持久化（Read-SvcFile/Load-Svc/Save-Svc）、命令入队（Send-ServiceCommand）、
+│                     打开面板（Open-PanelUrl）、日志轮转保留（Remove-RotatedLogs）、
+│                     安全检查（Resolve-ServiceExeDir/Show-SecurityCheck）
+├─ lib/svc-input.ps1  纯函数族：输入校验（Test-SvcInput）、env 解析（ConvertTo-EnvPairs/
+│                     Test-EnvPairs/Find-SensitiveEnvKeys）、NSSM set 规格（Get-NssmSetSpec）
+├─ lib/nssm.ps1       NSSM 操作：nssm-set / Install-NssmService / Remove-NssmService
+├─ lib/logview.ps1    日志查看器：Get-LogFiles（当前+轮转枚举）+ Show-Log（WPF 窗口）
+├─ lib/dialogs.ps1    GUI 对话框：Show-Add（添加服务）+ Show-Remove（删除确认）
 ├─ lib/svc-common.ps1 UI 与 runspace 共用的 Wait-Stopped（只此一份）
 ├─ lib/poll.ps1       后台 runspace 脚本块：Get-Service 批量 + TcpClient + HttpClient 并行探测
 │                     + sc.exe 退出码映射
-├─ lib/add-svc.ps1    添加服务（GUI + CLI）+ 删除服务 + Install-NssmService + 纯函数族
+├─ lib/add-svc.ps1    CLI 入口 Add-SvcFromCli（-Add 分支用）
 ├─ lib/tray.ps1       可选托盘（纯函数 Get-CloseAction/Get-MinimizeAction + 惰性 Initialize-Tray）
 ├─ lib/card.ps1       卡片构建 + 双击防抖 + 过渡态保护 + 右键菜单
 └─ lib/xaml.ps1       主窗口外壳（标题栏 + 工具栏 + 分页 + 状态栏）
 ```
 
-加载顺序在 `service-manager-gui.ps1` 里固定：config → theme → util → tray → poll → add-svc → card → xaml。config 必须最早（Write-CrashLog 首次调用在提权检测处，早于模块加载区）。card 与 xaml 自加载 config 是为单测 dot-source 时不依赖完整顺序。
+加载顺序在 `service-manager-gui.ps1` 里固定：config → theme → util → svc-input → nssm →
+add-svc → logview → dialogs → tray → poll → card → xaml。config 必须最早（Write-CrashLog
+首次调用在提权检测处，早于模块加载区）。`nssm.ps1` 与 `add-svc.ps1` 自加载其依赖
+（`svc-input.ps1` / `svc-common.ps1`），单独点源也能工作。card 与 xaml 自加载 config
+是为单测 dot-source 时不依赖完整顺序。
+
+拆分动机：原先 `add-svc.ps1`（280 行 / 10 函数）混了校验、NSSM 注册、CLI 与两个对话框；
+`util.ps1`（220 行）里塞了 90 行日志窗口。拆后每个文件单一职责，纯函数族（`svc-input.ps1`）
+可被测试直接点源而不加载 WPF。
 
 ## 关键数据流
 

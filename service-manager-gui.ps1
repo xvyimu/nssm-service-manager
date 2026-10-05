@@ -60,6 +60,7 @@ if ($Add) {
   $script:svc = Load-Svc
   # CLI 模式没有 runspace，但 add-svc.ps1 用 $sync.gate 加锁——给个本地锁
   $script:sync = @{ gate = [object]::new() }
+  # add-svc.ps1 自加载 svc-input.ps1 + nssm.ps1（纯函数与 NSSM 注册依赖）
   . "$root\lib\add-svc.ps1"
   Add-SvcFromCli $Add
   exit 0
@@ -130,11 +131,19 @@ if (-not (Test-Path -LiteralPath $script:nssm)) {
 })
 
 # ---- 加载模块 ----
+# 顺序即依赖：util（Save-Svc/Open-PanelUrl/Remove-RotatedLogs）→ svc-input（纯函数族）→
+# nssm（Install/Remove，依赖 svc-input 的 Get-NssmSetSpec）→ add-svc（CLI 入口，自加载依赖）→
+# logview（Show-Log/Get-LogFiles，依赖 util 的 $logDir 约定）→ dialogs（Show-Add/Show-Remove，
+# 依赖 svc-input/nssm/util）。card 与 xaml 自加载 config，tray 惰性。
 . "$root\lib\theme.ps1"
 . "$root\lib\util.ps1"
+. "$root\lib\svc-input.ps1"
+. "$root\lib\nssm.ps1"
+. "$root\lib\add-svc.ps1"
+. "$root\lib\logview.ps1"
+. "$root\lib\dialogs.ps1"
 . "$root\lib\tray.ps1"   # 可选托盘：只定义纯函数与惰性初始化，未启用不加载 WinForms
 . "$root\lib\poll.ps1"
-. "$root\lib\add-svc.ps1"
 . "$root\lib\card.ps1"
 . "$root\lib\xaml.ps1"
 Write-CrashLog 'GUI modules loaded'

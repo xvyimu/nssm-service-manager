@@ -6,6 +6,7 @@ $cfgExisted = Test-Path -LiteralPath $cfg
 $before = if ($cfgExisted) { (Get-FileHash -LiteralPath $cfg).Hash } else { $null }
 . (Join-Path $RepoRoot 'lib/util.ps1')
 . (Join-Path $RepoRoot 'lib/add-svc.ps1')
+. (Join-Path $RepoRoot 'lib/logview.ps1')   # Get-LogFiles 随拆分移来（util.ps1 只留配置持久化）
 $script:svc = Load-Svc
 $script:sync = @{gate=[object]::new()}
 $logDir = Join-Path $RepoRoot 'logs'
