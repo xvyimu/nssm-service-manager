@@ -230,42 +230,14 @@ Render-Page
 Write-CrashLog "Window constructed: cards=$($script:cardPanel.Children.Count)"
 
 # ---- DispatcherTimer：从队列取探测结果更新卡片（替代 WinForms Timer）----
+# ---- DispatcherTimer：处理结果队列与状态栏（实现见 lib/util.ps1 Update-StatusTick）----
+# 抽成函数是为了可单测——内联在此处时测试只能复刻这段逻辑，改一处漏一处即静默漂移。
 $timer = New-Object System.Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromMilliseconds([int]$script:config.AckPollIntervalMs)
 $timer.Add_Tick({
-  $item = $null
-  while ($script:queue.TryDequeue([ref]$item)) {
-    if ($item.done) {
-      if ($item.act -eq 'remove') {
-        if (-not $item.ok) {
-          # 删除失败（stop 或 nssm remove 抛错/非零）：服务仍在、配置未动，不能走下面的清理
-          # 路径——那会把还活着的服务从 UI 抹掉，用户以为删掉了。回滚卡片过渡态并解封按钮，
-          # 失败原因由后台 msg 队列给出（poll.ps1 已 Enqueue）。
-          Set-CardRollback $script:cards[$item.n]
-          continue
-        }
-        # 删除回执：从 svc 与卡片缓存移除，落盘配置，刷新分页。
-        # UI 线程做配置写与卡片操作（与 Show-Remove 原同步路径对称，只是挪到 ack 收尾）。
-        [Threading.Monitor]::Enter($script:sync.gate)
-        try { $script:svc.Remove($item.n) } finally { [Threading.Monitor]::Exit($script:sync.gate) }
-        $script:cards.Remove($item.n)
-        try { Save-Svc $script:svc } catch { $script:statusBar.Text = "$($item.n) 已删除但配置保存失败：$($_.Exception.Message)" }
-        $script:statusBar.Text = "$($item.n) 已删除"
-        Render-Page
-      } else {
-        # 启停回执：ok=$false 时 Update-CardData 回滚过渡态（T1），否则解封按钮与冷却。
-        Update-CardData $item.n $null $null -e $item.e -ack -ok ([bool]$item.ok)
-      }
-    } else {
-      Update-CardData $item.n $item.st $item.h
-    }
-  }
-  # 后台 sc.exe 失败反馈：非空消息覆盖状态栏，否则 4 秒无操作后自动刷新
-  $msg = $null
-  while ($script:msgQueue.TryDequeue([ref]$msg)) { $script:statusBar.Text = $msg }
-  if (-not $script:lastActionAt -or ([datetime]::Now - $script:lastActionAt).TotalSeconds -ge 4) {
-    $script:statusBar.Text = "$(Get-Date -Format 'HH:mm:ss')  状态自动刷新"
-  }
+  # 单帧内的异常不许冒到 Dispatcher 层终止循环：一次坏数据不该让界面停止刷新。
+  try { Update-StatusTick }
+  catch { Write-CrashLog "Tick failed: $($_.Exception.GetType().FullName): $($_.Exception.Message)" }
 })
 $timer.Start()
 

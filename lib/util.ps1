@@ -86,6 +86,59 @@ function Open-PanelUrl([string]$url){
   }
 }
 
+# ---- 状态栏消息与每帧队列处理（DispatcherTimer 的回调体）----
+# 消息带**显示租约**：写入时记 $script:msgUntil，自动刷新在此之前不得覆盖。
+# 没有这条，后台失败消息会被同一 tick 的「状态自动刷新」立刻盖掉，用户永远看不见——
+# 用户没在操作时 $script:lastActionAt 早已超过 4 秒阈值，而 remove 路径的
+# stop + Wait-Stopped 最长 6 秒，失败消息必然跨过门槛。
+$script:MSG_LEASE = [TimeSpan]::FromSeconds(5)
+
+function Set-StatusMessage([string]$text){
+  if (-not $script:statusBar) { return }   # 模块可能被 CLI/测试加载，此时无状态栏
+  $script:statusBar.Text = $text
+  $script:msgUntil = [datetime]::Now + $script:MSG_LEASE
+}
+
+# DispatcherTimer 每帧：排空结果队列（探测结果 / 命令回执）→ 排空消息队列写状态栏
+# → 空闲 4 秒后自动刷新。抽成函数而不内联在 Add_Tick 里，是为了能直接单测：
+# 原实现让 test-remove-async 只能「复刻」这段逻辑，改这里而漏改测试就是静默漂移。
+function Update-StatusTick {
+  $item = $null
+  while ($script:queue.TryDequeue([ref]$item)) {
+    if ($item.done) {
+      if ($item.act -eq 'remove') {
+        if (-not $item.ok) {
+          # 删除失败（stop 或 nssm remove 抛错/非零）：服务仍在、配置未动，不能走下面的清理
+          # 路径——那会把还活着的服务从 UI 抹掉，用户以为删掉了。回滚卡片过渡态并解封按钮，
+          # 失败原因由后台 msg 队列给出（poll.ps1 已 Enqueue）。
+          Set-CardRollback $script:cards[$item.n]
+          continue
+        }
+        # 删除回执：清 svc 与卡片缓存、落盘配置、刷新分页。
+        [Threading.Monitor]::Enter($script:sync.gate)
+        try { $script:svc.Remove($item.n) } finally { [Threading.Monitor]::Exit($script:sync.gate) }
+        $script:cards.Remove($item.n)
+        try { Save-Svc $script:svc } catch { Set-StatusMessage "$($item.n) 已删除但配置保存失败：$($_.Exception.Message)" }
+        Set-StatusMessage "$($item.n) 已删除"
+        Render-Page
+      } else {
+        # 启停回执：ok=$false 时 Update-CardData 回滚过渡态（T1），否则解封按钮与冷却。
+        Update-CardData $item.n $null $null -e $item.e -ack -ok ([bool]$item.ok)
+      }
+    } else {
+      Update-CardData $item.n $item.st $item.h
+    }
+  }
+  $msg = $null
+  while ($script:msgQueue.TryDequeue([ref]$msg)) { Set-StatusMessage $msg }
+  # 空闲 4 秒后自动刷新状态文字；消息租约未到期时不覆盖（T4）。
+  if ($script:statusBar -and (-not $script:lastActionAt -or ([datetime]::Now - $script:lastActionAt).TotalSeconds -ge 4)) {
+    if (-not $script:msgUntil -or [datetime]::Now -ge $script:msgUntil) {
+      $script:statusBar.Text = "$(Get-Date -Format 'HH:mm:ss')  状态自动刷新"
+    }
+  }
+}
+
 # ---- 日志轮转档保留策略：NSSM 只改名不删档，logs/ 会无界增长 ----
 # 只碰轮转档（BaseName 匹配 \.(out|err)-\d{8}，NSSM 实际命名带 T 与毫秒，如
 # NewAPI.err-20261001T154751.222.log），永不动当前档（NewAPI.out.log / .err.log）。

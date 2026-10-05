@@ -46,6 +46,7 @@ $tests = @(
   @{ Name = 'card cache'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-card-cache.ps1')) }
   @{ Name = 'transition race'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-transition-race.ps1')) }
   @{ Name = 'transition failure'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-transition-failure.ps1')) }
+  @{ Name = 'status lease'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-status-lease.ps1')) }
   @{ Name = 'poll commands'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-poll-commands.ps1')) }
   @{ Name = 'parallel probe'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-parallel-probe.ps1')) }
   @{ Name = 'probe timeout scope'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-probe-timeout-scope.ps1')) }

@@ -51,19 +51,12 @@ try {
   Assert ($script:cards.Contains('RmSvc')) 'cards cleared before ack arrived.'
 
   # ---- 3. 模拟 DispatcherTimer 收到 done+act=remove 回执 ----
-  $ackItem = [pscustomobject]@{n='RmSvc';st=$null;h=$null;e=$epoch;done=$true;act='remove'}
+  $ackItem = [pscustomobject]@{n='RmSvc';st=$null;h=$null;e=$epoch;done=$true;act='remove';ok=$true}
   $script:queue.Enqueue($ackItem)
-  # 复刻 service-manager-gui.ps1 的 DispatcherTimer tick 逻辑
-  $item=$null
-  while ($script:queue.TryDequeue([ref]$item)) {
-    if ($item.done -and $item.act -eq 'remove') {
-      [Threading.Monitor]::Enter($script:sync.gate)
-      try { $script:svc.Remove($item.n) } finally { [Threading.Monitor]::Exit($script:sync.gate) }
-      $script:cards.Remove($item.n)
-      Save-Svc $script:svc
-      Render-Page
-    }
-  }
+  # 调真实实现（lib/util.ps1 Update-StatusTick）而非复刻：T4 把 tick 抽出后这里能直测生产代码，
+  # 不再抄一份逻辑——抄本与实现漂移是静默失效的常见来源（本段此前就是这么坏的）。
+  $script:msgQueue=[Collections.Concurrent.ConcurrentQueue[string]]::new()
+  Update-StatusTick
   Assert (-not $script:svc.Contains('RmSvc')) 'svc not cleared after remove ack.'
   Assert (-not $script:cards.Contains('RmSvc')) 'cards not cleared after remove ack.'
   Assert ($script:cardPanel.Children.Count -eq 0) 'Card still visible after remove ack.'
