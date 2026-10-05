@@ -92,7 +92,7 @@ function New-Card([string]$name, $info){
     Tag=$info.url; IsEnabled=(-not [string]::IsNullOrWhiteSpace($info.url))
   }
   # 无面板 URL 时禁用「打开面板」（IsEnabled 由 url 是否为空决定）
-  $open.Add_Click({ if ($this.Tag) { Start-Process ([string]$this.Tag) } })
+  $open.Add_Click({ Open-PanelUrl ([string]$this.Tag) })
   $btn=New-Object System.Windows.Controls.Button -Property @{
     Content='启动'; FontFamily=$script:cjkFont; FontSize=12; Padding='14,6'
     HorizontalAlignment='Right'; MinWidth=82; IsEnabled=$false
@@ -131,7 +131,7 @@ function New-Card([string]$name, $info){
         $parts = $this.Tag -split '\|'; $act = $parts[0]; $n = $parts[1]
         switch ($act) {
           { $_ -in @('start','stop','restart') } { Send-ServiceCommand $n $act }
-          'open'    { if ($script:svc[$n].url) { Start-Process $script:svc[$n].url } }
+          'open'    { Open-PanelUrl $script:svc[$n].url }
           'log'     { Show-Log $n $script:window }
           'security'{ Show-SecurityCheck $n }
           'remove'  { Show-Remove $n $script:window; Render-Page }

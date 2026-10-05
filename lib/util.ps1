@@ -72,6 +72,19 @@ function nssm-set([string]$n,[string]$k,[Parameter(ValueFromRemainingArguments=$
   if($LASTEXITCODE -ne 0){ throw "NSSM set $k 失败($LASTEXITCODE): $($o -join ' ')" }
 }
 
+# 打开面板 URL 的统一入口：包住 Start-Process，URL 非法/无默认浏览器/注册表关联损坏时
+# 只提示不崩 GUI。card.ps1 两处（按钮 Click、右键菜单 open）都走这里——否则 Start-Process
+# 抛异常会经 Dispatcher 冒到 AppDomain，没有 Dispatcher 级兜底就整窗消失。
+# 不记 URL 本身（crashlog 不记配置值），只记异常类型与消息。
+function Open-PanelUrl([string]$url){
+  if ([string]::IsNullOrWhiteSpace($url)) { return }
+  try { Start-Process $url -EA Stop }
+  catch {
+    Write-CrashLog "Open-PanelUrl 失败: $($_.Exception.GetType().FullName): $($_.Exception.Message)"
+    if ($script:statusBar) { $script:statusBar.Text = "打开面板失败：$($_.Exception.Message)" }
+  }
+}
+
 # ---- 安全检查（借鉴 PSSM：路径引号加固 + 目录 ACL 过宽）----
 # 纯解析：从 Win32_Service PathName 提取 exe 目录与引号状态，不碰 UI 也不抛错。
 function Resolve-ServiceExeDir([string]$path){

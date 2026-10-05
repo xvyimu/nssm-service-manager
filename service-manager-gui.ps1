@@ -120,6 +120,15 @@ if (-not (Test-Path -LiteralPath $script:nssm)) {
   Write-CrashLog "UnhandledException(terminating=$($e.IsTerminating)): $($x.GetType().FullName): $($x.Message)`n$($x.StackTrace)"
 })
 
+# ---- Dispatcher 级兜底：UI 线程异常（如 Click handler 抛错）默认会冒到 AppDomain ----
+# UnhandledException 并终止进程。Handled=$true 记完继续跑，否则单次点击异常=整窗消失。
+# 仍会被上面的 AppDomain handler 兜底（那是进程级最后一道），但 Dispatcher 这层能就地接住，
+# 不让窗口消失——Open-PanelUrl 的 catch 已就地处理常见失败，这里是给「其它 UI 回调抛错」兜底。
+[System.Windows.Threading.Dispatcher]::CurrentDispatcher.add_UnhandledException({ param($s,$e)
+  Write-CrashLog "DispatcherUnhandled: $($e.Exception.GetType().FullName): $($e.Exception.Message)"
+  $e.Handled = $true
+})
+
 # ---- 加载模块 ----
 . "$root\lib\theme.ps1"
 . "$root\lib\util.ps1"
