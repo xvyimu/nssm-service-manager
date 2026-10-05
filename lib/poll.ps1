@@ -25,6 +25,8 @@ $sync.tcpTimeoutMs = $tcpMs; $sync.httpTimeoutMs = $httpMs; $sync.waitStoppedTim
 
 # sc.exe 不抛异常，只靠 $LASTEXITCODE；包装成 helper，失败时反馈到 UI 状态栏
 # 常见退出码映射（发现 9）：1056=已在运行 / 1062=未启动 / 1060=未安装 / 1051=禁止启动
+# 5=拒绝访问：非管理员调 sc.exe start <已运行服务> 实测返回 5（不是 1056）——
+# 管理员下才返回 1056；两条路径都给中文文案，避免非管理员看到「错误码 5」。
 function Convert-ScExitCode([int]$code){
   switch ($code) {
     0      { '' }
@@ -36,6 +38,7 @@ function Convert-ScExitCode([int]$code){
     1058   { '服务被禁用' }
     1067   { '进程意外退出' }
     1072   { '服务已被标记为删除' }
+    5      { '拒绝访问（可能非管理员）' }
     default { "错误码 $code" }
   }
 }
