@@ -59,20 +59,46 @@ function Invoke-Sc([string]$verb,[string]$n,[string]$fail){
   $true
 }
 
+# ServiceController.Start() 是异步的（不等 RUNNING）；sc.exe start 走 SCM 同步管道（默认 30s 超时），
+# 慢启动服务会占死后台命令队列与卡片按钮（按钮要等 ack 才解封）。改用 ServiceController 让启动
+# 立即返回，状态由下一轮探测自然落到运行中。
+# 两个不能照搬报告原片的坑（已验，见 docs/HANDOFF.md P0-2）：
+# 1. ServiceController.Status 对不存在的服务返回空串（不抛异常）——先判空走 sc.exe 取「未安装」错码，
+#    否则空串会落到 Start() 抛 'Cannot open ... service'，文案退化。
+# 2. Start() 对已运行/无权限抛 MethodInvocationException，内层是英文包壳——直接吐不如落回 sc.exe
+#    取退出码经 Convert-ScExitCode 出中文文案友好。
+# 失败路径仍付一次 sc.exe（~90ms），但只在异常时触发；正常慢启动走 Start() 立即返回。
+# ServiceController 是 IDisposable（持有 SCM 句柄）；用 try/finally 保证释放，不靠 GC。
+function Invoke-ServiceStart([string]$n,[string]$fail='启动失败'){
+  $svc = $null
+  try {
+    $svc = [System.ServiceProcess.ServiceController]::new($n)
+    $status = [string]$svc.Status
+    if ([string]::IsNullOrEmpty($status)) { return (Invoke-Sc 'start' $n $fail) }
+    if ($status -eq 'Running') { return $true }   # 等价 sc.exe 1056
+    $svc.Start()                                  # 立即返回，不等 RUNNING
+    return $true
+  } catch {
+    return (Invoke-Sc 'start' $n $fail)           # 取退出码文案，比内层英文异常友好
+  } finally {
+    if ($svc) { try { $svc.Dispose() } catch {} }
+  }
+}
+
 function Invoke-PendingCommands {
   # 执行命令队列（启停与删除全在后台线程，避免 UI 线程同步等待 stop/remove 冻结界面）
   $item=$null
   while(-not $sync.stop -and $sync.cmd.TryDequeue([ref]$item)){
     $n=[string]$item.n; $act=[string]$item.act; $e=$item.e
     switch($act){
-      'start'   { $ok=Invoke-Sc 'start' $n '启动失败' }
+      'start'   { $ok=Invoke-ServiceStart $n }
       'stop'    { $ok=Invoke-Sc 'stop' $n '停止失败' }
       'restart' {
         $ok=$true
         if(-not (Invoke-Sc 'stop' $n '停止失败，重启中断')) { $ok=$false; break }
         [void](Wait-Stopped $n)
         Start-Sleep -Milliseconds 500  # 端口 TIME_WAIT 余量
-        Invoke-Sc 'start' $n '重启后启动失败' | Out-Null
+        $ok=Invoke-ServiceStart $n '重启后启动失败'
       }
       'remove' {
         # 删除走后台：stop → Wait-Stopped ≤6s → nssm remove confirm → 回执带 done=remove
