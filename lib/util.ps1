@@ -99,6 +99,17 @@ function Set-StatusMessage([string]$text){
   $script:msgUntil = [datetime]::Now + $script:MSG_LEASE
 }
 
+# UI 回调抛异常时的状态栏提示（Dispatcher 兜底 handler 调用）。
+# 抽成函数而非内联在 handler 里：handler 由 add_UnhandledException 注册在进程级上下文，
+# 测不了；而「截断到 80 字符 + 带租约」这段才是真正会写错的部分。
+# 只做最低风险的事（字符串处理 + 赋 Text）——此函数本身若抛，会走进程终止路径。
+function Set-UiErrorStatus([string]$message){
+  if (-not $script:statusBar) { return }
+  $m = [string]$message
+  if ($m.Length -gt 80) { $m = $m.Substring(0,80) + '…' }
+  Set-StatusMessage "操作出错：$m"
+}
+
 # DispatcherTimer 每帧：排空结果队列（探测结果 / 命令回执）→ 排空消息队列写状态栏
 # → 空闲 4 秒后自动刷新。抽成函数而不内联在 Add_Tick 里，是为了能直接单测：
 # 原实现让 test-remove-async 只能「复刻」这段逻辑，改这里而漏改测试就是静默漂移。

@@ -51,5 +51,19 @@ try {
   Update-StatusTick
   Assert ($card.ST -eq '运行中' -and $card.Btn.IsEnabled) "Probe result path broken: ST=$($card.ST)."
 
-  Write-Output 'PASS: status messages hold a display lease; auto-refresh neither swallows them nor is permanently blocked.'
+  # ---- 5. UI 回调异常的状态栏提示（T5）：截断到 80 字符 + 带租约 ----
+  # 修前：Dispatcher handler 只 Write-CrashLog 后设 Handled=$true，用户看到「点了没反应」。
+  # 这里测 handler 真正会调的那段（Set-UiErrorStatus）；handler 本身是进程级注册，无法单测。
+  Set-UiErrorStatus '短消息'
+  Assert ($script:statusBar.Text -eq '操作出错：短消息') "Short UI error text wrong: '$($script:statusBar.Text)'."
+  Assert ($script:msgUntil -gt [datetime]::Now) 'UI error message did not take a display lease.'
+  $long='超长异常消息' * 30
+  Set-UiErrorStatus $long
+  $shown=[string]$script:statusBar.Text
+  Assert ($shown.StartsWith('操作出错：')) "Long UI error missing prefix: '$shown'."
+  # 前缀 5 字 + 截断后 80 字 + 省略号 1 字
+  Assert ($shown.Length -le 90) "Long UI error not truncated: length=$($shown.Length)."
+  Assert ($shown.EndsWith('…')) 'Truncated UI error should end with an ellipsis.'
+
+  Write-Output 'PASS: status messages hold a display lease; auto-refresh neither swallows them nor is permanently blocked; UI errors surface truncated.'
 } finally { $win.Close(); $script:sync.wake.Dispose() }
