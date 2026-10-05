@@ -10,8 +10,12 @@ $script:config = [ordered]@{
   ToggleCooldownMs    = 8000     # 双击启停冷却（card.ps1 Invoke-CardToggle）
   ToggleTimeoutMs     = 30000    # 卡片过渡态超时逃生（card.ps1 Test-TransitionTimedOut）——
                                  # 命令回执丢失（后台异常退出/命令未入队）时，过渡态不能永久卡住：
-                                 # 超时后按到达的探测值收敛并解封按钮。须大于最慢的正常路径
-                                 # （删除的 stop+Wait-Stopped 最长 6s，启动失败的 sc.exe 重试 ~1s）
+                                 # 超时后按到达的探测值收敛并解封按钮。取值须大于正常路径的最长耗时，
+                                 # 否则会在正常流程里误触发。
+                                 # 已知下界：删除的 stop + Wait-Stopped 最长 6s（WaitStoppedTimeoutMs）。
+                                 # **未实测**：启动失败路径——Start() 抛异常后回落 sc.exe start，
+                                 # SCM 同步管道默认超时约 30s，本默认值恰好落在那条边界上。若真机确认
+                                 # 该路径确实接近 30s，应把本值调大（提示词亦列为待真机确认项）。
   WaitStoppedTimeoutMs = 6000    # 重启/删除前轮询 Stopped 的上限（add-svc.ps1 / poll.ps1 Wait-Stopped）
   LogKeepCount        = 10       # 轮转日志保留份数（util.ps1 Remove-RotatedLogs）——
                                  # 口径是**跨服务全局**按修改时间倒序的前 N 份豁免，不是每服务各 N 份
