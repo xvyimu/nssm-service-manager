@@ -118,6 +118,9 @@ try {
   Assert ($script:opened -eq $script:svc[$card.SvcName].url) 'Panel action did not reach the URL opener.'
   Assert ($script:logged -eq $card.SvcName -and $script:checked -eq $card.SvcName) 'Log/security action targeted wrong service.'
   Assert ($script:removed -eq $card.SvcName) 'Remove action targeted wrong service.'
+  # 破坏性操作色从 theme.ps1 的 $script:T.Danger 取（不内联硬编码，见 theme.ps1 顶部约定）。
+  # 唯一标记：菜单第 7 项（删除）前景应为 Danger 色，其余项不设。
+  Assert ($menu.Items[6].Foreground.Color -eq [Windows.Media.ColorConverter]::ConvertFromString($script:T.Danger)) 'Remove menu item should use $script:T.Danger foreground.'
   $menu.IsOpen = $false
   Write-Output 'PASS: all seven menu actions reach their targets (side effects mocked).'
 

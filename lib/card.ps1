@@ -126,7 +126,7 @@ function New-Card([string]$name, $info){
     $items = @(@('启动','start'),@('停止','stop'),@('重启','restart'),@('面板','open'),@('日志','log'),@('安全检查','security'),@('删除','remove'))
     foreach ($d in $items) {
       $mi = New-Object System.Windows.Controls.MenuItem -Property @{Header=$d[0]; Tag=$d[1]+'|'+$n}
-      if ($d[1] -eq 'remove') { $mi.Foreground = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(192,57,43)) }
+      if ($d[1] -eq 'remove') { $mi.Foreground = $script:T.Danger }
       $mi.Add_Click({
         $parts = $this.Tag -split '\|'; $act = $parts[0]; $n = $parts[1]
         switch ($act) {

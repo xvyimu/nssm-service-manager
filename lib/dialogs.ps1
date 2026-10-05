@@ -27,7 +27,7 @@ function Show-Remove([string]$n, $owner){
   $cancel=New-Object System.Windows.Controls.Button -Property @{Content='取消';Padding='16,6';Margin='0,0,8,0'}
   $del=New-Object System.Windows.Controls.Button -Property @{
     Content='删除'; Padding='16,6'; IsEnabled=$false
-    Background=(New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(192,57,43)))
+    Background=$script:T.Danger
     Foreground=[System.Windows.Media.Brushes]::White
   }
   [void]$btnPanel.Children.Add($cancel); [void]$btnPanel.Children.Add($del)
