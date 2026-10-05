@@ -8,6 +8,13 @@
   "LogKeepCount":         10,
   "LogKeepDays":          14,
   "LogDir":               "",
+  "ProbeThrottleLimit":   8,
+  "ProbeIntervalMs":      4000,
+  "ProbeIdleMs":          15000,
+  "WaitStoppedPollMs":    300,
+  "AppRotateBytes":       5242880,
+  "AppStopMethodConsole": 5000,
+  "AckPollIntervalMs":    400,
   "TrayEnabled":          false,
   "MinimizeToTray":       false,
   "CloseToTray":          false

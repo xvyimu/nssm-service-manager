@@ -57,7 +57,11 @@ function Find-SensitiveEnvKeys([object[]]$pairs){
 
 # NSSM 注册后需要 set 的键值序列（不含 install 与失败回滚）。抽出来是为可单测参数组合：
 # AppExit 双 token、AppEnvironmentExtra 多 token 这类容易被展开方式搞错的地方。
-function Get-NssmSetSpec([string]$n,[string]$dir,[string]$par,[object[]]$envPairs){
+# $rotateBytes / $stopMethodMs 由调用方从 config 传入（默认值与 config.ps1 的
+# AppRotateBytes / AppStopMethodConsole 一致）——本文件保持纯函数，不读 $script:config，
+# 单独点源即可测（不加载 WPF / config）。
+function Get-NssmSetSpec([string]$n,[string]$dir,[string]$par,[object[]]$envPairs,
+                         [int]$rotateBytes = 5242880, [int]$stopMethodMs = 5000){
   $spec = [System.Collections.Generic.List[object]]::new()
   if($dir){ $spec.Add(@{k='AppDirectory'; v=@($dir)}) }
   if($par){ $spec.Add(@{k='AppParameters'; v=@($par)}) }
@@ -67,8 +71,8 @@ function Get-NssmSetSpec([string]$n,[string]$dir,[string]$par,[object[]]$envPair
   $spec.Add(@{k='AppStderrCreationDisposition'; v=@(4)})
   $spec.Add(@{k='AppRotateFiles'; v=@(1)})
   $spec.Add(@{k='AppRotateOnline'; v=@(1)})
-  $spec.Add(@{k='AppRotateBytes'; v=@(5242880)})
-  $spec.Add(@{k='AppStopMethodConsole'; v=@(5000)})
+  $spec.Add(@{k='AppRotateBytes'; v=@($rotateBytes)})
+  $spec.Add(@{k='AppStopMethodConsole'; v=@($stopMethodMs)})
   $spec.Add(@{k='Start'; v=@('SERVICE_DEMAND_START')})
   $spec.Add(@{k='AppExit'; v=@('Default','Ignore')})
   if($envPairs -and $envPairs.Count){ $spec.Add(@{k='AppEnvironmentExtra'; v=@($envPairs)}) }

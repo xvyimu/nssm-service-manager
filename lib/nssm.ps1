@@ -24,8 +24,12 @@ function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$
   if($LASTEXITCODE -ne 0){ throw "NSSM install 失败($LASTEXITCODE): $($nssmOut -join ' ')" }
   # install 成功后服务已进服务数据库；任意 set 失败都会留下配置不全的半注册残骸
   # （无日志重定向/轮转/AppExit）。失败时尽力 remove 回滚，再抛原始错误。
+  # 日志轮转阈值与停止收尾毫秒从 config 取（默认值与 svc-input.ps1 的形参默认值一致）。
+  # config 可能未加载（单独点源本模块时）——用 $null 判断回落，不靠 [int]$null=0。
+  $rotateBytes = if ($script:config -and $script:config.AppRotateBytes) { [int]$script:config.AppRotateBytes } else { 5242880 }
+  $stopMethod  = if ($script:config -and $script:config.AppStopMethodConsole) { [int]$script:config.AppStopMethodConsole } else { 5000 }
   try {
-    foreach($s in Get-NssmSetSpec $n $dir $par $envPairs){ nssm-set $n $s.k $s.v }
+    foreach($s in Get-NssmSetSpec $n $dir $par $envPairs $rotateBytes $stopMethod){ nssm-set $n $s.k $s.v }
   } catch {
     try { & $script:nssm remove $n confirm 2>&1 | Out-Null } catch {}
     throw

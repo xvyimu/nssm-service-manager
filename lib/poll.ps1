@@ -20,8 +20,14 @@ $http = [System.Net.Http.HttpClient]::new()
 $tcpMs  = if ($sync.tcpTimeoutMs)        { [int]$sync.tcpTimeoutMs }        else { 200 }
 $httpMs = if ($sync.httpTimeoutMs)       { [int]$sync.httpTimeoutMs }       else { 3000 }
 $waitMs = if ($sync.waitStoppedTimeoutMs){ [int]$sync.waitStoppedTimeoutMs } else { 6000 }
+# 节奏与并行度也从 $sync 读（UI 线程从 config 注入），测试夹具未设时回落原硬编码值。
+$probeIntervalMs = if ($sync.probeIntervalMs) { [int]$sync.probeIntervalMs } else { 4000 }
+$probeIdleMs     = if ($sync.probeIdleMs)     { [int]$sync.probeIdleMs }     else { 15000 }
+$probeThrottle   = if ($sync.probeThrottleLimit) { [int]$sync.probeThrottleLimit } else { 8 }
 $http.Timeout = [TimeSpan]::FromMilliseconds($httpMs)
 $sync.tcpTimeoutMs = $tcpMs; $sync.httpTimeoutMs = $httpMs; $sync.waitStoppedTimeoutMs = $waitMs
+$sync.probeIntervalMs = $probeIntervalMs; $sync.probeIdleMs = $probeIdleMs
+$sync.probeThrottleLimit = $probeThrottle
 
 # sc.exe 不抛异常，只靠 $LASTEXITCODE；包装成 helper，失败时反馈到 UI 状态栏
 # 常见退出码映射（发现 9）：1056=已在运行 / 1062=未启动 / 1060=未安装 / 1051=禁止启动
@@ -204,12 +210,17 @@ while(-not $sync.stop){
         $h=if($msg -match 'refused|unable to connect|连接|connection|ConnectFailure'){'无响应'}else{'超时'}
       }
       [pscustomobject]@{n=$n;h=$h}
-    } -ThrottleLimit 8
+    } -ThrottleLimit $probeThrottle
     foreach($r in $results){ $sync.queue.Enqueue([pscustomobject]@{n=$r.n;st='运行中';h=$r.h}) }
   }
 
   Invoke-PendingCommands
-  if (-not $sync.stop) { [void]$sync.wake.WaitOne(4000) }
+  # 有运行中服务按 ProbeIntervalMs 轮询；全停止时拉长到 ProbeIdleMs——省下空转的
+  # 唤醒与整轮 Get-Service/TCP 扫描（服务数为 0 时 $toProbe 为空，整轮只做一次快照）。
+  if (-not $sync.stop) {
+    $sleepMs = if ($toProbe.Count) { $probeIntervalMs } else { $probeIdleMs }
+    [void]$sync.wake.WaitOne($sleepMs)
+  }
 }
 } finally { $http.Dispose() }
 '@

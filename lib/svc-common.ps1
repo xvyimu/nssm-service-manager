@@ -16,6 +16,8 @@ function Wait-Stopped([string]$n,[int]$timeoutMs=0){
     else                                                              { $timeoutMs = 6000 }
   }
   $w=0
+  # 步长从 config 收口（WaitStoppedPollMs，默认 300）；测试夹具经 $sync 注入
+  $stepMs = if ($sync -and $sync.waitStoppedPollMs) { [int]$sync.waitStoppedPollMs } else { 300 }
   while($w -lt $timeoutMs){
     try {
       $s=Get-Service -Name $n -EA Stop
@@ -23,7 +25,7 @@ function Wait-Stopped([string]$n,[int]$timeoutMs=0){
     } catch {
       if($_.CategoryInfo.Category -eq 'ObjectNotFound'){return $true}
     }
-    Start-Sleep -Milliseconds 300; $w+=300
+    Start-Sleep -Milliseconds $stepMs; $w += $stepMs
   }
   $false
 }

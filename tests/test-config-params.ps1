@@ -21,9 +21,9 @@ try {
     Move-Item -LiteralPath $originalRepoConfig $backupRepoConfig -Force
   }
 
-  # ---- 1. 覆盖值生效：全部 6 键换成非默认值后再加载 ----
+  # ---- 1. 覆盖值生效：全部键换成非默认值后再加载 ----
   [IO.File]::WriteAllText((Join-Path $RepoRoot 'config.json'),
-    '{"PerPage":4,"TcpTimeoutMs":50,"HttpTimeoutMs":500,"ToggleCooldownMs":1200,"CrashLogMaxBytes":1024,"WaitStoppedTimeoutMs":800,"LogKeepCount":3,"LogKeepDays":2,"LogDir":"C:\\sm-test-logs"}',
+    '{"PerPage":4,"TcpTimeoutMs":50,"HttpTimeoutMs":500,"ToggleCooldownMs":1200,"CrashLogMaxBytes":1024,"WaitStoppedTimeoutMs":800,"LogKeepCount":3,"LogKeepDays":2,"LogDir":"C:\\sm-test-logs","ProbeThrottleLimit":4,"ProbeIntervalMs":1111,"ProbeIdleMs":2222,"WaitStoppedPollMs":77,"AppRotateBytes":1048576,"AppStopMethodConsole":1234,"AckPollIntervalMs":250}',
     [Text.UTF8Encoding]::new($false))
   $script:config = $null   # 强制重新加载以验证 config.json 覆盖
   . (Join-Path $RepoRoot 'lib/config.ps1')
@@ -33,6 +33,14 @@ try {
   Assert ($script:config.LogKeepCount -eq 3) 'LogKeepCount not overridden.'
   Assert ($script:config.LogKeepDays -eq 2) 'LogKeepDays not overridden.'
   Assert ($script:config.LogDir -eq 'C:\sm-test-logs') 'LogDir not overridden.'
+  # 轮询/探测节奏与 NSSM 参数收口键（原硬编码在 poll.ps1 / svc-common.ps1 / Get-NssmSetSpec）
+  Assert ($script:config.ProbeThrottleLimit -eq 4) 'ProbeThrottleLimit not overridden.'
+  Assert ($script:config.ProbeIntervalMs -eq 1111) 'ProbeIntervalMs not overridden.'
+  Assert ($script:config.ProbeIdleMs -eq 2222) 'ProbeIdleMs not overridden.'
+  Assert ($script:config.WaitStoppedPollMs -eq 77) 'WaitStoppedPollMs not overridden.'
+  Assert ($script:config.AppRotateBytes -eq 1048576) 'AppRotateBytes not overridden.'
+  Assert ($script:config.AppStopMethodConsole -eq 1234) 'AppStopMethodConsole not overridden.'
+  Assert ($script:config.AckPollIntervalMs -eq 250) 'AckPollIntervalMs not overridden.'
 
   # runspace 从 $sync 读三个超时，生效值写回 $sync 同键——测试读共享表即可
   $worker = Start-FakePoll 1 'Stopped' 0 @{ waitStoppedTimeoutMs = 800; tcpTimeoutMs = 50; httpTimeoutMs = 500 }

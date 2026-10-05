@@ -171,6 +171,11 @@ $script:sync = [hashtable]::Synchronized(@{
   tcpTimeoutMs         = [int]$script:config.TcpTimeoutMs
   httpTimeoutMs        = [int]$script:config.HttpTimeoutMs
   waitStoppedTimeoutMs = [int]$script:config.WaitStoppedTimeoutMs
+  # 节奏与并行度（poll.ps1 / svc-common.ps1 从 $sync 读，config.ps1 集中收口）
+  probeThrottleLimit   = [int]$script:config.ProbeThrottleLimit
+  probeIntervalMs      = [int]$script:config.ProbeIntervalMs
+  probeIdleMs          = [int]$script:config.ProbeIdleMs
+  waitStoppedPollMs    = [int]$script:config.WaitStoppedPollMs
 })
 $bgRS = [runspacefactory]::CreateRunspace()
 $bgRS.ApartmentState = 'STA'
@@ -217,7 +222,7 @@ Write-CrashLog "Window constructed: cards=$($script:cardPanel.Children.Count)"
 
 # ---- DispatcherTimer：从队列取探测结果更新卡片（替代 WinForms Timer）----
 $timer = New-Object System.Windows.Threading.DispatcherTimer
-$timer.Interval = [TimeSpan]::FromMilliseconds(400)
+$timer.Interval = [TimeSpan]::FromMilliseconds([int]$script:config.AckPollIntervalMs)
 $timer.Add_Tick({
   $item = $null
   while ($script:queue.TryDequeue([ref]$item)) {

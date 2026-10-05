@@ -13,6 +13,16 @@ $script:config = [ordered]@{
   LogKeepDays         = 14       # 轮转日志保留天数（超出且不在豁免名单内的删除）
   LogDir              = ''       # 日志根覆盖；空 = 仓内 logs/。改它只影响新注册的服务——
                                  # 已注册服务的 AppStdout/AppStderr 写死在注册表，须逐个重新注册
+  # ---- 轮询与探测节奏（原硬编码在 poll.ps1 / svc-common.ps1）----
+  ProbeThrottleLimit  = 8        # 并行探测的 ThrottleLimit（poll.ps1 ForEach-Object -Parallel）
+  ProbeIntervalMs     = 4000     # 有运行中服务时的轮询间隔（poll.ps1 循环尾 WaitOne）
+  ProbeIdleMs         = 15000    # 全停止时的轮询间隔——省下空转的唤醒与整轮扫描
+  WaitStoppedPollMs   = 300      # Wait-Stopped 轮询步长（svc-common.ps1）
+  # ---- NSSM 注册参数（原硬编码在 Get-NssmSetSpec）----
+  AppRotateBytes      = 5242880  # 单日志档轮转阈值（5 MiB，NSSM AppRotateBytes）
+  AppStopMethodConsole = 5000    # 停止时给控制台进程的收尾毫秒（NSSM AppStopMethodConsole）
+  # ---- UI 节奏 ----
+  AckPollIntervalMs   = 400      # 命令回执/探测结果轮询的 DispatcherTimer 间隔（主脚本）
   # ---- 可选托盘行为（默认全关，保持历史行为：最小化进任务栏、关闭即退出）----
   TrayEnabled     = $false   # 总开关；关时下面两项无效，也不加载 WinForms
   MinimizeToTray  = $false   # 点最小化收进托盘（需 TrayEnabled）
