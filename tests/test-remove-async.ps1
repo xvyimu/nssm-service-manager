@@ -81,6 +81,9 @@ try {
 # ---- 2. runspace 侧 remove action 调 stop→Wait-Stopped→nssm remove confirm ----
 . (Join-Path $RepoRoot 'lib/poll.ps1')
 $worker=Start-FakePoll 1 'Stopped'
+# 声明「删完后服务已从 SCM 消失」——poll.ps1 的 remove 分支新增实证复核
+# （Test-ServiceGone），不置位会被判「服务仍存在」而报删除失败。
+$worker.Sync.serviceGone=$true
 try {
   Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Worker did not start.'
   $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='remove';e=1})
@@ -104,6 +107,28 @@ try {
   [void]$worker.Sync.queue.TryDequeue([ref]$ack)
   Assert ($ack -ne $null -and $ack.done -eq $true -and $ack.act -eq 'remove') "ack wrong: $ack"
   Assert ($ack.e -eq 1) "ack epoch mismatch: got $($ack.e)"
+  Assert ($ack.ok -eq $true) "Successful remove should report ok=`$true, got ok=$($ack.ok)."
   Assert ($worker.PowerShell.Streams.Error.Count -eq 0) 'Background errors present during remove.'
   Write-Output 'PASS: runspace remove action runs stop→Wait-Stopped→nssm remove confirm; ack carries done+act+epoch.'
 } finally { Close-FakePoll $worker }
+
+# ---- 3. nssm remove 谎报 0 时，必须按「删除失败」处理 ----
+# 实测（2026-10-05，NSSM 2.24-103-gdee49fc）：提权不足或服务不存在时，nssm remove/install
+# 打印「Administrator access is needed to ...」却返回 exit code 0。只信退出码会把删除失败
+# 判成功——UI 清掉卡片并落盘，而服务仍在：用户以为删了、配置却丢了。
+# 故 poll.ps1 的 remove 分支以「服务是否真的从 SCM 消失」复核（Test-ServiceGone）。
+# 修前红：这段会拿到 ok=$true（缺陷漏过）；修后绿：ok=$false。
+$worker=Start-FakePoll 1 'Stopped' 0 $null 0
+# 不置 serviceGone —— sc.exe query 返回 0（服务仍存在），nssm 又谎报 0，两步都"成功"
+try {
+  Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Worker did not start.'
+  $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='remove';e=1})
+  [void]$worker.Sync.wake.Set()
+  $ack = Wait-FakePollAck $worker
+  Assert ($null -ne $ack) 'Remove command produced no ack.'
+  Assert ($ack.ok -eq $false) "nssm 谎报 0 但服务仍在，应判删除失败（ok=`$false）；实际 ok=$($ack.ok)。"
+  $msgs=@($worker.Sync.msg.ToArray())
+  Assert ($msgs.Count -ge 1) '删除失败应向 msg 队列反馈原因。'
+  Assert (($msgs -join ' ') -match '删除失败') "msg 应含「删除失败」：$($msgs -join ' | ')"
+} finally { Close-FakePoll $worker }
+Write-Output 'PASS: nssm remove reporting exit 0 while the service survives is treated as a failure.'

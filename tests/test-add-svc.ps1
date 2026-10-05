@@ -16,10 +16,26 @@ $script:saved=$false
 # Replace only side-effect boundaries; exercise the real parser and NSSM wrapper.
 function Invoke-TestNssm {
   $script:calls.Add(@($args))
+  # 同步服务数据库状态：install/remove 后 sc.exe query 替身据此应答
+  if ($args[0] -eq 'install') { [void]$script:nssmInstalled.Add($args[1]) }
+  if ($args[0] -eq 'remove')  { [void]$script:nssmInstalled.Remove($args[1]) }
   $global:LASTEXITCODE=0
 }
 function Save-Svc($data) { $script:saved=$data.Contains('__sm_add_test__') }
-function sc.exe { $script:startArgs=@($args); $global:LASTEXITCODE=0 }
+# sc.exe 替身：本测试不碰真服务数据库，但要模拟 Install-NssmService / Remove-NssmService
+# 新增的实证复核（Test-ServicePresent / Test-ServiceGone 都走 sc.exe query 的退出码）。
+# 语义：install 过的服务 query 返回 0，remove 过的返回 1060。
+function sc.exe {
+  if ($args[0] -eq 'query') {
+    # 实证复核判据（Test-ServicePresent / Test-ServiceGone）走这里；
+    # 不记进 startArgs——它不是「命令」，记了会把 stop/start 的断言覆盖掉。
+    if ($script:nssmInstalled -contains $args[1]) { $global:LASTEXITCODE=0 } else { $global:LASTEXITCODE=1060 }
+    return
+  }
+  $script:startArgs=@($args)   # 最近一条 sc.exe 命令（stop/start 等非 query 都记这里）
+  $global:LASTEXITCODE=0
+}
+$script:nssmInstalled=[System.Collections.Generic.HashSet[string]]::new()
 $script:nssm='Invoke-TestNssm'
 # Add-SvcFromCli 现在做 Test-Path 校验，需要一个真实存在的 exe（NSSM 被 mock，不碰真 exe）
 $fakeExe = Join-Path ([IO.Path]::GetTempPath()) "sm-test-$([guid]::NewGuid().ToString('N')).exe"
@@ -57,8 +73,8 @@ $script:calls.Clear()
 $script:removed=$null
 function Invoke-TestNssmRollback {
   $a=$args
-  if ($a[0] -eq 'install') { $global:LASTEXITCODE=0; return }
-  if ($a[0] -eq 'remove')  { $script:removed=$a[1]; $global:LASTEXITCODE=0; return }
+  if ($a[0] -eq 'install') { [void]$script:nssmInstalled.Add($a[1]); $global:LASTEXITCODE=0; return }
+  if ($a[0] -eq 'remove')  { $script:removed=$a[1]; [void]$script:nssmInstalled.Remove($a[1]); $global:LASTEXITCODE=0; return }
   if ($a[0] -eq 'set' -and $a[2] -eq 'AppRotateFiles') { $global:LASTEXITCODE=5; return 'set failed' }
   $global:LASTEXITCODE=0
 }
@@ -72,16 +88,19 @@ if ($script:removed -ne '__sm_rollback__') { throw 'Half-registered service was 
 # Remove-NssmService：stop→Wait-Stopped→nssm remove confirm
 $script:calls.Clear()
 $script:removed=$null
-$script:stopArgs=$null
+$script:startArgs=$null
 function Invoke-TestNssmRemove {
   $a=$args
-  if ($a[0] -eq 'remove')  { $script:removed=$a[1]; $global:LASTEXITCODE=0; return }
+  if ($a[0] -eq 'remove')  { $script:removed=$a[1]; [void]$script:nssmInstalled.Remove($a[1]); $global:LASTEXITCODE=0; return }
   $global:LASTEXITCODE=0
 }
-function sc.exe { $script:stopArgs=@($args); $global:LASTEXITCODE=0 }
+# sc.exe 替身需先让服务"存在"，否则 Test-ServiceGone 会判删除失败。
+# 不再单独重定义 sc.exe：第 28 行那个统一替身已含 query 分支（stop 也记进 $script:startArgs），
+# 这里再定义一个无 query 分支的会把它覆盖掉，Test-ServiceGone 就只能拿到假的 0。
+[void]$script:nssmInstalled.Add('__sm_remove_test__')
 $script:nssm='Invoke-TestNssmRemove'
 Remove-NssmService '__sm_remove_test__'
-if ($script:stopArgs -join '|' -ne 'stop|__sm_remove_test__') { throw 'Remove-NssmService must stop before nssm remove.' }
+if ($script:startArgs -join '|' -ne 'stop|__sm_remove_test__') { throw 'Remove-NssmService must stop before nssm remove.' }
 if ($script:removed -ne '__sm_remove_test__') { throw 'Remove-NssmService did not call nssm remove confirm.' }
 
 # Save-Svc 失败路径：NSSM 已注册但配置落盘失败时，CLI 必须 exit 1 且不启动服务。

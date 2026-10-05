@@ -22,6 +22,13 @@ function nssm-set([string]$n,[string]$k,[Parameter(ValueFromRemainingArguments=$
 function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$envPairs){
   $nssmOut=& $script:nssm install $n $exe 2>&1
   if($LASTEXITCODE -ne 0){ throw "NSSM install 失败($LASTEXITCODE): $($nssmOut -join ' ')" }
+  # install 的退出码同样不可信（实测：提权不足时打印 "Administrator access is needed"
+  # 却返回 0）。若真没装上，后续 set 会全挂，报出的却是 set 的错——误导排查方向。
+  # 以「服务是否真出现」复核一次，失败即抛，错误信息直指根因。
+  if(-not (Test-ServicePresent $n)){
+    $why = if(($nssmOut -join ' ') -match 'Administrator access'){ '需要管理员权限' } else { '服务未创建' }
+    throw "NSSM install 未生效：$why"
+  }
   # install 成功后服务已进服务数据库；任意 set 失败都会留下配置不全的半注册残骸
   # （无日志重定向/轮转/AppExit）。失败时尽力 remove 回滚，再抛原始错误。
   # 日志轮转阈值与停止收尾毫秒从 config 取（默认值与 svc-input.ps1 的形参默认值一致）。
@@ -31,7 +38,14 @@ function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$
   try {
     foreach($s in Get-NssmSetSpec $n $dir $par $envPairs $rotateBytes $stopMethod){ nssm-set $n $s.k $s.v }
   } catch {
-    try { & $script:nssm remove $n confirm 2>&1 | Out-Null } catch {}
+    # 回滚失败不该盖掉原始错误（$s 未配全才是根因）；但也不能静默——回滚没成功意味着
+    # 残骸服务还留在服务数据库里，用户需要知道。
+    try {
+      & $script:nssm remove $n confirm 2>&1 | Out-Null
+      if(-not (Test-ServiceGone $n)){
+        Write-Warning "回滚未生效：$n 可能仍残留在服务数据库，请手动 nssm remove $n confirm"
+      }
+    } catch { Write-Warning "回滚失败：$n 可能仍残留在服务数据库（$($_.Exception.Message)）" }
     throw
   }
 }
@@ -42,4 +56,10 @@ function Remove-NssmService([string]$n){
   [void](Wait-Stopped $n)
   $o=& $script:nssm remove $n confirm 2>&1
   if($LASTEXITCODE -ne 0){ throw "NSSM remove 失败($LASTEXITCODE): $($o -join ' ')" }
+  # 退出码不可信（见 svc-common.ps1 Test-ServiceGone 的实测）：以服务是否真消失为准，
+  # 否则「删失败」会被当成成功，调用方接着把配置里这条删掉，而服务还在。
+  if(-not (Test-ServiceGone $n)){
+    $why = if(($o -join ' ') -match 'Administrator access'){ '需要管理员权限' } else { '服务仍存在' }
+    throw "NSSM remove 未生效：$why"
+  }
 }

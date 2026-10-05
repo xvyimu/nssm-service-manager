@@ -128,7 +128,16 @@ function Invoke-PendingCommands {
           sc.exe stop $n 2>&1 | Out-Null
           [void](Wait-Stopped $n)
           $o=& $sync.nssm remove $n confirm 2>&1
+          # nssm 的退出码**不可信**：实测（2026-10-05，NSSM 2.24-103）提权不足或服务不存在时
+          # 它打印「Administrator access is needed to remove a service.」却返回 0。
+          # 只信退出码，删除失败也会被判成功 → UI 清掉卡片并落盘，而服务仍在：用户以为删了、
+          # 配置却丢了。故以**服务是否真的消失**作为最终判据（sc.exe query 返回 1060 才对）。
           if($LASTEXITCODE -ne 0){ $sync.msg.Enqueue("$n 删除失败($LASTEXITCODE)"); $ok=$false }
+          if($ok -and -not (Test-ServiceGone $n)){
+            $why = if([string]$o -match 'Administrator access'){ '需要管理员权限' } else { '服务仍存在' }
+            $sync.msg.Enqueue("$n 删除失败：$why")
+            $ok=$false
+          }
         } catch { $sync.msg.Enqueue("$n 删除失败: $($_.Exception.Message)"); $ok=$false }
       }
     }

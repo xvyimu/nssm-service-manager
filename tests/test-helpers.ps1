@@ -34,6 +34,8 @@ function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$d
     executedReady = [Threading.AutoResetEvent]::new($false)
     nssm = 'Invoke-TestNssm'
     scExitCode = $scExitCode
+    # serviceGone 由调用方在 BeginInvoke 后按需置位：$true = query 返回 1060（服务已消失）,
+    # 用于让 Remove 路径的实证复核（Test-ServiceGone）认为删除生效。默认未设 = 服务存在。
   })
   if ($controllerStatus) { $shared.newSc = 'New-TestSc' }
   if ($extraSyncKeys) { foreach ($k in $extraSyncKeys.Keys) { $shared[$k] = $extraSyncKeys[$k] } }
@@ -50,12 +52,20 @@ function Get-Service {
 function sc.exe {
   `$sync.executed.Enqueue([pscustomobject]@{action=`$args[0];name=`$args[1];probes=`$sync.probeCount})
   [void]`$sync.executedReady.Set()
+  if (`$args[0] -eq 'query') {
+    # Test-ServicePresent / Test-ServiceGone 走这里。$sync.serviceGone=$true 时模拟
+    # 「服务已从 SCM 消失」（1060）；否则当它存在。默认 $null -> 存在（0）。
+    `$global:LASTEXITCODE = if (`$sync.serviceGone) { 1060 } else { 0 }
+    return
+  }
   `$global:LASTEXITCODE = if (`$sync.scExitCode) { `$sync.scExitCode } else { 0 }
 }
 function Invoke-TestNssm {
-  # remove confirm 等——记一次 nssm 调用，成功退出
+  # remove confirm 等——记一次 nssm 调用，退出码由 $sync.nssmExitCode 控制
+  # （0 = nssm 谎报成功但服务其实还在；非零 = 常规失败；未设 = 0）。
   `$sync.executed.Enqueue([pscustomobject]@{action='nssm';name=`$args[1];probes=`$sync.probeCount})
-  `$global:LASTEXITCODE=0
+  `$code = `$sync.nssmExitCode
+  `$global:LASTEXITCODE = if (`$null -eq `$code) { 0 } else { [int]`$code }
 }
 function New-TestSc {
   # 替身 ServiceController：只实现 Invoke-ServiceStart 用到的 Status 与 finally 里的 Dispose。
