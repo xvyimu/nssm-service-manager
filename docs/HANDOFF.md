@@ -22,13 +22,38 @@
 | T7 | `ead4bba` | 订正日志保留注释口径（选 (a)：实现是对的，注释错）+ 补 `test-log-retention.ps1`（该函数此前零覆盖） |
 | 收尾 | `cba78eb` | 删掉 T4 遗留的重复 DispatcherTimer 注释行 |
 | 收尾 | `223d066` | `ToggleTimeoutMs` 注释不写未实测的耗时数字 |
+| 收尾 | `74af131` | 自审收口：Open-PanelUrl 失败提示补租约、测试抽 `Wait-FakePollAck`、README/PROJECT 配置表与测试计数补齐 |
+| 收尾 | `36bd21f` | **nssm 退出码不可信**（remove/install 失败返回 0）→ 删除/注册改按「服务是否真的消失/出现」实证复核 |
 
-新增测试三个：`test-transition-failure.ps1`、`test-status-lease.ps1`、`test-log-retention.ps1`。
-回归从 27 项增至 33 项 PASS；解析文件 34 → 37。唯一失败项仍是 `single-instance` 环境敏感问题。
+新增测试四个：`test-transition-failure.ps1`、`test-status-lease.ps1`、`test-log-retention.ps1`、`test-remove-e2e.ps1`。
+回归 27 → 37 项 PASS；解析文件 34 → 39；测试项 16 → 20。唯一失败项仍是 `single-instance` 环境敏感问题。
 
-**未验（如实标注，留给真机）**：真实 UAC 提权、Mica、NSSM 服务生命周期；交互式点击触发
-Dispatcher 异常时状态栏的表现；启动失败路径（SCM 1053）的真实耗时——`ToggleTimeoutMs=30000`
-是否够大取决于它，配置注释里已按「未实测」标注。
+### 本轮真机复核到的（原先标「未验」的，已收口）
+
+- **single-instance 失败确认是环境项**：持有 `Local\service-manager-gui` 的是本机正在跑的 GUI
+  （PID 10988，13:10 启动，早于本轮改动）。`gui-crash.log` 里 16:44 那次
+  `Already running; another instance holds the mutex` 是真实的第二实例被拒记录。
+- **UAC 提权路径有效**：crash log 每次启动均记 `admin=True`（launch.vbs → ShellExecute runas）。
+- **Mica 实测生效**：离屏建窗后 `DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE=38, 2)`
+  返回 hr=0，`DwmGetWindowAttribute` 回读 = 2。
+- **`ServiceController` 行为与注释相符**：构造不抛；对不存在服务 `.Status` 返回空串不抛；
+  `.Start()` 抛 `MethodInvocationException`（内层 `InvalidOperationException`）。
+- **非管理员 `sc.exe start <已运行服务>` 返回 5**（拒绝访问），不是 1056 —— 与代码注释一致。
+- **nssm 退出码实测**：`remove`/`install` 失败返回 **0**、`stop`/`start`/`restart` 返回 3、
+  `set`/`reset` 返回 1。已据此修复（见 `36bd21f`）。
+- **`Remove-RotatedLogs` 口径**：真 `logs/` 现有 112 份轮转档，全在 14 天窗口内 → 删除 0 份，
+  与注释订正后的一致（跨窗口时的行为见 `test-log-retention.ps1`）。
+- **`DispatcherUnhandledException` 可无头触发** → T5 那条「人工确认」已改成自动回归（真抛真接）。
+- **删除流程端到端接缝**（runspace 回执 → UI tick）已补自动测试 `test-remove-e2e.ps1`。
+
+**仍未验（需要管理员或交互式 GUI，本轮做不到）**：
+
+- 启动失败路径（SCM 1053）的真实耗时 —— 需注册服务，非管理员 `OpenSCManager` 即失败。
+  已写 `tests/probe-1053-timing.ps1`（管理员跑）供实测。注意 SCM 的 `ServicesPipeTimeout`
+  本机未设 = 默认 **30000ms**，与 `ToggleTimeoutMs` 恰好相等，这条数字需要真机确认。
+- 真实 NSSM 服务生命周期（注册/启动/删除真服务）。
+- 交互式点击 `Show-Remove` 模态框走完整删除流程（GUI 跑在提权进程里，非提权侧受 UIPI 限制
+  无法驱动其窗口；且那个实例是改动前的旧代码）。等价接缝已由 `test-remove-e2e.ps1` 覆盖。
 
 ---
 
@@ -257,7 +282,7 @@ backup-guard 只碰 `~/.claude`。故**不做默认迁移**。
 - `D:\service-manager\lib\poll.ps1` —— P0-2 的 `Invoke-PendingCommands` / `Invoke-Sc` / `Convert-ScExitCode`；P1 的轮询周期。
 - `D:\service-manager\lib\util.ps1` —— P0-1 的 `Open-PanelUrl` 落点；P1 的 `Remove-RotatedLogs` 落点；`Get-LogFiles` 的轮转档识别可复用。
 - `D:\service-manager\lib\config.ps1` —— P2 / P4 的收口键落点。
-- `D:\service-manager\tests\run-all.ps1` —— 回归入口，改完必跑（解析检查 + 19 项）。
+- `D:\service-manager\tests\run-all.ps1` —— 回归入口，改完必跑（解析检查 + 20 项）。
 - `D:\service-manager\docs\PROJECT.md` —— 架构与设计决策 SSOT，动结构时同步。
 
 ## 决策与坑（本次新增）

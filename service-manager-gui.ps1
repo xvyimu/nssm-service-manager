@@ -133,18 +133,17 @@ if (-not (Test-Path -LiteralPath $script:nssm)) {
 # 不让窗口消失——Open-PanelUrl 的 catch 已就地处理常见失败，这里是给「其它 UI 回调抛错」兜底。
 # Show-Log / Show-SecurityCheck / Show-Remove / Show-Add 的异常都落到这一层：原来只记日志，
 # 用户那边看到的是「点了没反应」。故补一句状态栏提示。
-# handler 内再抛会直接走进程终止路径（这时已无兜底），所以整段必须包在 try/catch 里，
-# 且只做最低风险的事：字符串处理 + 赋 Text。
+# 函数体抽到 lib/util.ps1 的 Invoke-DispatcherErrorFallback——单测要真触发一次
+# DispatcherUnhandledException 才能验「窗口不消失」，而事件参数是私有构造、只能真抛真接。
+# 这里只留注册；handler 内若再抛会直接走进程终止路径，故 Get-Command 守卫兜模块加载失败。
 [System.Windows.Threading.Dispatcher]::CurrentDispatcher.add_UnhandledException({ param($s,$e)
-  try {
-    Write-CrashLog "DispatcherUnhandled: $($e.Exception.GetType().FullName): $($e.Exception.Message)"
-    # 走 Set-UiErrorStatus：截断到 80 字符 + 带显示租约（免得被下一帧自动刷新盖掉）。
-    # 本 handler 注册在模块加载之前，函数体在异常发生时才跑（那时已加载完）；
-    # Get-Command 守卫是给「模块加载本身失败、后续仍有异常」的极端情况兜底。
-    if (Get-Command Set-UiErrorStatus -EA SilentlyContinue) { Set-UiErrorStatus ([string]$e.Exception.Message) }
-    elseif ($script:statusBar) { $script:statusBar.Text = "操作出错：$([string]$e.Exception.Message)" }
-  } catch {}
-  $e.Handled = $true
+  if (Get-Command Invoke-DispatcherErrorFallback -EA SilentlyContinue) {
+    Invoke-DispatcherErrorFallback $e
+  } else {
+    # 模块没加载起来：退化成「只记日志 + 接住」，至少别让窗口消失
+    try { Write-CrashLog "DispatcherUnhandled: $($e.Exception.GetType().FullName): $($e.Exception.Message)" } catch {}
+    $e.Handled = $true
+  }
 })
 
 # ---- 加载模块 ----

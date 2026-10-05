@@ -114,6 +114,19 @@ function Set-UiErrorStatus([string]$message){
   Set-StatusMessage "操作出错：$m"
 }
 
+# Dispatcher 未处理异常的**兜底体**（注册在 service-manager-gui.ps1 的 handler 里）。
+# 抽成函数是为让单测能真触发一次 DispatcherUnhandledException 验证「窗口不消失」——
+# DispatcherUnhandledExceptionEventArgs 是私有构造，没法直接 new，只能注册到真 dispatcher
+# 上真抛真接；而注册行留在主脚本里，测试够不着，故把函数体抽到这儿（同 Update-StatusTick）。
+# 每步各自包住：本函数内若再抛，会直接走进程终止路径（那时已无兜底）。
+# 提示优先于日志：日志写入依赖 $logDir/配置，早期或异常场景下自身可能失败，不该连累它。
+function Invoke-DispatcherErrorFallback($e){
+  try { Set-UiErrorStatus ([string]$e.Exception.Message) } catch {}
+  try { Write-CrashLog "DispatcherUnhandled: $($e.Exception.GetType().FullName): $($e.Exception.Message)" } catch {}
+  # 必须置位：否则异常继续冒到 AppDomain，单次点击异常=整窗消失。
+  $e.Handled = $true
+}
+
 # DispatcherTimer 每帧：排空结果队列（探测结果 / 命令回执）→ 排空消息队列写状态栏
 # → 空闲 4 秒后自动刷新。抽成函数而不内联在 Add_Tick 里，是为了能直接单测：
 # 原实现让 test-remove-async 只能「复刻」这段逻辑，改这里而漏改测试就是静默漂移。

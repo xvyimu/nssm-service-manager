@@ -75,5 +75,33 @@ try {
   Assert ($script:statusBar.Text -eq '打开面板失败：no browser') "Panel failure text wrong: '$($script:statusBar.Text)'."
   Assert ($script:msgUntil -gt [datetime]::Now) 'Panel failure message did not take a display lease.'
 
-  Write-Output 'PASS: status messages hold a display lease; auto-refresh neither swallows them nor is permanently blocked; UI/panel errors surface truncated and leased.'
+  # ---- 7. DispatcherUnhandledException 兜底：真触发一次，验「窗口不消失 + 状态栏有提示」----
+  # 提示词把 T5 这条列为「人工确认」；这里改成自动验证。
+  # DispatcherUnhandledExceptionEventArgs 是私有构造，没法直接 new，只能注册到真 dispatcher
+  # 上真抛真接。函数体（Invoke-DispatcherErrorFallback）在生产代码里，注册行同主脚本。
+  # 上一步已把 Write-CrashLog 换成抛异常版本，顺带覆盖「日志失败不连累提示」。
+  $script:statusBar.Text='BEFORE-EXCEPTION'
+  $script:msgUntil=$null
+  $disp=[System.Windows.Threading.Dispatcher]::CurrentDispatcher
+  $script:seen=$null
+  $disp.add_UnhandledException({
+    param($s,$e)
+    $script:seen=$e.Exception.Message
+    Invoke-DispatcherErrorFallback $e
+  })
+  [void]$disp.BeginInvoke([Action]{ throw 'ui-callback-boom' })
+  # 跑一小段帧循环，让排队的 BeginInvoke 执行（异常在这里被 handler 接住）
+  $frame=[System.Windows.Threading.DispatcherFrame]::new()
+  $timer=[System.Windows.Threading.DispatcherTimer]::new()
+  $timer.Interval=[TimeSpan]::FromMilliseconds(600)
+  $timer.Add_Tick({ $timer.Stop(); $frame.Continue=$false })
+  $timer.Start()
+  [System.Windows.Threading.Dispatcher]::PushFrame($frame)
+
+  Assert ($script:seen -eq 'ui-callback-boom') "DispatcherUnhandledException did not fire: seen='$($script:seen)'."
+  Assert ($script:statusBar.Text -eq '操作出错：ui-callback-boom') "UI exception notice wrong: '$($script:statusBar.Text)'."
+  Assert ($script:msgUntil -gt [datetime]::Now) 'UI exception notice did not take a display lease.'
+  # 能走到这行即证明 Handled=$true 生效、进程没被异常带走
+
+  Write-Output 'PASS: status messages hold a display lease; auto-refresh neither swallows them nor is permanently blocked; UI/panel errors surface truncated and leased; dispatcher exception fallback keeps the window alive.'
 } finally { $win.Close(); $script:sync.wake.Dispose() }

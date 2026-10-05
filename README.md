@@ -198,7 +198,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 ## 测试与截图
 
 ```powershell
-pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 19 项 PowerShell 回归
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 20 项 PowerShell 回归
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 ```
 
@@ -216,7 +216,11 @@ pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/scree
 
 过渡态必须有失败出口，否则卡片会永久卡死：`test-transition-failure.ps1` 覆盖三层——失败命令仍要发回执（`ok=$false`，修前失败即静默，UI 侧收不到失败事实）；`ok=$false` 时回滚到命令前的终态并解封按钮；回执彻底丢失时超过 `ToggleTimeoutMs` 按到达的探测值收敛。`test-transition-race.ps1` 覆盖的是反向：过渡态期间在途的旧探测不得覆盖状态。
 
-`test-status-lease.ps1` 守状态栏消息的显示租约：后台失败消息写入后不得被同一帧的「状态自动刷新」覆盖（用户没在操作时距上次操作早已超过 4 秒门槛，而 remove 路径的 stop + Wait-Stopped 最长 6 秒，失败消息必然跨过）。另覆盖 UI 回调异常的状态栏提示截断。`test-log-retention.ps1` 锁住 `Remove-RotatedLogs` 的真实口径：全局前 N 份豁免 + 天数窗口两个条件是「且」的关系，窗口内一份都不删，当前档（无轮转后缀）永不动。
+`test-status-lease.ps1` 守状态栏消息的显示租约：后台失败消息写入后不得被同一帧的「状态自动刷新」覆盖（用户没在操作时距上次操作早已超过 4 秒门槛，而 remove 路径的 stop + Wait-Stopped 最长 6 秒，失败消息必然跨过）。另覆盖 UI 回调异常的截断提示，以及**真触发一次 `DispatcherUnhandledException`**（注册到真 dispatcher、真抛真接）验证「兜底接住异常、窗口不消失、状态栏出提示」——提示词原本把这条列为人工确认，现已自动化。`test-log-retention.ps1` 锁住 `Remove-RotatedLogs` 的真实口径：全局前 N 份豁免 + 天数窗口两个条件是「且」的关系，窗口内一份都不删，当前档（无轮转后缀）永不动。
+
+`test-remove-e2e.ps1` 把删除流程的**两半接起来**跑：`test-remove-async.ps1` 分别测了「runspace 产出什么回执」与「UI 拿到回执怎么处理」，中间那一跳（worker 的回执真的落进 UI 队列）此前没被验过。本测试让 UI 的命令/结果/消息队列直接指向 worker 的，于是真 runspace 的回执由真 UI tick 消费，成功与失败两个方向都断言到用户可见结果（成功清卡片并落盘；失败回滚卡片、保留服务、状态栏给原因且带租约）。
+
+`tests/probe-1053-timing.ps1` 是**手动探针**（需管理员，不在 `run-all` 里）：注册一个 exe 路径故意写错的服务，实测启动失败路径的真实耗时，用于判定 `ToggleTimeoutMs` 是否够大（SCM 的 `ServicesPipeTimeout` 本机未设 = 默认 30000ms，与该默认值恰好相等，故这条需要真机数字才能定）。
 
 `test-probe-timeout-scope.ps1` 守并行探测块的 runspace 作用域：`ForEach-Object -Parallel` 开新 runspace，不继承父作用域变量，超时变量必须经 `$using:` 传入。裸用 `$tcpMs` 会让子 runspace 取到 `$null`，`WaitOne($null,$false)` 等价 `WaitOne(0)`，TCP 握手没完成就判「无响应」——该状态在 `card.ps1` 落到红色分支，于是「启停一个服务，别的运行中服务变红」。测试两路：静态扫并行块裸引用（剥注释后不误报），行为段用真监听端口 + 真 poll 脚本块端到端验证。`test-parallel-probe.ps1` 探的是未监听端口，0ms 与 200ms 结果都是「无响应」，对这类 bug 天然免疫，故单开一份。
 
