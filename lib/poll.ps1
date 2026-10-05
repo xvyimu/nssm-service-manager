@@ -123,10 +123,11 @@ function Invoke-PendingCommands {
       }
     }
     if ($null -eq $ok) { $ok=$true }  # 兜底：未知 act 不该出现，出现也当成功收尾
-    if ($ok) {
-      # 命令完成回执：把同一命令纪元带回 UI。ack 分支据此解封按钮/冷却或处理删除收尾。
-      $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$null;h=$null;e=$e;done=$true;act=$act})
-    }
+    # 命令完成回执：把同一命令纪元与执行结果带回 UI。ack 分支据此解封按钮/冷却或处理删除收尾。
+    # ok 必须带回来——失败时（启动/停止/删除抛异常或 sc.exe 返回非零）UI 侧要回滚卡片过渡态
+    # 并解封按钮，否则卡片永久卡在「启动中/停止中/删除中」（T1：原实现只在 $ok 时 Enqueue，
+    # 失败即静默，配合 card.ps1 的单一期望终态守卫，按钮再也不会亮）。
+    $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$null;h=$null;e=$e;done=$true;act=$act;ok=[bool]$ok})
   }
 }
 

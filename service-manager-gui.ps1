@@ -237,6 +237,13 @@ $timer.Add_Tick({
   while ($script:queue.TryDequeue([ref]$item)) {
     if ($item.done) {
       if ($item.act -eq 'remove') {
+        if (-not $item.ok) {
+          # 删除失败（stop 或 nssm remove 抛错/非零）：服务仍在、配置未动，不能走下面的清理
+          # 路径——那会把还活着的服务从 UI 抹掉，用户以为删掉了。回滚卡片过渡态并解封按钮，
+          # 失败原因由后台 msg 队列给出（poll.ps1 已 Enqueue）。
+          Set-CardRollback $script:cards[$item.n]
+          continue
+        }
         # 删除回执：从 svc 与卡片缓存移除，落盘配置，刷新分页。
         # UI 线程做配置写与卡片操作（与 Show-Remove 原同步路径对称，只是挪到 ack 收尾）。
         [Threading.Monitor]::Enter($script:sync.gate)
@@ -246,8 +253,8 @@ $timer.Add_Tick({
         $script:statusBar.Text = "$($item.n) 已删除"
         Render-Page
       } else {
-        # 启停回执：解封按钮与冷却，状态由下一轮探测校正。
-        Update-CardData $item.n $null $null -e $item.e -ack
+        # 启停回执：ok=$false 时 Update-CardData 回滚过渡态（T1），否则解封按钮与冷却。
+        Update-CardData $item.n $null $null -e $item.e -ack -ok ([bool]$item.ok)
       }
     } else {
       Update-CardData $item.n $item.st $item.h
