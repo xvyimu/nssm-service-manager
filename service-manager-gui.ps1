@@ -240,7 +240,6 @@ $win.Add_SourceInitialized({
 Render-Page
 Write-CrashLog "Window constructed: cards=$($script:cardPanel.Children.Count)"
 
-# ---- DispatcherTimer：从队列取探测结果更新卡片（替代 WinForms Timer）----
 # ---- DispatcherTimer：处理结果队列与状态栏（实现见 lib/util.ps1 Update-StatusTick）----
 # 抽成函数是为了可单测——内联在此处时测试只能复刻这段逻辑，改一处漏一处即静默漂移。
 $timer = New-Object System.Windows.Threading.DispatcherTimer
