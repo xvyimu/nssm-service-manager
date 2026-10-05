@@ -42,20 +42,25 @@ try {
   Assert ($script:config.AppStopMethodConsole -eq 1234) 'AppStopMethodConsole not overridden.'
   Assert ($script:config.AckPollIntervalMs -eq 250) 'AckPollIntervalMs not overridden.'
 
-  # runspace 从 $sync 读三个超时，生效值写回 $sync 同键——测试读共享表即可
-  $worker = Start-FakePoll 1 'Stopped' 0 @{ waitStoppedTimeoutMs = 800; tcpTimeoutMs = 50; httpTimeoutMs = 500 }
+  # runspace 从 $sync 读三个超时 + 节奏与并行度，生效值写回 $sync 同键——测试读共享表即可
+  $worker = Start-FakePoll 1 'Stopped' 0 @{ waitStoppedTimeoutMs = 800; tcpTimeoutMs = 50; httpTimeoutMs = 500
+                                              probeIntervalMs = 1234; probeIdleMs = 5678; probeThrottleLimit = 3 }
   try {
     Start-Sleep -Milliseconds 400   # 等脚本块过初始化
     Assert ($worker.Sync.tcpTimeoutMs -eq 50) 'poll tcpMs not read from sync'
     Assert ($worker.Sync.httpTimeoutMs -eq 500) 'poll httpMs not read from sync'
     Assert ($worker.Sync.waitStoppedTimeoutMs -eq 800) 'poll waitMs not read from sync'
+    Assert ($worker.Sync.probeIntervalMs -eq 1234) 'poll probeIntervalMs not read from sync'
+    Assert ($worker.Sync.probeIdleMs -eq 5678) 'poll probeIdleMs not read from sync'
+    Assert ($worker.Sync.probeThrottleLimit -eq 3) 'poll probeThrottleLimit not read from sync'
   } finally { Close-FakePoll $worker }
 
-  # 未注入键的回落：起一个不带 extraSyncKeys 的 worker，生效值应为默认 200/3000/6000
+  # 未注入键的回落：起一个不带 extraSyncKeys 的 worker，生效值应为默认 200/3000/6000 + 4000/15000/8
   $workerFallback = Start-FakePoll 1 'Stopped' 0
   try {
     Start-Sleep -Milliseconds 400
     Assert ($workerFallback.Sync.tcpTimeoutMs -eq 200 -and $workerFallback.Sync.httpTimeoutMs -eq 3000 -and $workerFallback.Sync.waitStoppedTimeoutMs -eq 6000) 'poll did not fall back to defaults when sync keys absent.'
+    Assert ($workerFallback.Sync.probeIntervalMs -eq 4000 -and $workerFallback.Sync.probeIdleMs -eq 15000 -and $workerFallback.Sync.probeThrottleLimit -eq 8) 'poll probe cadence defaults not restored when sync keys absent.'
   } finally { Close-FakePoll $workerFallback }
 
   # ---- 2. 坏 config.json：回落默认值且设置 configWarning ----

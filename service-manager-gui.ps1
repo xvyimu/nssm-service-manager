@@ -187,6 +187,13 @@ $bgPS.Runspace = $bgRS
 $bgHandle = $bgPS.BeginInvoke()
 
 # ---- 收尾：停后台 ----
+# 日志清理：读 config 的保留策略并包住异常。两处调用（窗口关闭、首帧后）共用——
+# 策略取值只此一处，改保留口径不必翻调用点。$label 区分日志里的触发时机。
+function Invoke-LogCleanup([string]$label) {
+  try { Remove-RotatedLogs $logDir ([int]$script:config.LogKeepCount) ([int]$script:config.LogKeepDays) | Out-Null }
+  catch { Write-CrashLog "$label`: $($_.Exception.Message)" }
+}
+
 function Stop-Background {
   $script:sync.stop = $true
   [void]$script:sync.wake.Set()
@@ -195,8 +202,7 @@ function Stop-Background {
   $bgRS.Close(); $bgRS.Dispose(); $bgPS.Dispose()
   $script:sync.wake.Dispose()
   # 停收尾时也跑一次日志清理——窗口关闭是自然的维护点，避免常驻时占 UI 线程。
-  try { Remove-RotatedLogs $logDir ([int]$script:config.LogKeepCount) ([int]$script:config.LogKeepDays) | Out-Null }
-  catch { Write-CrashLog "Log cleanup on close failed: $($_.Exception.Message)" }
+  Invoke-LogCleanup 'Log cleanup on close failed'
 }
 
 # ---- 构建主窗口 + 应用 Mica ----
@@ -264,8 +270,7 @@ $win.Add_ContentRendered({
   # 启动首帧后异步跑一次日志清理（不占首屏）：轮转档保留策略，见 lib/util.ps1。
   # 走 Dispatcher.BeginInvoke + Background 优先级，避免在 ContentRendered 回调里阻塞渲染。
   $win.Dispatcher.BeginInvoke([Action]{
-    try { Remove-RotatedLogs $logDir ([int]$script:config.LogKeepCount) ([int]$script:config.LogKeepDays) | Out-Null }
-    catch { Write-CrashLog "Log cleanup failed: $($_.Exception.Message)" }
+    Invoke-LogCleanup 'Log cleanup failed'
   }, 'Background') | Out-Null
 })
 [void]$win.ShowDialog()

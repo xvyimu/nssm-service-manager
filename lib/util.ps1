@@ -91,12 +91,7 @@ function Open-PanelUrl([string]$url){
 # NewAPI.err-20261001T154751.222.log），永不动当前档（NewAPI.out.log / .err.log）。
 # 策略：保留最近 KeepCount 份 + KeepDays 天内，超出删除。返回被删文件路径列表。
 # 注：参数名不能用 $LogDir（PS 变量名大小写不敏感，会遮蔽外层 $logDir，与 Get-LogFiles 同坑）。
-function Remove-RotatedLogs{
-  param(
-    [string]$LogPath,
-    [int]$KeepCount = 10,
-    [int]$KeepDays = 14
-  )
+function Remove-RotatedLogs([string]$LogPath,[int]$KeepCount=10,[int]$KeepDays=14){
   if (-not $LogPath) { $LogPath = $logDir }
   if (-not $LogPath -or -not (Test-Path -LiteralPath $LogPath)) { return @() }
   $cut = (Get-Date).AddDays(-$KeepDays)
