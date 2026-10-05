@@ -49,7 +49,14 @@ function Add-SvcFromCli([string]$spec){
     exit 1
   }
   sc.exe start $n 2>&1 | Out-Null
-  Write-Host "$n 已添加并启动 (port=$p url=$url)"
+  if ($LASTEXITCODE -ne 0) {
+    # sc.exe start 失败返回非零（实测：5 拒绝访问 / 1051 被禁用 / 1053 进程起不来）。
+    # 注册本身是成功的，故不回滚、也不 exit 1——但绝不能报「已启动」：这个 CLI 是给
+    # agent 用的，谎报成功会让调用方以为服务在跑。如实说清，并指出去哪儿看真实状态。
+    Write-Host "$n 已添加，但启动失败（sc.exe 退出码 $LASTEXITCODE）——服务已注册，可在 GUI 右键「启动」查看原因。"
+  } else {
+    Write-Host "$n 已添加并启动 (port=$p url=$url)"
+  }
 }
 
 . (Join-Path $PSScriptRoot 'svc-common.ps1')

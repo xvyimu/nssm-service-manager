@@ -30,26 +30,31 @@ function Wait-Stopped([string]$n,[int]$timeoutMs=0){
   $false
 }
 
+# sc.exe query 的退出码——删除/注册复核共用的**底层原语**（两个谓词只解释码，不重抄调用）。
+# 0 = 服务存在；1060 = 不存在；1072 = 已标记删除（句柄未全关，内核里已在消失路径上）。
+# 非管理员也能 query（实测）。
+function Get-ServiceQueryCode([string]$n){
+  sc.exe query $n 2>&1 | Out-Null
+  $LASTEXITCODE
+}
+
 # 服务是否已从 SCM 消失——删除操作的**最终判据**，不能只信 nssm remove 的退出码。
 # 实测（2026-10-05，NSSM 2.24-103-gdee49fc）：提权不足或服务不存在时，nssm remove/install
 # 打印「Administrator access is needed to ...」却返回 **0**；其余动作（stop/start/restart）
 # 失败返回 3、set/reset 返回 1。把删除成败押在这样一个退出码上，会出现「删失败被判成功」
 # ——UI 清掉卡片并落盘，而服务仍在：用户以为删了、配置却丢了。
-# sc.exe query 的退出码可靠：1060 = 服务不存在。1072 = 已标记删除（句柄未全关，
-# 内核里已在消失路径上）同样视作已消失。非管理员也能 query（实测）。
+# 只认「明确消失」的两个码：其它（含权限类错误）不当已消失——宁可判失败，也不冤判成功。
 function Test-ServiceGone([string]$n){
-  sc.exe query $n 2>&1 | Out-Null
-  $LASTEXITCODE -in @(1060,1072)
+  (Get-ServiceQueryCode $n) -in @(1060,1072)
 }
 
 # 服务是否已在 SCM 中——install 后的复核判据（与 Test-ServiceGone 同一实证思路：
-# nssm install 失败也返回 0，见上）。sc.exe query 返回 1060 = 不存在。
+# nssm install 失败也返回 0，见上）。
 # 带重试：刚 install 完紧接着 query，SCM 一般已可见，但边界性延迟会把一次成功的注册
 # 误判成失败（假阴性），而调用方会据此抛错。宁可多等几百毫秒。
 function Test-ServicePresent([string]$n,[int]$retries=3,[int]$delayMs=100){
   for($i=0; $i -le $retries; $i++){
-    sc.exe query $n 2>&1 | Out-Null
-    if($LASTEXITCODE -eq 0){ return $true }
+    if((Get-ServiceQueryCode $n) -eq 0){ return $true }
     if($i -lt $retries){ Start-Sleep -Milliseconds $delayMs }
   }
   $false

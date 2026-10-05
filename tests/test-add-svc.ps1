@@ -103,6 +103,40 @@ Remove-NssmService '__sm_remove_test__'
 if ($script:startArgs -join '|' -ne 'stop|__sm_remove_test__') { throw 'Remove-NssmService must stop before nssm remove.' }
 if ($script:removed -ne '__sm_remove_test__') { throw 'Remove-NssmService did not call nssm remove confirm.' }
 
+# 启动失败路径：注册成功但 sc.exe start 返回非零时，CLI **不得**报「已启动」。
+# 该 CLI 是给 agent 用的，谎报成功会让调用方以为服务在跑。走子进程（Add-SvcFromCli 用 Write-Host）。
+$probeStart = Join-Path ([IO.Path]::GetTempPath()) "sm-start-fail-$([guid]::NewGuid().ToString('N')).ps1"
+$probeStartBody = @'
+$ErrorActionPreference = "Stop"
+. (Join-Path $args[0] "lib/util.ps1")
+. (Join-Path $args[0] "lib/add-svc.ps1")
+$script:svc = [ordered]@{}
+$script:sync = @{gate = [object]::new()}
+$logDir = Join-Path $args[0] "logs"
+$script:nssm = "Invoke-Ok"
+$script:startArgs = $null
+$fakeExe3 = Join-Path ([IO.Path]::GetTempPath()) "sm-start-fail-$([guid]::NewGuid().ToString('N')).exe"
+[IO.File]::WriteAllText($fakeExe3, 'placeholder', [Text.UTF8Encoding]::new($false))
+function Invoke-Ok { $global:LASTEXITCODE = 0 }
+function Save-Svc($data) { }
+# install 后的实证复核（Test-ServicePresent）走 query -> 返回 0（服务在）；
+# start 返回 1053（进程起不来）——两者都是实测见过的真实码。
+function sc.exe {
+  if ($args[0] -eq 'query') { $global:LASTEXITCODE = 0; return }
+  if ($args[0] -eq 'start') { $global:LASTEXITCODE = 1053; return }
+  $global:LASTEXITCODE = 0
+}
+Add-SvcFromCli "__sm_start_fail__,9092,$fakeExe3"
+'@
+[IO.File]::WriteAllText($probeStart, $probeStartBody, [Text.UTF8Encoding]::new($false))
+try {
+  $startOut = (& pwsh -NoProfile -File $probeStart $RepoRoot 2>&1 | Out-String)
+  $startCode = $LASTEXITCODE
+} finally { Remove-Item -LiteralPath $probeStart -Force -EA SilentlyContinue }
+if ($startCode -ne 0) { throw "Start failure must not fail the whole CLI (registration succeeded); got exit $startCode." }
+if ($startOut -notmatch '启动失败') { throw "Start failure was not reported. Output: $startOut" }
+if ($startOut -match '已添加并启动') { throw "Start failure was reported as success (谎报). Output: $startOut" }
+
 # Save-Svc 失败路径：NSSM 已注册但配置落盘失败时，CLI 必须 exit 1 且不启动服务。
 # 用子进程验证，因为 Add-SvcFromCli 靠 exit 终止——不能在当前作用域内联运行。
 $probe = Join-Path ([IO.Path]::GetTempPath()) "sm-save-fail-$([guid]::NewGuid().ToString('N')).ps1"
