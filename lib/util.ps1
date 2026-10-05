@@ -129,8 +129,11 @@ function Update-StatusTick {
         [Threading.Monitor]::Enter($script:sync.gate)
         try { $script:svc.Remove($item.n) } finally { [Threading.Monitor]::Exit($script:sync.gate) }
         $script:cards.Remove($item.n)
-        try { Save-Svc $script:svc } catch { Set-StatusMessage "$($item.n) 已删除但配置保存失败：$($_.Exception.Message)" }
-        Set-StatusMessage "$($item.n) 已删除"
+        # 保存成功/失败只赋一次文案（T6）：原实现在 catch 里写完「保存失败」后又无条件写
+        # 「已删除」，把提示盖掉——services.json 未落盘时重开 GUI 服务会复活，用户却看不到原因。
+        $note = try { Save-Svc $script:svc; "$($item.n) 已删除" }
+                catch { "$($item.n) 已删除但配置保存失败：$($_.Exception.Message)" }
+        Set-StatusMessage $note
         Render-Page
       } else {
         # 启停回执：ok=$false 时 Update-CardData 回滚过渡态（T1），否则解封按钮与冷却。

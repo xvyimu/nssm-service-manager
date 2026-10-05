@@ -60,8 +60,22 @@ try {
   Assert (-not $script:svc.Contains('RmSvc')) 'svc not cleared after remove ack.'
   Assert (-not $script:cards.Contains('RmSvc')) 'cards not cleared after remove ack.'
   Assert ($script:cardPanel.Children.Count -eq 0) 'Card still visible after remove ack.'
+  Assert ($script:statusBar.Text -eq 'RmSvc 已删除') "Success note wrong: '$($script:statusBar.Text)'."
 
-  Write-Output 'PASS: remove enqueues to background (not synchronous); ack clears svc/cards/panel.'
+  # ---- 4. Save-Svc 抛异常时，状态栏必须保留「保存失败」文案（T6）----
+  # 修前：catch 里写完「保存失败」后紧接着无条件写「已删除」，把提示盖掉——
+  # services.json 未落盘时重开 GUI 服务会复活，用户却看不到原因。
+  $script:svc=[ordered]@{RmSvc2=@{port=9001;url='http://127.0.0.1:9001'}}
+  Render-Page
+  function Save-Svc($data) { throw '磁盘只读' }
+  $script:queue.Enqueue([pscustomobject]@{n='RmSvc2';st=$null;h=$null;e=($epoch+1);done=$true;act='remove';ok=$true})
+  Update-StatusTick
+  Assert (-not $script:svc.Contains('RmSvc2')) 'svc not cleared when save failed.'
+  $shown=[string]$script:statusBar.Text
+  Assert ($shown -match '保存失败') "Save failure notice was overwritten: '$shown'."
+  Assert ($shown -match '磁盘只读') "Save failure reason missing: '$shown'."
+
+  Write-Output 'PASS: remove enqueues to background (not synchronous); ack clears svc/cards/panel; save failure notice survives.'
 } finally { $win.Close(); $script:sync.wake.Dispose() }
 
 # ---- 2. runspace 侧 remove action 调 stop→Wait-Stopped→nssm remove confirm ----
