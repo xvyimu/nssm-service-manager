@@ -104,7 +104,9 @@ function Invoke-ServiceStart([string]$n,[string]$fail='启动失败'){
 
 function Invoke-PendingCommands {
   # 执行命令队列（启停与删除全在后台线程，避免 UI 线程同步等待 stop/remove 冻结界面）
+  # 返回本轮出队执行的命令条数——主循环据此判「有在途命令」，见下方面轮询间隔的取舍。
   $item=$null
+  $ran=0
   while(-not $sync.stop -and $sync.cmd.TryDequeue([ref]$item)){
     $n=[string]$item.n; $act=[string]$item.act; $e=$item.e
     switch($act){
@@ -136,12 +138,14 @@ function Invoke-PendingCommands {
     # 并解封按钮，否则卡片永久卡在「启动中/停止中/删除中」（T1：原实现只在 $ok 时 Enqueue，
     # 失败即静默，配合 card.ps1 的单一期望终态守卫，按钮再也不会亮）。
     $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$null;h=$null;e=$e;done=$true;act=$act;ok=[bool]$ok})
+    $ran++
   }
+  $ran
 }
 
 try {
 while(-not $sync.stop){
-  Invoke-PendingCommands
+  $executedCmd = (Invoke-PendingCommands) -gt 0  # 本轮是否执行过命令：影响轮询间隔，见循环尾
   # 拷快照（加锁，避免枚举期间 UI 侧增删）
   [Threading.Monitor]::Enter($sync.gate)
   try { $snap = @($sync.svc.Keys) } finally { [Threading.Monitor]::Exit($sync.gate) }
@@ -168,7 +172,8 @@ while(-not $sync.stop){
   # 但并行探测期间不插 Invoke-PendingCommands——最长等一次并行轮。
   $toProbe = [System.Collections.Generic.List[pscustomobject]]::new()
   foreach($n in $snap){
-    Invoke-PendingCommands
+    # 收集间隙也优先处理命令；此处执行过的命令同样算「有在途命令」，影响循环尾间隔。
+    if ((Invoke-PendingCommands) -gt 0) { $executedCmd = $true }
     if ($sync.stop) { break }
     [Threading.Monitor]::Enter($sync.gate)
     try { $info = $sync.svc[$n] } finally { [Threading.Monitor]::Exit($sync.gate) }
@@ -223,11 +228,14 @@ while(-not $sync.stop){
     foreach($r in $results){ $sync.queue.Enqueue([pscustomobject]@{n=$r.n;st='运行中';h=$r.h}) }
   }
 
-  Invoke-PendingCommands
+  if ((Invoke-PendingCommands) -gt 0) { $executedCmd = $true }
   # 有运行中服务按 ProbeIntervalMs 轮询；全停止时拉长到 ProbeIdleMs——省下空转的
   # 唤醒与整轮 Get-Service/TCP 扫描（服务数为 0 时 $toProbe 为空，整轮只做一次快照）。
+  # 除「有运行中服务」外，「本轮执行过命令」也算活跃：刚下发的启动命令那一轮里服务通常还
+  # 是 Stopped/StartPending（$toProbe 为空），若按空闲走 15s 长睡眠，卡片会停在「启动中」
+  # 最长约 15 秒才收到第一份探测结果。有在途命令时用短间隔，让回执与状态尽快收敛。
   if (-not $sync.stop) {
-    $sleepMs = if ($toProbe.Count) { $probeIntervalMs } else { $probeIdleMs }
+    $sleepMs = if ($toProbe.Count -or $executedCmd) { $probeIntervalMs } else { $probeIdleMs }
     [void]$sync.wake.WaitOne($sleepMs)
   }
 }

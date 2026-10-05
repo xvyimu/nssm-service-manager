@@ -77,4 +77,30 @@ try {
   Write-Output 'PASS: StartPending treated as already-starting (no sc.exe, no failure message, ok=true).'
 } finally { Close-FakePoll $worker }
 
+# ---- 全停止但刚下发命令：那一轮之后的睡眠必须用短间隔，不能走空闲长睡眠 ----
+# 修前：$sleepMs 只按「本轮有无运行中服务」判，1 个 Stopped 服务时 $toProbe 为空，
+# 走 ProbeIdleMs——卡片停在「启动中」最长约 15 秒才收到第一份探测结果。
+# 这里直接量行为（不依赖任何新字段）：probeIntervalMs=300 / probeIdleMs=60000，
+# 下发命令后量「下一个探测周期」到达的耗时。修前要等满 60s，5s 超时即红。
+$worker=Start-FakePoll 1 'Stopped' 0 @{ probeIntervalMs = 300; probeIdleMs = 60000 }
+try {
+  Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Worker did not start.'
+  Start-Sleep -Milliseconds 300   # 让后台进入空闲长睡眠（首轮无命令、无可探测服务）
+  $base=$worker.Sync.probeCount
+  # 下发 stop（sc.exe 替身必然返回 0，不碰真实 ServiceController），唤醒后台
+  $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='stop';e=21})
+  [void]$worker.Sync.wake.Set()
+  # 等命令所在周期结束（该周期末尾会做一次批量 Get-Service → 计数 +1）
+  $deadline=[datetime]::UtcNow.AddSeconds(5)
+  while ($worker.Sync.probeCount -le $base -and [datetime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 20 }
+  Assert ($worker.Sync.probeCount -gt $base) 'Worker did not run the command cycle.'
+  # 量「下一个周期」的到达耗时——中间隔着那次睡眠，是 $sleepMs 的直接观测量
+  $t0=[datetime]::UtcNow; $p1=$worker.Sync.probeCount
+  while ($worker.Sync.probeCount -le $p1 -and [datetime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 20 }
+  $elapsed=([datetime]::UtcNow-$t0).TotalMilliseconds
+  Assert ($worker.Sync.probeCount -gt $p1) 'Next probe cycle never arrived within 5s — slept ProbeIdleMs instead of ProbeIntervalMs.'
+  Assert ($elapsed -lt 3000) "Sleep after an in-flight command was ${elapsed}ms; expected ~ProbeIntervalMs=300ms."
+  Write-Output "PASS: an executed command keeps the next sleep at ProbeIntervalMs (next cycle after ${elapsed}ms)."
+} finally { Close-FakePoll $worker }
+
 Write-Output 'PASS: wakeup, priority between probes, FIFO, and idle shutdown; no real services or network used.'
