@@ -54,6 +54,7 @@ $tests = @(
   @{ Name = 'svc input'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-svc-input.ps1')) }
   @{ Name = 'service registration'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-add-svc.ps1')) }
   @{ Name = 'config round-trip'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-config.ps1')) }
+  @{ Name = 'log retention'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-log-retention.ps1')) }
   @{ Name = 'config params';     Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-config-params.ps1')) }
   @{ Name = 'tray policy';       Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-tray.ps1')) }
   @{ Name = 'single instance'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-single-instance.ps1')) }

@@ -13,8 +13,10 @@ $script:config = [ordered]@{
                                  # 超时后按到达的探测值收敛并解封按钮。须大于最慢的正常路径
                                  # （删除的 stop+Wait-Stopped 最长 6s，启动失败的 sc.exe 重试 ~1s）
   WaitStoppedTimeoutMs = 6000    # 重启/删除前轮询 Stopped 的上限（add-svc.ps1 / poll.ps1 Wait-Stopped）
-  LogKeepCount        = 10       # 轮转日志保留份数（util.ps1 Remove-RotatedLogs，每服务前 N 份豁免）
-  LogKeepDays         = 14       # 轮转日志保留天数（超出且不在豁免名单内的删除）
+  LogKeepCount        = 10       # 轮转日志保留份数（util.ps1 Remove-RotatedLogs）——
+                                 # 口径是**跨服务全局**按修改时间倒序的前 N 份豁免，不是每服务各 N 份
+  LogKeepDays         = 14       # 轮转日志保留天数：删除须同时满足「不在全局前 N 份」且「早于 N 天」。
+                                 # 故 14 天内高频轮转的档一份都不删——保留份数上限只在跨过天数后生效
   LogDir              = ''       # 日志根覆盖；空 = 仓内 logs/。改它只影响新注册的服务——
                                  # 已注册服务的 AppStdout/AppStderr 写死在注册表，须逐个重新注册
   # ---- 轮询与探测节奏（原硬编码在 poll.ps1 / svc-common.ps1）----

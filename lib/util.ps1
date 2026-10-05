@@ -156,7 +156,12 @@ function Update-StatusTick {
 # ---- 日志轮转档保留策略：NSSM 只改名不删档，logs/ 会无界增长 ----
 # 只碰轮转档（BaseName 匹配 \.(out|err)-\d{8}，NSSM 实际命名带 T 与毫秒，如
 # NewAPI.err-20261001T154751.222.log），永不动当前档（NewAPI.out.log / .err.log）。
-# 策略：保留最近 KeepCount 份 + KeepDays 天内，超出删除。返回被删文件路径列表。
+# 策略：**跨服务全局**按修改时间倒序保留最近 KeepCount 份，其余若早于 KeepDays 天则删除。
+# 两个条件是「且」——删除须同时满足「不在全局前 KeepCount 份」且「早于 KeepDays 天」。
+# 故 KeepDays 窗口内的轮转档一份都不会删（高频轮转的服务在这段时间仍会堆积），
+# 保留份数上限只在该时间之后才起作用。实测（2026-10-05，两个服务各 6 份、均 1 天前）：
+# 删除 0 份；再加 5 份 20 天前的，删掉的是那 5 份（全局前 10 份豁免留给了另外两组）。
+# 返回被删文件路径列表。
 # 注：参数名不能用 $LogDir（PS 变量名大小写不敏感，会遮蔽外层 $logDir，与 Get-LogFiles 同坑）。
 function Remove-RotatedLogs([string]$LogPath,[int]$KeepCount=10,[int]$KeepDays=14){
   if (-not $LogPath) { $LogPath = $logDir }
