@@ -85,6 +85,36 @@ function Open-PanelUrl([string]$url){
   }
 }
 
+# ---- 日志轮转档保留策略：NSSM 只改名不删档，logs/ 会无界增长 ----
+# 只碰轮转档（BaseName 匹配 \.(out|err)-\d{8}，NSSM 实际命名带 T 与毫秒，如
+# NewAPI.err-20261001T154751.222.log），永不动当前档（NewAPI.out.log / .err.log）。
+# 策略：保留最近 KeepCount 份 + KeepDays 天内，超出删除。返回被删文件路径列表。
+# 注：参数名不能用 $LogDir（PS 变量名大小写不敏感，会遮蔽外层 $logDir，与 Get-LogFiles 同坑）。
+function Remove-RotatedLogs{
+  param(
+    [string]$LogPath,
+    [int]$KeepCount = 10,
+    [int]$KeepDays = 14
+  )
+  if (-not $LogPath) { $LogPath = $logDir }
+  if (-not $LogPath -or -not (Test-Path -LiteralPath $LogPath)) { return @() }
+  $cut = (Get-Date).AddDays(-$KeepDays)
+  # 枚举所有 .log 文件，按 BaseName 过滤轮转档（行首锚定服务名已转义的写法在 Get-LogFiles；
+  # 这里只判「是不是轮转档」通用形态，不绑特定服务名）。
+  $rot = @(Get-ChildItem -LiteralPath $LogPath -File -Filter '*.log' -EA SilentlyContinue |
+    Where-Object { $_.BaseName -match '\.(out|err)-\d{8}' } |
+    Sort-Object LastWriteTime -Descending)
+  if ($rot.Count -eq 0) { return @() }
+  # 最近 KeepCount 份豁免（按修改时间倒序的前 KeepCount 个）。
+  $keep = @($rot | Select-Object -First $KeepCount | ForEach-Object { $_.FullName })
+  # 剩下的若早于 cut 也删；晚于 cut 的留（近期高频轮转不应被一刀切）。
+  $del = @($rot | Where-Object {
+    $_.FullName -notin $keep -and $_.LastWriteTime -lt $cut
+  } | ForEach-Object { $_.FullName })
+  foreach ($f in $del) { Remove-Item -LiteralPath $f -Force -EA SilentlyContinue }
+  $del
+}
+
 # ---- 安全检查（借鉴 PSSM：路径引号加固 + 目录 ACL 过宽）----
 # 纯解析：从 Win32_Service PathName 提取 exe 目录与引号状态，不碰 UI 也不抛错。
 function Resolve-ServiceExeDir([string]$path){

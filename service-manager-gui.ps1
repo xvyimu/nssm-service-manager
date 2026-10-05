@@ -174,6 +174,9 @@ function Stop-Background {
   try { $bgPS.Stop() } catch { Write-CrashLog "Background stop failed: $($_.Exception.Message)" }
   $bgRS.Close(); $bgRS.Dispose(); $bgPS.Dispose()
   $script:sync.wake.Dispose()
+  # 停收尾时也跑一次日志清理——窗口关闭是自然的维护点，避免常驻时占 UI 线程。
+  try { Remove-RotatedLogs $logDir ([int]$script:config.LogKeepCount) ([int]$script:config.LogKeepDays) | Out-Null }
+  catch { Write-CrashLog "Log cleanup on close failed: $($_.Exception.Message)" }
 }
 
 # ---- 构建主窗口 + 应用 Mica ----
@@ -236,6 +239,14 @@ if ($script:configWarning) {
 }
 
 # ---- 显示（Application.Run 等价）----
-$win.Add_ContentRendered({ Write-CrashLog 'Window content rendered' })
+$win.Add_ContentRendered({
+  Write-CrashLog 'Window content rendered'
+  # 启动首帧后异步跑一次日志清理（不占首屏）：轮转档保留策略，见 lib/util.ps1。
+  # 走 Dispatcher.BeginInvoke + Background 优先级，避免在 ContentRendered 回调里阻塞渲染。
+  $win.Dispatcher.BeginInvoke([Action]{
+    try { Remove-RotatedLogs $logDir ([int]$script:config.LogKeepCount) ([int]$script:config.LogKeepDays) | Out-Null }
+    catch { Write-CrashLog "Log cleanup failed: $($_.Exception.Message)" }
+  }, 'Background') | Out-Null
+})
 [void]$win.ShowDialog()
 Write-CrashLog "ShowDialog returned (normal exit path)"
