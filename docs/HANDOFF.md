@@ -2,20 +2,22 @@
 # HANDOFF
 
 > **更新日：** 2026-10-05
-> **状态：** 进行中（P0-1 / P0-2 / P1 / P4 已落地并提交；P2 / P3 未做）
+> **状态：** 进行中（P0-1 / P0-2 / P1 / P2 / P4 已落地并提交；P3 未做，判定收益过小）
 > 本文件**无日期后缀**（带日期会让链接永久腐烂）。当前在哪一天由上一行回答。
 
 ---
 
 ## 上一段做到哪
 
-对 `refactor/generic-tool-and-audit-fixes`（HEAD `84b2e3e`）做了一轮审计复核，
-基线自己跑过：`pwsh -NoProfile -File tests/run-all.ps1` → 解析 + 16 项全 PASS。
+审计复核 + 修复 + 结构拆分 + 精简，全部已提交并推送到
+`origin/refactor/generic-tool-and-audit-fixes`（推送走 SSH-443，见文末「坑」）。
+
+基线自跑：`pwsh -NoProfile -File tests/run-all.ps1` → 解析 34 文件 + 27 项 PASS。
+唯一失败项 `single-instance` 为 **pre-existing 环境敏感问题**（见 Blockers）。
 
 外部审计报告给了 P0-1 / P0-2 两个崩溃口和一些性能主张。复核结论：**两个崩溃口成立，
-但报告里几条性能归因是错的，不能照抄**。下面每条都标「已验证 / 已推翻」，附本机实测。
-
-**本轮已落地 P0-1、P0-2**（工作区未提交，`git status` 见 `M lib/card.ps1 lib/poll.ps1 lib/util.ps1 service-manager-gui.ps1`）。
+但报告里几条性能归因是错的**（Add-Type 归因反了、并行池成本高估、CI「从未触发」不准确），
+逐条实测见下文。
 
 ---
 
@@ -57,16 +59,38 @@
 
 ## 下一步（直接做，勿重问范围）
 
-> 状态：P0-1 / P0-2 / P1 / P4 已落地并提交。剩下 P2 / P3。
+> 状态：P0-1 / P0-2 / P1 / P2 / P4 已落地并提交。P3 判定收益过小，不做。
 
-**已提交（本分支 `refactor/generic-tool-and-audit-fixes`）**
+**已提交并推送（本分支 `refactor/generic-tool-and-audit-fixes`）**
 ```
+a03d0fe fix: 删除中的卡片被探测结果刷回「已停止」并重新点亮按钮
+cfebe47 refactor: 破坏性操作色收口到 theme.ps1 的 $script:T
+323681b refactor: 精简本轮的参数写法与日志清理调用点
+4b269eb refactor: 剩余硬编码常量收口到 config.json
+ae7e4fe feat: 日志根可配置（config.LogDir），默认仍仓内 logs/
+98ad8a7 docs: 落 HANDOFF，记录本轮审计复核与 P0-P4 落地
 90dcd38 refactor: 拆分 add-svc.ps1 / util.ps1 为单职责模块
 86e1f50 fix: 日志轮转档保留策略，logs/ 不再无界增长
 faf9280 fix: Convert-ScExitCode 给退出码 5 加映射
 daf3779 fix: sc.exe start 同步等待改 ServiceController 异步
 e023be3 fix: 打开面板崩溃口 + Dispatcher 级异常兜底
 ```
+
+### P5 · 删除中的过渡态被探测结果覆盖（**已落地**）
+
+`Update-CardData` 的过渡态守卫只认「启动中/停止中」，「删除中」不在表里。删除走后台
+stop → Wait-Stopped ≤6s → nssm remove confirm，期间探测每 4s 一轮，于是卡片从
+「删除中」被刷回「已停止」、按钮重新点亮——用户能对一个正在删除的服务点「启动」。
+
+修法：`Update-CardData` 对 `$c.ST -eq '删除中'` 一律 return。该状态与启动/停止本质不同——
+它没有「期望终态」可等，终态由 remove 回执决定（主脚本 ack 分支），期间探测报「已停止」
+（删除本就先 stop）或「未安装」都只是过程中的中间态。
+
+顺带收口过渡态设置的重复：新增 `card.ps1 Set-CardTransition`，启停与删除共用
+（删除路径原本漏了 `LastToggle` / `ReadyToToggle`）。修 `dialogs.ps1` 时发现一处真 bug——
+函数实参位置写 `[datetime]::Now` 会被当字面字符串，改传 `(Get-Date)`。
+
+**该 bug 在 `84b2e3e` 已存在**，非本轮引入。
 
 ### P0-2 附带 · `Convert-ScExitCode` 的 1056 死映射（**已落地**）
 
@@ -95,20 +119,39 @@ NSSM `AppRotateFiles` 只改名不删档，命名带 `T` 与毫秒（`NewAPI.err
 正则 `\.(out|err)-\d{8}` 已验证可用：匹配带 T 与毫秒的真实命名，不误伤当前档
 （`NewAPI.err` → `rotated=False`）。
 
-### P2 · 日志根迁到 `%LOCALAPPDATA%\service-manager\logs`
+### P2 · 日志根可配置（**已落地，安全的那半**）
 
-- 现状 `logs/` 在仓根，会被同步/备份工具反复扫。config 可覆盖。
+外部建议「默认迁到 `%LOCALAPPDATA%\service-manager\logs`」，理由是「30MB 目录放仓根
+会被同步/备份工具反复扫」。**该理由本机不成立**：无同步工具进程（Syncthing/Dropbox/
+OneDrive/Resilio 均无），仓里无同步标记目录，`logs/*.log` 已被 `.gitignore` 挡住，
+backup-guard 只碰 `~/.claude`。故**不做默认迁移**。
 
-### P3 · 卡片精简（**方向对，数字要重估**）
+但报告没提到的真陷阱存在：已注册服务的 `AppStdout`/`AppStderr` 写死在注册表
+`HKLM\...\Services\<名>\Parameters`，本机 5 个服务都指向 `D:\service-manager\logs\`。
+改默认 LogDir 会让那些服务照旧写老路径、而本工具按新路径读——5 个服务的日志窗口
+全变「无日志」，须逐个重新注册。
 
-- 抽 `New-TextBlock` / `New-Border` 小工厂 + 用 `::new()` 直接赋属性，值得做。
-- **不要**改成 `ItemsControl` 绑 `PSCustomObject`——它不实现 `INotifyPropertyChanged`，
-  WPF 绑定静默失效，等于把状态刷新全打回手写。这条报告说对了。
-- 建控件成本实测（本机，6 卡）：
-  - 独立进程首建：`New-Object -Property` 135/65/70ms vs `::new()` 91/59/49ms。
-  - 预热后：两者都 0–3ms。
-  - 报告说的「6 卡 120ms ≈ 20ms/张」量不出；首建的差价主要是一次性 JIT/程序集加载，
-    与建卡数量无关。收益按「首屏 −30~60ms」估更稳，别按 −120ms 报。
+故只做安全的那半：新增 `config.LogDir`（默认 `''` = 仓内 `logs/`），想迁的人自己迁、
+自己重注册；不迁的人零影响。
+
+### P3 · 卡片精简（**判定不做**）
+
+实测三种写法，收益比报告说的小一个量级（本机 6 卡，各 3 次独立进程）：
+
+| 写法 | 首建（含一次性 JIT） | 预热后 | `New-Card` 函数体 |
+|---|---|---|---|
+| `New-Object -Property`（现状） | 282/311/287 ms | 12–19 ms | 51 行 |
+| `::new()` 逐属性 | 255/249/262 ms | 4 ms | **52 行** |
+| 小工厂 + `::new()` | 275/277/289 ms | 8–9 ms | 46 行 |
+
+- 那 ~280ms 首建基本是省不掉的一次性成本（WPF 类型加载 + JIT），三种写法同区间。
+- 报告的「−70~100 行」站不住：`::new()` 逐属性赋值**反而多一行**，减行只能靠工厂，
+  而工厂只减 5 行。
+- 唯一真实收益是预热后 12–19ms → 4ms，但那是翻页重建时一页省 ~10ms，用户无感。
+- **不要**改成 `ItemsControl` 绑 `PSCustomObject`——不实现 `INotifyPropertyChanged`，
+  WPF 绑定静默失效。这条报告说对了。
+
+结论：不做。改动核心 UI 代码 + 无法真机验证渲染，换 ~10ms 预热收益，不划算。
 
 ### P4 · 结构拆分（**已落地**）
 
@@ -152,16 +195,34 @@ NSSM `AppRotateFiles` 只改名不删档，命名带 `T` 与毫秒（`NewAPI.err
 
 ## Blockers
 
-- **`single-instance` 测试在**改前改后**都失败**（同一台机器同一会话里）：
-  `tests/test-single-instance.ps1:38` 的 `$holder.ReleaseMutex()` 抛
-  `Object synchronization method was called from an unsynchronized block of code.`
-  这是因为 `$holder = [Threading.Mutex]::new($true, $mutexName)` 在主线程创建并持有，
-  但脚本块里 runspace 在另一线程，主线程创建的持有权与 runspace 线程的 `OpenExisting + WaitOne(0)`
-  让 OS 把所有权判给了 runspace 线程，主线程 `ReleaseMutex` 时线程不匹配就抛。
-  已确认**不是我改的代码引起的**——`git stash` 到干净 `84b2e3e` 也复现。
-  这是 pre-existing 的环境敏感测试（`single-instance` 在 `84b2e3e` 的 CI 上是 success，
-  本机之前也能跑过；疑似有残留 pwsh 进程占着 `Local\service-manager-gui` mutex）。
-  本会话验过的其它 15 项 + 解析全 PASS。
+- **`single-instance` 测试在本机**改前改后**都失败**。
+  根因已定位（不再是「疑似」）：本机 `Local\service-manager-gui` 这个 mutex **已被某个进程持有**
+  （实测 `WaitOne(0) = False`）。`[Threading.Mutex]::new($true, $name)` 在 mutex 已存在时
+  **不会给创建者所有权**，于是 `tests/test-single-instance.ps1:38` 的 `$holder.ReleaseMutex()`
+  抛 `Object synchronization method was called from an unsynchronized block of code.`
+  这是测试夹具的脆弱性（假设自己创建就持有），不是产品 bug。
+  已确认**不是本轮改动引起的**——`git stash` 到干净 `84b2e3e` 同样复现；
+  `84b2e3e` 在 CI 上是 success（干净 runner 无残留 mutex）。
+  本会话验过的其它 26 项 + 解析全 PASS。
+
+## 坑（本会话新踩，下次直接用）
+
+- **HTTPS push 被重置**：`git push origin <branch>` 报
+  `Recv failure: Connection was reset`（FlClash 7890 代理对 GitHub HTTPS 无效）。
+  但 `gh` CLI 的 API 通道正常（`gh run list` / `gh api` 都通）。
+  绕法：走 SSH over 443。已加 remote `gh443`（**未动 `origin`**）：
+  ```
+  gh443  ssh://git@ssh.github.com:443/xvyimu/nssm-service-manager.git
+  ```
+  推送用 `git push gh443 <branch>`。验证 SSH 通不通：
+  `ssh -T -o ConnectTimeout=12 -p 443 git@ssh.github.com`
+  返回 `Hi xvyimu! You've successfully authenticated` 即通（exit 1 是正常的——
+  GitHub 不提供 shell access）。
+- **MSYS 会改写 `/` 开头的参数**：`gh api /user/keys` 被解析成
+  `C:/Program Files/Git/user/keys`。去掉前导斜杠写 `gh api user/keys`。
+- **PowerShell 函数实参位置不能写 `[datetime]::Now`**：会被当字面字符串
+  （`Cannot convert value "[datetime]::Now" to type "System.DateTime"`）。
+  传 `(Get-Date)`，或先赋给变量。赋值语句位置（`$x = [datetime]::Now`）则合法。
 
 
 ## 关键文件
