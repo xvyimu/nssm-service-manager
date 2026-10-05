@@ -14,7 +14,6 @@ param(
 
 $root = $PSScriptRoot
 $cfg = "$root\services.json"
-$logDir = "$root\logs"
 # NSSM 探测：优先 env > Get-Command > scoop 安装路径，避免硬编码 scoop
 $script:nssm = $null
 if ($env:NSSM_PATH -and (Test-Path -LiteralPath $env:NSSM_PATH)) {
@@ -29,11 +28,18 @@ if ($env:NSSM_PATH -and (Test-Path -LiteralPath $env:NSSM_PATH)) {
   }
 }
 
-if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force $logDir | Out-Null }
-
-# 可调常量先于 crashLog 加载——Write-CrashLog 首次调用在提权检测处（下方 ~70 行），
-# 早于原模块加载区（~120 行），不提前就会读到未初始化的 $script:config。
+# 可调常量最先加载——$logDir 与 Write-CrashLog 都依赖 config（前者取 LogDir 覆盖，
+# 后者取 CrashLogMaxBytes）。Write-CrashLog 首次调用在提权检测处（下方 ~70 行），
+# 早于模块加载区，不提前就会读到未初始化的 $script:config。
 . "$root\lib\config.ps1"
+
+# 日志根：默认仓内 logs/，可用 config.json 的 LogDir 覆盖。
+# 注意：改 LogDir 只影响**新注册**的服务——已注册服务的 AppStdout/AppStderr 写死在
+# 注册表 HKLM\...\Services\<名>\Parameters 里，仍会写旧路径，而本工具按新 LogDir 读，
+# 那些服务的日志窗口会变「无日志」。迁移须逐个重新注册（改 AppStdout/AppStderr）。
+$logDir = if ($script:config.LogDir) { [string]$script:config.LogDir } else { "$root\logs" }
+
+if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force $logDir | Out-Null }
 
 # 启动链路日志必须早于提权和 WPF 加载；仅记录阶段，不记录参数或配置值。
 $script:crashLog = "$logDir\gui-crash.log"

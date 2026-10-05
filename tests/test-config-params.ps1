@@ -23,13 +23,16 @@ try {
 
   # ---- 1. 覆盖值生效：全部 6 键换成非默认值后再加载 ----
   [IO.File]::WriteAllText((Join-Path $RepoRoot 'config.json'),
-    '{"PerPage":4,"TcpTimeoutMs":50,"HttpTimeoutMs":500,"ToggleCooldownMs":1200,"CrashLogMaxBytes":1024,"WaitStoppedTimeoutMs":800}',
+    '{"PerPage":4,"TcpTimeoutMs":50,"HttpTimeoutMs":500,"ToggleCooldownMs":1200,"CrashLogMaxBytes":1024,"WaitStoppedTimeoutMs":800,"LogKeepCount":3,"LogKeepDays":2,"LogDir":"C:\\sm-test-logs"}',
     [Text.UTF8Encoding]::new($false))
   $script:config = $null   # 强制重新加载以验证 config.json 覆盖
   . (Join-Path $RepoRoot 'lib/config.ps1')
   Assert ($script:config.PerPage -eq 4) 'PerPage not overridden.'
   Assert ($script:config.WaitStoppedTimeoutMs -eq 800) 'WaitStoppedTimeoutMs not overridden.'
   Assert ($script:config.CrashLogMaxBytes -eq 1024) 'CrashLogMaxBytes not overridden.'
+  Assert ($script:config.LogKeepCount -eq 3) 'LogKeepCount not overridden.'
+  Assert ($script:config.LogKeepDays -eq 2) 'LogKeepDays not overridden.'
+  Assert ($script:config.LogDir -eq 'C:\sm-test-logs') 'LogDir not overridden.'
 
   # runspace 从 $sync 读三个超时，生效值写回 $sync 同键——测试读共享表即可
   $worker = Start-FakePoll 1 'Stopped' 0 @{ waitStoppedTimeoutMs = 800; tcpTimeoutMs = 50; httpTimeoutMs = 500 }
@@ -53,6 +56,8 @@ try {
   . (Join-Path $RepoRoot 'lib/config.ps1')
   Assert ($script:configWarning -match 'config\.json 无效') 'config.json broken should set configWarning.'
   Assert ($script:config.PerPage -eq 6 -and $script:config.WaitStoppedTimeoutMs -eq 6000) 'Defaults not restored on broken config.'
+  # LogDir 默认空串 = 用仓内 logs/（主脚本据此回落，见 service-manager-gui.ps1 顶部）
+  Assert ($script:config.LogKeepCount -eq 10 -and $script:config.LogKeepDays -eq 14 -and $script:config.LogDir -eq '') 'Log retention defaults not restored on broken config.'
 
   # ---- 3. mock restart：Wait-Stopped 用 $sync 注入的 waitMs=50——
   # 若误用默认 6000，restart 会卡在轮询直到 6s，executed 里只有 stop；

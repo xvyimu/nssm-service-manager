@@ -7,6 +7,7 @@
   "WaitStoppedTimeoutMs": 6000,
   "LogKeepCount":         10,
   "LogKeepDays":          14,
+  "LogDir":               "",
   "TrayEnabled":          false,
   "MinimizeToTray":       false,
   "CloseToTray":          false

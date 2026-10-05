@@ -11,6 +11,8 @@ $script:config = [ordered]@{
   WaitStoppedTimeoutMs = 6000    # 重启/删除前轮询 Stopped 的上限（add-svc.ps1 / poll.ps1 Wait-Stopped）
   LogKeepCount        = 10       # 轮转日志保留份数（util.ps1 Remove-RotatedLogs，每服务前 N 份豁免）
   LogKeepDays         = 14       # 轮转日志保留天数（超出且不在豁免名单内的删除）
+  LogDir              = ''       # 日志根覆盖；空 = 仓内 logs/。改它只影响新注册的服务——
+                                 # 已注册服务的 AppStdout/AppStderr 写死在注册表，须逐个重新注册
   # ---- 可选托盘行为（默认全关，保持历史行为：最小化进任务栏、关闭即退出）----
   TrayEnabled     = $false   # 总开关；关时下面两项无效，也不加载 WinForms
   MinimizeToTray  = $false   # 点最小化收进托盘（需 TrayEnabled）
