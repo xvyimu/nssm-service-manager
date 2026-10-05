@@ -140,7 +140,10 @@ if (-not (Test-Path -LiteralPath $script:nssm)) {
 # 顺序即依赖：util（Save-Svc/Open-PanelUrl/Remove-RotatedLogs）→ svc-input（纯函数族）→
 # nssm（Install/Remove，依赖 svc-input 的 Get-NssmSetSpec）→ add-svc（CLI 入口，自加载依赖）→
 # logview（Show-Log/Get-LogFiles，依赖 util 的 $logDir 约定）→ dialogs（Show-Add/Show-Remove，
-# 依赖 svc-input/nssm/util）。card 与 xaml 自加载 config，tray 惰性。
+# 依赖 svc-input/nssm/util）+ card（Set-CardTransition / New-Card / Render-Page / 右键菜单）。
+# dialogs 与 card **双向依赖**（card 右键菜单调 Show-Remove，Show-Remove 调 Set-CardTransition），
+# 故二者顺序不分先后——函数体内符号是调用时解析，只要全部加载完再调用即可。
+# card 与 xaml 自加载 config，tray 惰性。
 . "$root\lib\theme.ps1"
 . "$root\lib\util.ps1"
 . "$root\lib\svc-input.ps1"

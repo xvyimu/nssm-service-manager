@@ -7,7 +7,7 @@
 param([string]$RepoRoot=(Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Xaml
-foreach ($module in 'theme','util','card','xaml') { . (Join-Path $RepoRoot "lib/$module.ps1") }
+foreach ($module in 'theme','util','svc-input','nssm','card','xaml','dialogs') { . (Join-Path $RepoRoot "lib/$module.ps1") }
 . (Join-Path $RepoRoot 'tests/test-helpers.ps1')
 function Assert($condition,[string]$message) { if (-not $condition) { throw $message } }
 
@@ -30,12 +30,22 @@ try {
   $card=$script:cards['RmSvc']
   Assert ($card -ne $null) 'Card not created for RmSvc.'
 
-  # 直接触发 del_Click 等价路径：Send-ServiceCommand 'remove'（与 Show-Remove 内部一致）
+  # del_Click 的真实路径是 Set-CardTransition $card '删除中' $epoch (Get-Date)——
+  # Show-Remove 弹模态框测不了，但它调的正是这个函数，故直接调它并断言卡片状态。
   $epoch = Send-ServiceCommand 'RmSvc' 'remove'
   Assert ($epoch -gt 0) 'Send-ServiceCommand did not return a positive epoch.'
+  Set-CardTransition $card '删除中' $epoch (Get-Date)
+  Assert ($card.ST -eq '删除中') 'del_Click path did not put card into 删除中.'
+  Assert (-not $card.Btn.IsEnabled) 'Card button enabled while deleting.'
+  Assert (-not $card.ReadyToToggle) 'Card ReadyToToggle set while deleting.'
   Assert ($script:cmdQueue.Count -eq 1) 'Remove command was not enqueued.'
   $cmd=$null; [void]$script:cmdQueue.TryDequeue([ref]$cmd)
   Assert ($cmd.act -eq 'remove' -and $cmd.e -eq $epoch) "Enqueued command wrong: act=$($cmd.act) e=$($cmd.e) epoch=$epoch"
+  # 删除中的过渡态必须扛过 Render-Page（右键菜单路径是 Show-Remove; Render-Page）与探测结果
+  Render-Page
+  Assert ($script:cards['RmSvc'].ST -eq '删除中') "Render-Page reset 删除中 to $($script:cards['RmSvc'].ST)."
+  Update-CardData 'RmSvc' '已停止' ''
+  Assert ($script:cards['RmSvc'].ST -eq '删除中') "Probe overwrote 删除中: $($script:cards['RmSvc'].ST)."
   # svc 与 cards 在 ack 回执到来前不应被清理
   Assert ($script:svc.Contains('RmSvc')) 'svc cleared before ack arrived.'
   Assert ($script:cards.Contains('RmSvc')) 'cards cleared before ack arrived.'

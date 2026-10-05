@@ -1,5 +1,9 @@
 # lib/card.ps1 — 服务卡片：名称与端口、健康状态、面板入口和启停
 # 自加载 config：测试 dot-source 本模块时未必先加载 config.ps1，此处自洽
+#
+# 对外契约：Set-CardTransition 被 lib/dialogs.ps1 的 Show-Remove 调用（删除过渡态），
+# New-Card / Render-Page / Update-CardData 被 xaml.ps1 与主脚本调用。本文件与 dialogs.ps1
+# 双向依赖（右键菜单 'remove' 调 Show-Remove），调用时解析符号，加载顺序不分先后。
 if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
 $script:TOGGLE_COOLDOWN_MS = [int]$script:config.ToggleCooldownMs
 

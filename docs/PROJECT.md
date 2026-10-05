@@ -39,7 +39,7 @@ service-manager-gui.ps1（主入口：CLI 分支 + 提权 + 模块加载 + 窗�
 │                     + sc.exe 退出码映射
 ├─ lib/add-svc.ps1    CLI 入口 Add-SvcFromCli（-Add 分支用）
 ├─ lib/tray.ps1       可选托盘（纯函数 Get-CloseAction/Get-MinimizeAction + 惰性 Initialize-Tray）
-├─ lib/card.ps1       卡片构建 + 双击防抖 + 过渡态保护 + 右键菜单
+├─ lib/card.ps1       卡片构建 + 双击防抖 + 过渡态保护（Set-CardTransition）+ 右键菜单
 └─ lib/xaml.ps1       主窗口外壳（标题栏 + 工具栏 + 分页 + 状态栏）
 ```
 
@@ -48,6 +48,10 @@ add-svc → logview → dialogs → tray → poll → card → xaml。config 必
 首次调用在提权检测处，早于模块加载区）。`nssm.ps1` 与 `add-svc.ps1` 自加载其依赖
 （`svc-input.ps1` / `svc-common.ps1`），单独点源也能工作。card 与 xaml 自加载 config
 是为单测 dot-source 时不依赖完整顺序。
+
+**`card.ps1` 与 `dialogs.ps1` 是双向依赖**：`card.ps1` 右键菜单调 `Show-Remove`，
+`Show-Remove` 调 `card.ps1` 的 `Set-CardTransition`。故二者顺序不分先后——
+PowerShell 函数体内符号是**调用时**解析，只要全部模块加载完再调用即可。
 
 拆分动机：原先 `add-svc.ps1`（280 行 / 10 函数）混了校验、NSSM 注册、CLI 与两个对话框；
 `util.ps1`（220 行）里塞了 90 行日志窗口。拆后每个文件单一职责，纯函数族（`svc-input.ps1`）

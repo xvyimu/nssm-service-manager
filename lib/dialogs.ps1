@@ -2,10 +2,15 @@
 #
 # 从 lib/add-svc.ps1 抽出，使 add-svc.ps1 只剩 CLI 逻辑（Add-SvcFromCli），
 # 对话框与 CLI 的共享注册逻辑（Install-NssmService）在 lib/nssm.ps1。
-# 依赖加载顺序：Show-Add 用 Test-SvcInput（lib/svc-input.ps1）、Install-NssmService
-# （lib/nssm.ps1）、Send-ServiceCommand（lib/util.ps1）、Save-Svc（lib/util.ps1）——
-# 主入口按序点源，本文件不自加载。$script:svc / $script:nssm / $logDir / $sync.gate
-# 从调用方作用域读。WPF 程序集须由调用方先 Add-Type 加载。
+#
+# 依赖（均为「调用时解析」，PowerShell 函数体内符号延迟绑定——点源顺序不影响正确性，
+# 只要调用发生在全部模块加载之后，即 GUI 运行时）：
+#   Show-Add    → Test-SvcInput（svc-input.ps1）、Install-NssmService（nssm.ps1）、
+#                 Send-ServiceCommand / Save-Svc（util.ps1）
+#   Show-Remove → Set-CardTransition（card.ps1）、Send-ServiceCommand（util.ps1）
+# 注意本文件与 card.ps1 是**双向**依赖（card.ps1 右键菜单调 Show-Remove），
+# 故二者在加载顺序上不分先后。$script:svc / $script:cards / $script:nssm / $logDir /
+# $sync.gate / $script:statusBar 从调用方作用域读。WPF 程序集须由调用方先 Add-Type 加载。
 
 # GUI 删除服务（输入服务名确认才点亮删除——借鉴 PSSM，-ceq 区分大小写）
 # OKCancel 太容易误点；NSSM remove 是不可逆操作，要求打全名。
