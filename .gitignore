@@ -10,5 +10,8 @@ config.json
 # 密钥文件（TTS_API_KEY_FILE 指向，ACL 仅 Administrators+SYSTEM）
 st-tts-shim/.tts-key
 
+# 演示 GIF 帧序列临时目录（make-demo.ps1 产物，合成完即删）
+.demo-tmp/
+
 # PowerShell
 *.ps1.bak
