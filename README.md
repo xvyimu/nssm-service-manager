@@ -227,6 +227,17 @@ CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）+ `
 
 > **安全提示（TTS_API_KEY 暴露面）：** 见上方「安全提示」与「收紧 Parameters 注册表键 ACL」两节——推荐 `TTS_API_KEY_FILE` + `scripts/set-service-params-acl.ps1` 双管齐下，把密钥既移出注册表、又收紧残留键 ACL。
 
+## Roadmap
+
+这个项目目前是作者自用工具顺手开源。下面按「最可能先做」排序，不承诺时间：
+
+- **健康状态持久化**——目前刷新即弃，服务挂了只看当前页；计划落一份状态历史，打开即见「最近一次异常是什么时候」
+- **分页再宽松**——`PerPage` 已经是可调常量，但服务超过一页时的跨页过滤/排序还欠
+- **服务配置差异对比**——`services.json` 换机器迁移时，一键 diff 出哪些服务/参数不一致
+- **Web 只读视图**——局域网里不动 GUI 也能看各服务健康（NSSM 常驻的机器一般不接显示器）
+
+想提新方向，用仓库里的「功能请求」模板开 issue；修 bug 用「Bug 报告」模板（见 `.github/ISSUE_TEMPLATE/`）。
+
 ## 许可
 
 MIT，见 `LICENSE`。
