@@ -14,7 +14,6 @@ param(
 
 $root = $PSScriptRoot
 $cfg = "$root\services.json"
-$logDir = "$root\logs"
 # NSSM 探测：优先 env > Get-Command > scoop 安装路径，避免硬编码 scoop
 $script:nssm = $null
 if ($env:NSSM_PATH -and (Test-Path -LiteralPath $env:NSSM_PATH)) {
@@ -29,11 +28,18 @@ if ($env:NSSM_PATH -and (Test-Path -LiteralPath $env:NSSM_PATH)) {
   }
 }
 
-if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force $logDir | Out-Null }
-
-# 可调常量先于 crashLog 加载——Write-CrashLog 首次调用在提权检测处（下方 ~70 行），
-# 早于原模块加载区（~120 行），不提前就会读到未初始化的 $script:config。
+# 可调常量最先加载——$logDir 与 Write-CrashLog 都依赖 config（前者取 LogDir 覆盖，
+# 后者取 CrashLogMaxBytes）。Write-CrashLog 首次调用在提权检测处（下方 ~70 行），
+# 早于模块加载区，不提前就会读到未初始化的 $script:config。
 . "$root\lib\config.ps1"
+
+# 日志根：默认仓内 logs/，可用 config.json 的 LogDir 覆盖。
+# 注意：改 LogDir 只影响**新注册**的服务——已注册服务的 AppStdout/AppStderr 写死在
+# 注册表 HKLM\...\Services\<名>\Parameters 里，仍会写旧路径，而本工具按新 LogDir 读，
+# 那些服务的日志窗口会变「无日志」。迁移须逐个重新注册（改 AppStdout/AppStderr）。
+$logDir = if ($script:config.LogDir) { [string]$script:config.LogDir } else { "$root\logs" }
+
+if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force $logDir | Out-Null }
 
 # 启动链路日志必须早于提权和 WPF 加载；仅记录阶段，不记录参数或配置值。
 $script:crashLog = "$logDir\gui-crash.log"
@@ -60,6 +66,7 @@ if ($Add) {
   $script:svc = Load-Svc
   # CLI 模式没有 runspace，但 add-svc.ps1 用 $sync.gate 加锁——给个本地锁
   $script:sync = @{ gate = [object]::new() }
+  # add-svc.ps1 自加载 svc-input.ps1 + nssm.ps1（纯函数与 NSSM 注册依赖）
   . "$root\lib\add-svc.ps1"
   Add-SvcFromCli $Add
   exit 0
@@ -120,12 +127,42 @@ if (-not (Test-Path -LiteralPath $script:nssm)) {
   Write-CrashLog "UnhandledException(terminating=$($e.IsTerminating)): $($x.GetType().FullName): $($x.Message)`n$($x.StackTrace)"
 })
 
+# ---- Dispatcher 级兜底：UI 线程异常（如 Click handler 抛错）默认会冒到 AppDomain ----
+# UnhandledException 并终止进程。Handled=$true 记完继续跑，否则单次点击异常=整窗消失。
+# 仍会被上面的 AppDomain handler 兜底（那是进程级最后一道），但 Dispatcher 这层能就地接住，
+# 不让窗口消失——Open-PanelUrl 的 catch 已就地处理常见失败，这里是给「其它 UI 回调抛错」兜底。
+# Show-Log / Show-SecurityCheck / Show-Remove / Show-Add 的异常都落到这一层：原来只记日志，
+# 用户那边看到的是「点了没反应」。故补一句状态栏提示。
+# 函数体抽到 lib/util.ps1 的 Invoke-DispatcherErrorFallback——单测要真触发一次
+# DispatcherUnhandledException 才能验「窗口不消失」，而事件参数是私有构造、只能真抛真接。
+# 这里只留注册；handler 内若再抛会直接走进程终止路径，故 Get-Command 守卫兜模块加载失败。
+[System.Windows.Threading.Dispatcher]::CurrentDispatcher.add_UnhandledException({ param($s,$e)
+  if (Get-Command Invoke-DispatcherErrorFallback -EA SilentlyContinue) {
+    Invoke-DispatcherErrorFallback $e
+  } else {
+    # 模块没加载起来：退化成「只记日志 + 接住」，至少别让窗口消失
+    try { Write-CrashLog "DispatcherUnhandled: $($e.Exception.GetType().FullName): $($e.Exception.Message)" } catch {}
+    $e.Handled = $true
+  }
+})
+
 # ---- 加载模块 ----
+# 顺序即依赖：util（Save-Svc/Open-PanelUrl/Remove-RotatedLogs）→ svc-input（纯函数族）→
+# nssm（Install/Remove，依赖 svc-input 的 Get-NssmSetSpec）→ add-svc（CLI 入口，自加载依赖）→
+# logview（Show-Log/Get-LogFiles，依赖 util 的 $logDir 约定）→ dialogs（Show-Add/Show-Remove，
+# 依赖 svc-input/nssm/util）+ card（Set-CardTransition / New-Card / Render-Page / 右键菜单）。
+# dialogs 与 card **双向依赖**（card 右键菜单调 Show-Remove，Show-Remove 调 Set-CardTransition），
+# 故二者顺序不分先后——函数体内符号是调用时解析，只要全部加载完再调用即可。
+# card 与 xaml 自加载 config，tray 惰性。
 . "$root\lib\theme.ps1"
 . "$root\lib\util.ps1"
+. "$root\lib\svc-input.ps1"
+. "$root\lib\nssm.ps1"
+. "$root\lib\add-svc.ps1"
+. "$root\lib\logview.ps1"
+. "$root\lib\dialogs.ps1"
 . "$root\lib\tray.ps1"   # 可选托盘：只定义纯函数与惰性初始化，未启用不加载 WinForms
 . "$root\lib\poll.ps1"
-. "$root\lib\add-svc.ps1"
 . "$root\lib\card.ps1"
 . "$root\lib\xaml.ps1"
 Write-CrashLog 'GUI modules loaded'
@@ -147,6 +184,11 @@ $script:sync = [hashtable]::Synchronized(@{
   tcpTimeoutMs         = [int]$script:config.TcpTimeoutMs
   httpTimeoutMs        = [int]$script:config.HttpTimeoutMs
   waitStoppedTimeoutMs = [int]$script:config.WaitStoppedTimeoutMs
+  # 节奏与并行度（poll.ps1 / svc-common.ps1 从 $sync 读，config.ps1 集中收口）
+  probeThrottleLimit   = [int]$script:config.ProbeThrottleLimit
+  probeIntervalMs      = [int]$script:config.ProbeIntervalMs
+  probeIdleMs          = [int]$script:config.ProbeIdleMs
+  waitStoppedPollMs    = [int]$script:config.WaitStoppedPollMs
 })
 $bgRS = [runspacefactory]::CreateRunspace()
 $bgRS.ApartmentState = 'STA'
@@ -158,6 +200,13 @@ $bgPS.Runspace = $bgRS
 $bgHandle = $bgPS.BeginInvoke()
 
 # ---- 收尾：停后台 ----
+# 日志清理：读 config 的保留策略并包住异常。两处调用（窗口关闭、首帧后）共用——
+# 策略取值只此一处，改保留口径不必翻调用点。$label 区分日志里的触发时机。
+function Invoke-LogCleanup([string]$label) {
+  try { Remove-RotatedLogs $logDir ([int]$script:config.LogKeepCount) ([int]$script:config.LogKeepDays) | Out-Null }
+  catch { Write-CrashLog "$label`: $($_.Exception.Message)" }
+}
+
 function Stop-Background {
   $script:sync.stop = $true
   [void]$script:sync.wake.Set()
@@ -165,6 +214,8 @@ function Stop-Background {
   try { $bgPS.Stop() } catch { Write-CrashLog "Background stop failed: $($_.Exception.Message)" }
   $bgRS.Close(); $bgRS.Dispose(); $bgPS.Dispose()
   $script:sync.wake.Dispose()
+  # 停收尾时也跑一次日志清理——窗口关闭是自然的维护点，避免常驻时占 UI 线程。
+  Invoke-LogCleanup 'Log cleanup on close failed'
 }
 
 # ---- 构建主窗口 + 应用 Mica ----
@@ -188,45 +239,33 @@ $win.Add_SourceInitialized({
 Render-Page
 Write-CrashLog "Window constructed: cards=$($script:cardPanel.Children.Count)"
 
-# ---- DispatcherTimer：从队列取探测结果更新卡片（替代 WinForms Timer）----
+# ---- DispatcherTimer：处理结果队列与状态栏（实现见 lib/util.ps1 Update-StatusTick）----
+# 抽成函数是为了可单测——内联在此处时测试只能复刻这段逻辑，改一处漏一处即静默漂移。
 $timer = New-Object System.Windows.Threading.DispatcherTimer
-$timer.Interval = [TimeSpan]::FromMilliseconds(400)
+$timer.Interval = [TimeSpan]::FromMilliseconds([int]$script:config.AckPollIntervalMs)
 $timer.Add_Tick({
-  $item = $null
-  while ($script:queue.TryDequeue([ref]$item)) {
-    if ($item.done) {
-      if ($item.act -eq 'remove') {
-        # 删除回执：从 svc 与卡片缓存移除，落盘配置，刷新分页。
-        # UI 线程做配置写与卡片操作（与 Show-Remove 原同步路径对称，只是挪到 ack 收尾）。
-        [Threading.Monitor]::Enter($script:sync.gate)
-        try { $script:svc.Remove($item.n) } finally { [Threading.Monitor]::Exit($script:sync.gate) }
-        $script:cards.Remove($item.n)
-        try { Save-Svc $script:svc } catch { $script:statusBar.Text = "$($item.n) 已删除但配置保存失败：$($_.Exception.Message)" }
-        $script:statusBar.Text = "$($item.n) 已删除"
-        Render-Page
-      } else {
-        # 启停回执：解封按钮与冷却，状态由下一轮探测校正。
-        Update-CardData $item.n $null $null -e $item.e -ack
-      }
-    } else {
-      Update-CardData $item.n $item.st $item.h
-    }
-  }
-  # 后台 sc.exe 失败反馈：非空消息覆盖状态栏，否则 4 秒无操作后自动刷新
-  $msg = $null
-  while ($script:msgQueue.TryDequeue([ref]$msg)) { $script:statusBar.Text = $msg }
-  if (-not $script:lastActionAt -or ([datetime]::Now - $script:lastActionAt).TotalSeconds -ge 4) {
-    $script:statusBar.Text = "$(Get-Date -Format 'HH:mm:ss')  状态自动刷新"
-  }
+  # 单帧内的异常不许冒到 Dispatcher 层终止循环：一次坏数据不该让界面停止刷新。
+  try { Update-StatusTick }
+  catch { Write-CrashLog "Tick failed: $($_.Exception.GetType().FullName): $($_.Exception.Message)" }
 })
 $timer.Start()
 
-# 坏 JSON 提示
+# 配置解析失败提示
+# configWarning 由 config.ps1（"config.json 无效：…"）或 Load-Svc（"services.json 无效：…"）
+# 写入，**消息自带文件名**——故此处只加「当前使用恢复配置」的处置说明，不再拼文件名前缀
+# （否则会显示成「配置文件无效：config.json 无效：…」这种重复）。
 if ($script:configWarning) {
-  [System.Windows.MessageBox]::Show("services.json 无效：$($script:configWarning)`n当前使用恢复配置，保存前请修复文件。",'配置错误','OK','Warning') | Out-Null
+  [System.Windows.MessageBox]::Show("$($script:configWarning)`n当前使用恢复配置，保存前请修复该文件。",'配置错误','OK','Warning') | Out-Null
 }
 
 # ---- 显示（Application.Run 等价）----
-$win.Add_ContentRendered({ Write-CrashLog 'Window content rendered' })
+$win.Add_ContentRendered({
+  Write-CrashLog 'Window content rendered'
+  # 启动首帧后异步跑一次日志清理（不占首屏）：轮转档保留策略，见 lib/util.ps1。
+  # 走 Dispatcher.BeginInvoke + Background 优先级，避免在 ContentRendered 回调里阻塞渲染。
+  $win.Dispatcher.BeginInvoke([Action]{
+    Invoke-LogCleanup 'Log cleanup failed'
+  }, 'Background') | Out-Null
+})
 [void]$win.ShowDialog()
 Write-CrashLog "ShowDialog returned (normal exit path)"

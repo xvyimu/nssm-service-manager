@@ -2,7 +2,7 @@
 
 [![test](https://github.com/xvyimu/nssm-service-manager/actions/workflows/test.yml/badge.svg)](https://github.com/xvyimu/nssm-service-manager/actions/workflows/test.yml)
 
-本地 NSSM Windows 服务的统一管理 GUI——PowerShell 7 + WPF，卡片式启停/健康探测/日志查看，零外部 npm 依赖。
+本地 Windows 服务的统一管理 GUI——PowerShell 7 + WPF，卡片式启停/健康探测/日志查看，零外部 npm 依赖。管 NSSM 服务（sc.exe / nssm.exe）。
 
 ![演示](assets/demo.gif)
 ![主界面](assets/screenshot.png)
@@ -38,6 +38,12 @@ pwsh -NoProfile -File service-manager-gui.ps1
 
 双击入口是 `launch.vbs`（wscript 无控制台，不闪黑窗）。
 
+这是一个通用的本地 Windows 服务管理工具——不绑定任何特定服务。把你要管的本地服务写进 `services.json`，GUI 就管它们的启停和健康探测。要不要托管哪个服务、几个服务，完全由你定。
+
+条目形状：
+
+- **NSSM 服务**：走 `sc.exe` 状态查询 + `nssm.exe` 注册/删除，TCP + HTTP 双档健康探测，端口徽章显示 `:端口号`。
+
 ## 文件
 
 | 文件 | 作用 |
@@ -45,10 +51,14 @@ pwsh -NoProfile -File service-manager-gui.ps1
 | `launch.vbs` | 启动器（双击入口）：wscript 无控制台 → ShellExecute runas pwsh → 管理员 GUI，零黑窗 |
 | `service-manager-gui.ps1` | 主入口：CLI 分支 + 提权 + 模块加载 + 窗口启动 |
 | `lib/theme.ps1` | 系统字体、主题色、按钮样式、Mica P/Invoke |
-| `lib/util.ps1` | 配置持久化、NSSM 操作、安全检查、日志查看器 |
-| `lib/poll.ps1` | 后台 runspace 探测脚本块（Get-Service 批量 + TcpClient + HttpClient 三档健康，sc.exe 退出码映射） |
-| `lib/add-svc.ps1` | 添加服务（GUI 简化 + CLI agent 友好）+ 删除服务（输入全名确认）+ `Remove-NssmService` |
-| `lib/svc-common.ps1` | UI 线程与后台 runspace 共用的服务操作原语（`Wait-Stopped` 只此一份，poll.ps1 构造 runspace 时前置其文本） |
+| `lib/util.ps1` | 配置持久化（`Load-Svc` / `Save-Svc`）、状态栏与租约、日志轮转、安全检查、命令入队 |
+| `lib/poll.ps1` | 后台 runspace 探测脚本块（Get-Service 批量 + TcpClient + HttpClient 三档健康）+ 命令执行 |
+| `lib/svc-common.ps1` | UI 线程与后台 runspace 共用的服务操作原语（`Wait-Stopped` / `Invoke-ServiceRemove` / 退出码与状态中文映射）——poll.ps1 构造 runspace 时前置其文本 |
+| `lib/svc-input.ps1` | 纯函数族：输入校验、env 解析、敏感键名检测、NSSM set 参数组装（可单独点源，不加载 WPF/config） |
+| `lib/nssm.ps1` | NSSM 注册/删除：`nssm-set` / `Install-NssmService` / `Remove-NssmService` |
+| `lib/add-svc.ps1` | CLI 添加服务入口（`Add-SvcFromCli`，agent 友好，不弹 GUI） |
+| `lib/dialogs.ps1` | GUI 对话框：`Show-Add`（注册）+ `Show-Remove`（输入全名确认才点亮删除） |
+| `lib/logview.ps1` | 日志窗口：`Get-LogFiles` / `Show-Log` |
 | `lib/config.ps1` | 可调常量集中收口（每页卡片数 / 探测超时 / 日志轮转 / 双击冷却 / 托盘开关），默认值内嵌，`config.json` 覆盖 |
 | `lib/tray.ps1` | 可选托盘图标（`TrayEnabled` 打开才加载 WinForms）+ 关闭/最小化策略纯函数 |
 | `lib/card.ps1` | 卡片构建 + 双击防抖（8s 冷却 + 健康门闩）+ 过渡态保护 + 右键菜单 |
@@ -56,6 +66,7 @@ pwsh -NoProfile -File service-manager-gui.ps1
 | `assets/icon.ico` | 自绘齿轮图标（窗口 + 任务栏） |
 | `services.example.json` | 服务清单示例（复制为 `services.json` 使用；后者已 git 忽略） |
 | `config.example.json` | 可调常量示例（复制为 `config.json` 使用；后者已 git 忽略） |
+| `scripts/set-service-params-acl.ps1` | 收紧 NSSM 服务 `Parameters` 注册表键 ACL（移除 `BUILTIN\Users` 读权限，见下） |
 | `tests/run-all.ps1` | 统一执行 PowerShell 语法检查和全部回归测试 |
 | `tests/make-screenshot.ps1` | 离屏渲染主窗口导出 `assets/screenshot.png` |
 | `tests/make-demo.ps1` | 离屏渲染 12 帧 PNG 序列，供 ffmpeg 合成 `assets/demo.gif` |
@@ -70,11 +81,11 @@ NSSM 路径按三档探测：`$env:NSSM_PATH` → `Get-Command nssm.exe` → sco
 ## 配置层（防漂移）
 
 - **`services.json` 是 SSOT**——GUI 运行时增删服务会原子写回它（`$PID.$guid.tmp` → `Replace`）。
-- `lib/util.ps1` 的 `Load-Svc` 有回落链：`services.json` → `services.example.json` → 空清单。前者缺失或 JSON 解析失败时读示例清单（并在状态栏提示），首次运行不会是一片空白。**新增服务请走 GUI「添加」或 CLI `-Add`**——NSSM 注册必须由脚本完成（stdout/stderr/stop 超时/启动类型/日志轮转一并设置）。
+- `lib/util.ps1` 的 `Load-Svc` 有回落链：`services.json` → `services.example.json` → 空清单。前者缺失或 JSON 解析失败时读示例清单（并在窗口启动后弹框提示原因），首次运行不会是一片空白。**新增服务请走 GUI「添加」或 CLI `-Add`**——NSSM 注册必须由脚本完成（stdout/stderr/stop 超时/启动类型/日志轮转一并设置）。
 
 ## 功能
 
-- 六张服务卡片以 3 列 × 2 行填满主区域，窗口缩放时同步伸展；单页隐藏分页按钮
+- 卡片以网格填满主区域（默认 3 列 × 2 行六张，`PerPage` 可调），窗口缩放时同步伸展；单页隐藏分页按钮
 - Microsoft YaHei UI + Consolas 系统字体，无需安装字体或启动时枚举
 - 浅色高对比卡片，原生非 layered 窗口支持系统 Mica 背景；主题色统一收口到 `lib/theme.ps1` 的 `$script:T`，改色只动一份
 - 每张卡：服务名、端口、URL、状态圆点、健康说明、打开面板、启停按钮
@@ -93,7 +104,7 @@ NSSM 路径按三档探测：`$env:NSSM_PATH` → `Get-Command nssm.exe` → sco
 - 删除服务后卡片缓存清零，同名重建显示新端口/URL；配置变更后翻页命中缓存也刷新
 - 默认关闭即退出、最小化到任务栏；需要常驻可开托盘（见「可调常量」的 `TrayEnabled` / `MinimizeToTray` / `CloseToTray`）
 
-## 托管的 6 个服务
+## 托管的服务
 
 `services.json` 是每台机器自己的配置（已 git 忽略，不上传）。克隆后复制 `services.example.json` 为 `services.json` 并按需改：
 
@@ -110,7 +121,43 @@ Copy-Item services.example.json services.json
 | RouterB | 20129 | http://127.0.0.1:20129/dashboard | 独立部署 |
 | ProxyA | 8317 | http://127.0.0.1:8317/management.html | 独立部署 |
 | BuddyAPI | 7863 | http://127.0.0.1:7863/panel/ | 独立部署 |
-| ServiceF | 8001 | http://127.0.0.1:8001/health | 独立部署 |
+| ServiceF | 9000 | http://127.0.0.1:9000/health | 独立部署 |
+
+> **环境变量与注册表密钥暴露面：** NSSM 把 `AppEnvironmentExtra` 明文写入注册表 `HKLM\SYSTEM\CurrentControlSet\Services\<服务名>\Parameters\AppEnvironmentExtra`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出你填进去的环境变量明文。**凡含密钥、令牌、口令的变量（如 `*_API_KEY` / `*_TOKEN` / `*SECRET` / `*PASSWORD` / `*ACCESS_KEY` / `*CREDENTIAL` / `*PRIVATE_KEY` / `*PASSPHRASE`），不要直接填进环境变量框**——改为让服务本体从独立的密钥文件（仅 Administrators+SYSTEM 可读）读取，文件路径不进注册表。GUI 与 CLI 在你填写此类键名时会提示这一点；`*_FILE` 后缀仅在值看起来像路径时才跳过提示，否则照样警告（键名后缀不等于值就是路径）。彻底收紧注册表键 ACL 用 `scripts/set-service-params-acl.ps1`（见下）。
+
+### 从旧版 TTS 管理器升级
+
+本工具曾是 TTS 服务的专用管理器，`st-tts-shim/` 与 `services.json` 里的 `TTSShim` 条目已从版本控制移除。如果你的本机仍残留旧安装，按以下步骤清理（**管理员 PowerShell**）：
+
+```powershell
+# 1. 删除旧的 NSSM 服务（含 HKLM\SYSTEM\CurrentControlSet\Services\TTSShim 整棵键，
+#    Parameters 子键也随之消失。Start=3 已禁用的话 stop 可省）
+sc.exe stop TTSShim
+nssm remove TTSShim confirm
+
+# 2. 删除本机 shim 目录（已不在版本控制里，删它不影响仓库）
+Remove-Item -Recurse -Force D:\service-manager\st-tts-shim
+
+# 3. 从 services.json 删掉 TTSShim 条目（或直接用 GUI「添加」重建你要的新服务）
+
+# 4. 仅当第 1 步未能删除服务键（键仍残留）时，才需收紧残留 Parameters 键 ACL
+pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName TTSShim
+```
+
+第 1 步成功时第 4 步必然报「注册表键不存在」并 exit 1——那是预期，服务键已随服务一起删掉了。
+
+新克隆机器不会受影响——`st-tts-shim/` 不在版本控制里，`services.example.json` 的示例已改为通用条目。
+
+### 收紧 Parameters 注册表键 ACL（可选，深度防御）
+
+`Parameters` 键下可能有历史 `AppEnvironmentExtra` 残留。本脚本把该键 ACL 从默认的「Users 可读」收紧到 `Administrators + SYSTEM`：
+
+```powershell
+# 管理员 PowerShell
+pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName <服务名>
+```
+
+脚本流程：禁用继承（保留本键显式 ACE、丢掉继承自 `Services` 的 Users 读权限）→ 移除 `BUILTIN\Users` 与 `Everyone` 的所有 ACE → 确保 `Administrators` 与 `SYSTEM` 完全控制 → 读回校验无 Users/Everyone 残留 ACE（Allow 与 Deny 都查）。失败时不自动回退（回退会把权限重新放宽，更危险），提示人工处理。
 
 ## 可调常量（config.json）
 
@@ -120,7 +167,7 @@ Copy-Item services.example.json services.json
 Copy-Item config.example.json config.json
 ```
 
-`config.json` 已 git 忽略（与 `services.json` 同构：示例进仓，实配每台机器自定）。未知键忽略，类型强转；解析失败不阻断启动，回落默认值并在状态栏提示。可用键：
+`config.json` 已 git 忽略（与 `services.json` 同构：示例进仓，实配每台机器自定）。未知键忽略，类型强转；解析失败不阻断启动，回落默认值并在窗口启动后弹框提示。可用键：
 
 | 键 | 默认 | 作用 |
 |------|------|------|
@@ -129,7 +176,18 @@ Copy-Item config.example.json config.json
 | `HttpTimeoutMs` | 3000 | HTTP 探测超时（`poll.ps1` 共享 HttpClient.Timeout） |
 | `CrashLogMaxBytes` | 524288 | `gui-crash.log` 轮转阈值（512 KiB，超则挪成 `.1`） |
 | `ToggleCooldownMs` | 8000 | 双击启停冷却（`card.ps1` Invoke-CardToggle） |
+| `ToggleTimeoutMs` | 45000 | 卡片过渡态超时逃生（`card.ps1` Test-TransitionTimedOut）：命令回执丢失时，超时后按到达的探测值收敛并解封按钮，防永久卡在「启动中/停止中/删除中」。须大于正常路径最长耗时，否则会误触发——启动失败回落 `sc.exe start` 走 SCM 同步管道，上限 `ServicesPipeTimeout`（本机未设 = 默认 30000ms），故取值须留出余量 |
 | `WaitStoppedTimeoutMs` | 6000 | 重启/删除前轮询 Stopped 的上限（`lib/svc-common.ps1` 的 `Wait-Stopped`，UI 线程与 runspace 共用一份） |
+| `LogKeepCount` | 10 | 轮转日志保留份数（`util.ps1` Remove-RotatedLogs）。口径是**跨服务全局**按修改时间倒序的前 N 份豁免，不是每服务各 N 份 |
+| `LogKeepDays` | 14 | 轮转日志保留天数：删除须同时满足「不在全局前 N 份」且「早于 N 天」，故 14 天内高频轮转的档一份都不删（保留份数上限只在跨过天数后生效） |
+| `LogDir` | `''` | 日志根覆盖；空 = 仓内 `logs/`。只影响新注册的服务——已注册服务的 AppStdout/AppStderr 写死在注册表，须逐个重新注册 |
+| `ProbeThrottleLimit` | 8 | 并行探测的 ThrottleLimit（`poll.ps1` ForEach-Object -Parallel） |
+| `ProbeIntervalMs` | 4000 | 有运行中服务（或本轮执行过命令）时的轮询间隔（`poll.ps1` 循环尾 WaitOne） |
+| `ProbeIdleMs` | 15000 | 全停止且无在途命令时的轮询间隔——省下空转的唤醒与整轮扫描 |
+| `WaitStoppedPollMs` | 300 | `Wait-Stopped` 轮询步长（`svc-common.ps1`） |
+| `AppRotateBytes` | 5242880 | 单日志档轮转阈值（5 MiB，NSSM `AppRotateBytes`） |
+| `AppStopMethodConsole` | 5000 | 停止时给控制台进程的收尾毫秒（NSSM `AppStopMethodConsole`） |
+| `AckPollIntervalMs` | 400 | 命令回执/探测结果轮询的 DispatcherTimer 间隔（主脚本） |
 | `TrayEnabled` | false | 托盘总开关；关时下面两项无效，也不加载 WinForms |
 | `MinimizeToTray` | false | 点最小化收进托盘（需 `TrayEnabled`） |
 | `CloseToTray` | false | 关闭窗口收进托盘而非退出（需 `TrayEnabled`） |
@@ -158,7 +216,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 ## 测试与截图
 
 ```powershell
-pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 15 项 PowerShell 回归
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 20 项 PowerShell 回归
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-tmp/，已 git 忽略）
 ```
@@ -179,7 +237,17 @@ ffmpeg -y -framerate 3 -i .demo-tmp/frame-%02d.png -vf "scale=640:-1:flags=lancz
 
 按钮与双击共用 `Invoke-CardToggle`，状态校验、8 秒冷却和过渡态只维护一份；`test-card-actions.ps1` 覆盖两个入口的 20 个状态/门闩场景及反馈文案。GUI 与 CLI 的输入校验共用 `Test-SvcInput`（CLI 用 `exit 1`、GUI 用 MessageBox 呈现，文案各自保留），NSSM 注册配置共用 `Install-NssmService` + `Get-NssmSetSpec`。
 
-`Send-ServiceCommand` 统一提交 GUI 命令并触发唤醒；`test-poll-commands.ps1` 用隔离 runspace 验证空闲唤醒、慢探测之间的命令优先、FIFO 与关闭唤醒。正在进行的单次探测或服务命令仍需结束后才能处理后续命令。
+`Send-ServiceCommand` 统一提交 GUI 命令并触发唤醒；`test-poll-commands.ps1` 用隔离 runspace 验证空闲唤醒、慢探测之间的命令优先、FIFO 与关闭唤醒。正在进行的单次探测或服务命令仍需结束后才能处理后续命令。另覆盖两点：服务处于 `StartPending` 时下「启动」不调 `sc.exe`、不产生失败消息（否则会回落取回 1056，拼出「启动失败(1056 已在运行)」的矛盾文案）；刚执行过命令的那一轮睡眠用 `ProbeIntervalMs` 而非 `ProbeIdleMs`，否则卡片会停在「启动中」最长约 15 秒。
+
+过渡态必须有失败出口，否则卡片会永久卡死：`test-transition-failure.ps1` 覆盖三层——失败命令仍要发回执（`ok=$false`，修前失败即静默，UI 侧收不到失败事实）；`ok=$false` 时回滚到命令前的终态并解封按钮；回执彻底丢失时超过 `ToggleTimeoutMs` 按到达的探测值收敛。`test-transition-race.ps1` 覆盖的是反向：过渡态期间在途的旧探测不得覆盖状态。
+
+`test-status-lease.ps1` 守状态栏消息的显示租约：后台失败消息写入后不得被同一帧的「状态自动刷新」覆盖（用户没在操作时距上次操作早已超过 4 秒门槛，而 remove 路径的 stop + Wait-Stopped 最长 6 秒，失败消息必然跨过）。另覆盖 UI 回调异常的截断提示，以及**真触发一次 `DispatcherUnhandledException`**（注册到真 dispatcher、真抛真接）验证「兜底接住异常、窗口不消失、状态栏出提示」——提示词原本把这条列为人工确认，现已自动化。`test-log-retention.ps1` 锁住 `Remove-RotatedLogs` 的真实口径：全局前 N 份豁免 + 天数窗口两个条件是「且」的关系，窗口内一份都不删，当前档（无轮转后缀）永不动。
+
+`test-remove-e2e.ps1` 把删除流程的**两半接起来**跑：`test-remove-async.ps1` 分别测了「runspace 产出什么回执」与「UI 拿到回执怎么处理」，中间那一跳（worker 的回执真的落进 UI 队列）此前没被验过。本测试让 UI 的命令/结果/消息队列直接指向 worker 的，于是真 runspace 的回执由真 UI tick 消费，成功与失败两个方向都断言到用户可见结果（成功清卡片并落盘；失败回滚卡片、保留服务、状态栏给原因且带租约）。
+
+`tests/probe-1053-timing.ps1` 是**手动探针**（需管理员，不在 `run-all` 里）：注册一个 exe 路径故意写错的服务，实测启动失败路径的真实耗时，用于判定 `ToggleTimeoutMs` 是否够大。SCM 的 `ServicesPipeTimeout` 本机未设 = 默认 30000ms，而启动失败回落 `sc.exe start` 走的正是这条同步管道——故 `ToggleTimeoutMs` 已从 30000 抬到 45000 留余量，但**该路径耗时仍未真机实测**，跑过探针才能确认这个值够不够。
+
+`test-probe-timeout-scope.ps1` 守并行探测块的 runspace 作用域：`ForEach-Object -Parallel` 开新 runspace，不继承父作用域变量，超时变量必须经 `$using:` 传入。裸用 `$tcpMs` 会让子 runspace 取到 `$null`，`WaitOne($null,$false)` 等价 `WaitOne(0)`，TCP 握手没完成就判「无响应」——该状态在 `card.ps1` 落到红色分支，于是「启停一个服务，别的运行中服务变红」。测试两路：静态扫并行块裸引用（剥注释后不误报），行为段用真监听端口 + 真 poll 脚本块端到端验证。`test-parallel-probe.ps1` 探的是未监听端口，0ms 与 200ms 结果都是「无响应」，对这类 bug 天然免疫，故单开一份。
 
 CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）。
 

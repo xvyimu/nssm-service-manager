@@ -15,6 +15,7 @@ $script:T = @{
   RootBg  = '#E6EEF2F6'   # 主窗口根 Border 背景（Mica 之上的底色）
   PortBg  = '#EDF2F7'     # 卡片端口徽章背景
   Accent  = '#185A9D'     # 打开面板 / 添加服务按钮前景
+  Danger  = '#C0392B'     # 破坏性操作（删除服务）：右键菜单项前景 + 删除按钮背景
   # 按钮模板色（自包含一套，不与卡片色混用）
   BtnBg     = '#FFFFFF'
   BtnFg     = '#263B50'

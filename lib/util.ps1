@@ -1,8 +1,25 @@
-# lib/util.ps1 — 配置持久化 · NSSM 操作 · 安全检查 · 日志
+# lib/util.ps1 — 配置持久化（services.json）· UI 工具 · 日志轮转保留 · 安全检查
+#
+# 【本模块的作用域约定】本文件的函数体直接读调用方作用域里的 $cfg 与 $logDir
+# （dot-source 时由 service-manager-gui.ps1 / 各测试脚本赋值），不是模块级变量。
+# 因此：(1) 调用方必须在 dot-source 之后赋值，否则函数读到 $null；
+#       (2) 本模块的函数**不得**把参数命名为 $cfg / $logDir 等约定变量——PowerShell
+#           变量名大小写不敏感，参数会遮蔽同名外层变量，回落逻辑会静默失效。
+#           历史事故：Get-LogFiles 曾把参数叫 $LogDir，遮蔽了外层 $logDir，
+#           GUI 日志下拉框自上线起一直为空（d442fcf 修复）。
+#
+# 2026-10-05 拆分：Get-LogFiles / Show-Log 移去 lib/logview.ps1，nssm-set 移去
+# lib/nssm.ps1。util.ps1 现在只有——配置持久化（Read/Load/Save）、命令纪元与入队
+# （Send-ServiceCommand）、打开面板（Open-PanelUrl）、日志轮转保留（Remove-RotatedLogs）、
+# 安全检查（Resolve-ServiceExeDir / Show-SecurityCheck）。
 
 # ---- 配置层（services.json 是 SSOT，services.example.json 是兜底）----
 # 兜底直接读仓里的示例清单，不在源码里再抄一份服务名（避免双源漂移）。
-$script:configWarning = $null
+# 【不要在此初始化 $script:configWarning】本文件在 config.ps1 **之后**加载（主脚本第 34 行
+# vs 模块加载区），config.json 损坏时 config.ps1 已把原因写进该变量；这里再赋 $null 会把它
+# 清空，主脚本末尾那句坏配置弹框（搜 configWarning 即可定位）就永远不触发。
+# 该赋值此前存在并造成过这个静默失效，2026-10-08 删除。Load-Svc 的 catch 是赋值不是读取，
+# 且用 `if (-not $script:configWarning)` 守卫，无需预设。
 
 function Read-SvcFile([string]$path){
   $j = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
@@ -17,18 +34,21 @@ function Read-SvcFile([string]$path){
 function Load-Svc {
   if (Test-Path $cfg) {
     try { return Read-SvcFile $cfg }
-    catch { $script:configWarning = $_.Exception.Message }
+    # 消息自带文件名：主脚本的弹框用中性前缀（configWarning 可能来自 config.json 或
+    # services.json，调用方无从判断），来源只能由写入方在这里讲清楚。
+    catch { $script:configWarning = "services.json 无效：$($_.Exception.Message)" }
   }
   # 兜底：services.json 缺失或损坏时读示例清单，让首次运行有内容可看
   $example = Join-Path (Split-Path $cfg -Parent) 'services.example.json'
   if (Test-Path $example) {
     try { return Read-SvcFile $example }
-    catch { if (-not $script:configWarning) { $script:configWarning = $_.Exception.Message } }
+    catch { if (-not $script:configWarning) { $script:configWarning = "services.example.json 无效：$($_.Exception.Message)" } }
   }
   [ordered]@{}
 }
 
 # 原子写回：$PID.$guid.tmp → Replace（避免写一半停电留下半截 JSON）
+# 写的是调用方传入的整个对象（`$s | ConvertTo-Json -Depth 5`）。
 function Save-Svc($s) {
   $json  = $s | ConvertTo-Json -Depth 5
   $tmp   = "$cfg.$PID.$([guid]::NewGuid()).tmp"
@@ -57,10 +77,133 @@ function Send-ServiceCommand([string]$name,[string]$action) {
   $e
 }
 
-# NSSM set 包装：失败抛错
-function nssm-set([string]$n,[string]$k,[Parameter(ValueFromRemainingArguments=$true)][object[]]$v){
-  $o=& $script:nssm set $n $k @v 2>&1
-  if($LASTEXITCODE -ne 0){ throw "NSSM set $k 失败($LASTEXITCODE): $($o -join ' ')" }
+# NSSM set 包装已移去 lib/nssm.ps1（同文件合并 Install/Remove-NssmService）。
+
+# 打开面板 URL 的统一入口：包住 Start-Process，URL 非法/无默认浏览器/注册表关联损坏时
+# 只提示不崩 GUI。card.ps1 两处（按钮 Click、右键菜单 open）都走这里——否则 Start-Process
+# 抛异常会经 Dispatcher 冒到 AppDomain，没有 Dispatcher 级兜底就整窗消失。
+# 不记 URL 本身（crashlog 不记配置值），只记异常类型与消息。
+function Open-PanelUrl([string]$url){
+  if ([string]::IsNullOrWhiteSpace($url)) { return }
+  try { Start-Process $url -EA Stop }
+  catch {
+    # 先给用户可见的提示、再记日志，且各自包住——用户的提示不该被日志写入的失败连累
+    # （Write-CrashLog 自身依赖 $logDir/配置，早期或异常场景下可能抛）。
+    # 走 Set-StatusMessage 而非直接赋 Text：带显示租约，否则用户没在操作时会被下一帧
+    # 自动刷新吞掉（与 T4 修的同类问题：失败提示必须留得住）。
+    try { Set-StatusMessage "打开面板失败：$($_.Exception.Message)" } catch {}
+    try { Write-CrashLog "Open-PanelUrl 失败: $($_.Exception.GetType().FullName): $($_.Exception.Message)" } catch {}
+  }
+}
+
+# ---- 状态栏消息与每帧队列处理（DispatcherTimer 的回调体）----
+# 消息带**显示租约**：写入时记 $script:msgUntil，自动刷新在此之前不得覆盖。
+# 没有这条，后台失败消息会被同一 tick 的「状态自动刷新」立刻盖掉，用户永远看不见——
+# 用户没在操作时 $script:lastActionAt 早已超过 4 秒阈值，而 remove 路径的
+# stop + Wait-Stopped 最长 6 秒，失败消息必然跨过门槛。
+$script:MSG_LEASE = [TimeSpan]::FromSeconds(5)
+
+function Set-StatusMessage([string]$text){
+  if (-not $script:statusBar) { return }   # 模块可能被 CLI/测试加载，此时无状态栏
+  $script:statusBar.Text = $text
+  $script:msgUntil = [datetime]::Now + $script:MSG_LEASE
+}
+
+# UI 回调抛异常时的状态栏提示（Dispatcher 兜底 handler 调用）。
+# 抽成函数而非内联在 handler 里：handler 由 add_UnhandledException 注册在进程级上下文，
+# 测不了；而「截断到 80 字符 + 带租约」这段才是真正会写错的部分。
+# 只做最低风险的事（字符串处理 + 赋 Text）——此函数本身若抛，会走进程终止路径。
+function Set-UiErrorStatus([string]$message){
+  if (-not $script:statusBar) { return }
+  $m = [string]$message
+  if ($m.Length -gt 80) { $m = $m.Substring(0,80) + '…' }
+  Set-StatusMessage "操作出错：$m"
+}
+
+# Dispatcher 未处理异常的**兜底体**（注册在 service-manager-gui.ps1 的 handler 里）。
+# 抽成函数是为让单测能真触发一次 DispatcherUnhandledException 验证「窗口不消失」——
+# DispatcherUnhandledExceptionEventArgs 是私有构造，没法直接 new，只能注册到真 dispatcher
+# 上真抛真接；而注册行留在主脚本里，测试够不着，故把函数体抽到这儿（同 Update-StatusTick）。
+# 每步各自包住：本函数内若再抛，会直接走进程终止路径（那时已无兜底）。
+# 提示优先于日志：日志写入依赖 $logDir/配置，早期或异常场景下自身可能失败，不该连累它。
+function Invoke-DispatcherErrorFallback($e){
+  try { Set-UiErrorStatus ([string]$e.Exception.Message) } catch {}
+  try { Write-CrashLog "DispatcherUnhandled: $($e.Exception.GetType().FullName): $($e.Exception.Message)" } catch {}
+  # 必须置位：否则异常继续冒到 AppDomain，单次点击异常=整窗消失。
+  $e.Handled = $true
+}
+
+# DispatcherTimer 每帧：排空结果队列（探测结果 / 命令回执）→ 排空消息队列写状态栏
+# → 空闲 4 秒后自动刷新。抽成函数而不内联在 Add_Tick 里，是为了能直接单测：
+# 原实现让 test-remove-async 只能「复刻」这段逻辑，改这里而漏改测试就是静默漂移。
+function Update-StatusTick {
+  $item = $null
+  while ($script:queue.TryDequeue([ref]$item)) {
+    if ($item.done) {
+      if ($item.act -eq 'remove') {
+        if (-not $item.ok) {
+          # 删除失败（stop 或 nssm remove 抛错/非零）：服务仍在、配置未动，不能走下面的清理
+          # 路径——那会把还活着的服务从 UI 抹掉，用户以为删掉了。回滚卡片过渡态并解封按钮，
+          # 失败原因由后台 msg 队列给出（poll.ps1 已 Enqueue）。
+          Set-CardRollback $script:cards[$item.n]
+          continue
+        }
+        # 删除回执：清 svc 与卡片缓存、落盘配置、刷新分页。
+        [Threading.Monitor]::Enter($script:sync.gate)
+        try { $script:svc.Remove($item.n) } finally { [Threading.Monitor]::Exit($script:sync.gate) }
+        $script:cards.Remove($item.n)
+        # 保存成功/失败只赋一次文案（T6）：原实现在 catch 里写完「保存失败」后又无条件写
+        # 「已删除」，把提示盖掉——services.json 未落盘时重开 GUI 服务会复活，用户却看不到原因。
+        $note = try { Save-Svc $script:svc; "$($item.n) 已删除" }
+                catch { "$($item.n) 已删除但配置保存失败：$($_.Exception.Message)" }
+        Set-StatusMessage $note
+        Render-Page
+      } else {
+        # 启停回执：ok=$false 时 Update-CardData 回滚过渡态（T1），否则解封按钮与冷却。
+        Update-CardData $item.n $null $null -e $item.e -ack -ok ([bool]$item.ok)
+      }
+    } else {
+      Update-CardData $item.n $item.st $item.h
+    }
+  }
+  $msg = $null
+  while ($script:msgQueue.TryDequeue([ref]$msg)) { Set-StatusMessage $msg }
+  # 空闲 4 秒后自动刷新状态文字；消息租约未到期时不覆盖（T4）。
+  if ($script:statusBar -and (-not $script:lastActionAt -or ([datetime]::Now - $script:lastActionAt).TotalSeconds -ge 4)) {
+    if (-not $script:msgUntil -or [datetime]::Now -ge $script:msgUntil) {
+      $script:statusBar.Text = "$(Get-Date -Format 'HH:mm:ss')  状态自动刷新"
+    }
+  }
+}
+
+# ---- 日志轮转档保留策略：NSSM 只改名不删档，logs/ 会无界增长 ----
+# 只碰轮转档（BaseName 匹配 \.(out|err)-\d{8}，NSSM 实际命名带 T 与毫秒，如
+# NewAPI.err-20261001T154751.222.log），永不动当前档（NewAPI.out.log / .err.log）。
+# 策略：**跨服务全局**按修改时间倒序保留最近 KeepCount 份，其余若早于 KeepDays 天则删除。
+# 两个条件是「且」——删除须同时满足「不在全局前 KeepCount 份」且「早于 KeepDays 天」。
+# 故 KeepDays 窗口内的轮转档一份都不会删（高频轮转的服务在这段时间仍会堆积），
+# 保留份数上限只在该时间之后才起作用。实测（2026-10-05，两个服务各 6 份、均 1 天前）：
+# 删除 0 份；再加 5 份 20 天前的，删掉的是那 5 份（全局前 10 份豁免留给了另外两组）。
+# 返回被删文件路径列表。
+# 注：参数名不能用 $LogDir（PS 变量名大小写不敏感，会遮蔽外层 $logDir，与 Get-LogFiles 同坑）。
+function Remove-RotatedLogs([string]$LogPath,[int]$KeepCount=10,[int]$KeepDays=14){
+  if (-not $LogPath) { $LogPath = $logDir }
+  if (-not $LogPath -or -not (Test-Path -LiteralPath $LogPath)) { return @() }
+  $cut = (Get-Date).AddDays(-$KeepDays)
+  # 枚举所有 .log 文件，按 BaseName 过滤轮转档（行首锚定服务名已转义的写法在 Get-LogFiles；
+  # 这里只判「是不是轮转档」通用形态，不绑特定服务名）。
+  $rot = @(Get-ChildItem -LiteralPath $LogPath -File -Filter '*.log' -EA SilentlyContinue |
+    Where-Object { $_.BaseName -match '\.(out|err)-\d{8}' } |
+    Sort-Object LastWriteTime -Descending)
+  if ($rot.Count -eq 0) { return @() }
+  # 最近 KeepCount 份豁免（按修改时间倒序的前 KeepCount 个）。
+  $keep = @($rot | Select-Object -First $KeepCount | ForEach-Object { $_.FullName })
+  # 剩下的若早于 cut 也删；晚于 cut 的留（近期高频轮转不应被一刀切）。
+  $del = @($rot | Where-Object {
+    $_.FullName -notin $keep -and $_.LastWriteTime -lt $cut
+  } | ForEach-Object { $_.FullName })
+  foreach ($f in $del) { Remove-Item -LiteralPath $f -Force -EA SilentlyContinue }
+  $del
 }
 
 # ---- 安全检查（借鉴 PSSM：路径引号加固 + 目录 ACL 过宽）----
@@ -91,11 +234,9 @@ function Show-SecurityCheck([string]$n){
   $r = Resolve-ServiceExeDir $path
   $dir = $r.dir; $quoted = $r.quoted
   $permissive = '否'
-  $aclRead = $false
   if ($dir -and (Test-Path $dir)) {
     try {
       $acl = Get-Acl -Path $dir
-      $aclRead = $true
       foreach ($a in $acl.Access) {
         if (@('BUILTIN\Users','Everyone','Users') -contains $a.IdentityReference.Value -and $a.FileSystemRights.ToString() -match 'Write|Modify|FullControl') { $permissive = '是'; break }
       }
@@ -104,99 +245,4 @@ function Show-SecurityCheck([string]$n){
   $qTxt = if($quoted){'是（已加固）'}else{'否（路径含空格时有提权风险）'}
   $msg = "$n`n`n路径: $path`n`n引号加固: $qTxt`n目录: $dir`n目录 ACL 过宽: $permissive"
   [System.Windows.MessageBox]::Show($msg,"$n 安全检查",'OK',$(if($quoted -and $permissive -eq '否'){'Information'}else{'Warning'})) | Out-Null
-}
-
-# ---- 日志查看器（闭包 hashtable 持久切换状态）----
-# 发现 5：除当前 .out.log / .err.log 外，加轮转历史下拉（nssm AppRotateFiles 产生的
-# .out-*.log / .err-*.log），并在标题栏显示文件大小。22 个轮转文件此前在 GUI 中不可见。
-function Show-Log([string]$n, $owner){
-  $f2 = New-Object System.Windows.Window -Property @{
-    Title = "$n 日志"; Width = 760; Height = 520; WindowStartupLocation='CenterOwner'
-    Background = [System.Windows.Media.Brushes]::White
-  }
-  $box = New-Object System.Windows.Controls.TextBox -Property @{
-    IsReadOnly = $true; FontFamily = $script:cjkFont; FontSize = 10
-    VerticalScrollBarVisibility = 'Auto'; TextWrapping = 'NoWrap'
-    Background = [System.Windows.Media.Brushes]::White; Foreground = [System.Windows.Media.Brushes]::Black
-  }
-  $lt = New-Object System.Windows.Controls.StackPanel -Property @{ Orientation='Horizontal' }
-  # 当前日志 + 轮转历史下拉；切换时重新加载
-  $state = @{ Current = 'out'; File = $null }
-  $combo = New-Object System.Windows.Controls.ComboBox -Property @{ Margin='4,2'; MinWidth=220 }
-  $refreshBtn = New-Object System.Windows.Controls.Button -Property @{ Content='🔄 刷新'; Margin='4,2' }
-
-  # 枚举当前 + 轮转日志：out/err 是当前，out-YYYYMMDDHHMMSS.log / err-*.log 是轮转
-  function Get-LogFiles([string]$n){
-    $current = @()
-    $rotated = @()
-    $pattern = "{0}.{1}.log" -f $n, '*'
-    $files = @(Get-ChildItem -LiteralPath $logDir -Filter $pattern -File -EA SilentlyContinue |
-      Sort-Object LastWriteTime -Descending)
-    foreach ($f in $files) {
-      $base = $f.BaseName  # e.g. "TTSShim.out" or "TTSShim.out-20260930120000"
-      if ($base -match "\.$n\.(out|err)$") {
-        $current += [pscustomobject]@{ Path=$f.FullName; Label="$($matches[1]) (当前)"; Size=$f.Length }
-      } elseif ($base -match "\.$n\.(out|err)-") {
-        $rotated += [pscustomobject]@{ Path=$f.FullName; Label="$($matches[1]) 轮转 $($f.LastWriteTime.ToString('MM-dd HH:mm'))"; Size=$f.Length }
-      }
-    }
-    # 当前在前，轮转按时间倒序
-    @($current) + @($rotated)
-  }
-
-  $load = {
-    $box.Clear()
-    $f3 = $state.File
-    if (-not $f3 -or -not (Test-Path -LiteralPath $f3)) { $box.Text = "无日志"; return }
-    # 逐行读，固定容量队列只留最后 500 行——避免把整个大日志物化到内存
-    $tail = [System.Collections.Generic.Queue[string]]::new(500)
-    foreach ($l in [System.IO.File]::ReadLines($f3)) {
-      if ($tail.Count -ge 500) { [void]$tail.Dequeue() }
-      $tail.Enqueue($l)
-    }
-    $box.Text = ($tail -join "`r`n")
-    $box.ScrollToEnd()
-  }.GetNewClosure()
-
-  # 初始填充与刷新共用：枚举文件 → 建 ComboBoxItem → 选中 oldPath（或首项）
-  $fillCombo = {
-    param($selectPath)
-    $combo.Items.Clear()
-    $files = Get-LogFiles $n
-    if ($files.Count -eq 0) {
-      [void]$combo.Items.Add((New-Object System.Windows.Controls.ComboBoxItem -Property @{Content='无日志'; Tag=''}))
-      $state.File = $null
-    } else {
-      $selIdx = 0
-      for ($i=0; $i -lt $files.Count; $i++) {
-        $item = New-Object System.Windows.Controls.ComboBoxItem -Property @{ Content=$files[$i].Label; Tag=$files[$i].Path }
-        [void]$combo.Items.Add($item)
-        if ($selectPath -and $files[$i].Path -eq $selectPath) { $selIdx = $i }
-      }
-      $combo.SelectedIndex = $selIdx
-      $state.File = $files[$selIdx].Path
-    }
-  }.GetNewClosure()
-
-  & $fillCombo $null
-  $combo.Add_SelectionChanged({
-    $item = $combo.SelectedItem
-    if ($item -and $item.Tag) { $state.Current = ''; $state.File = [string]$item.Tag; & $load }
-  }.GetNewClosure())
-  $refreshBtn.Add_Click({
-    # 刷新下拉（轮转文件可能新增）并重载当前
-    & $fillCombo $state.File
-    & $load
-  }.GetNewClosure())
-
-  [void]$lt.Children.Add($combo); [void]$lt.Children.Add($refreshBtn)
-  $dock = New-Object System.Windows.Controls.DockPanel
-  $dock.LastChildFill = $true
-  $lt.SetValue([System.Windows.Controls.DockPanel]::DockProperty, [System.Windows.Controls.Dock]::Top)
-  [void]$dock.Children.Add($lt)
-  [void]$dock.Children.Add($box)
-  $f2.Content = $dock
-  & $load
-  $f2.Owner = $owner
-  $f2.ShowDialog() | Out-Null
 }

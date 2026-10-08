@@ -12,13 +12,6 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
       - name: Run parser check and PowerShell regression tests
         shell: pwsh
         run: ./tests/run-all.ps1
-      - name: Run TTSShim node:test regression
-        shell: pwsh
-        run: node --test tests/shim.test.mjs

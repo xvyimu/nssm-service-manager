@@ -4,8 +4,9 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $RepoRoot 'lib/util.ps1')
 
 # Load-Svc / Read-SvcFile 测试：services.json 是 SSOT，services.example.json 是兜底。
-# util.ps1 在函数体里直接读 $cfg / $logDir（从 dot-source 的调用方作用域取），
-# 因此测试必须在 dot-source 之后再赋值 $cfg，否则函数看到的是 $null。
+# util.ps1 在函数体里直接读 $cfg / $logDir（从 dot-source 的调用方作用域取；
+# 完整约定与参数命名禁区见 util.ps1 顶部注释），因此测试必须在 dot-source 之后再
+# 赋值 $cfg，否则函数看到的是 $null。
 $tmpDir = Join-Path ([IO.Path]::GetTempPath()) "sm-cfg-test-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Force $tmpDir | Out-Null
 $cfg = Join-Path $tmpDir 'services.json'
@@ -35,10 +36,14 @@ try {
   if ($loaded['SvcA'].port -ne 8080 -or $loaded['SvcB'].url -ne 'http://127.0.0.1:9090/panel') { throw 'Round-trip corrupted data.' }
 
   # ---- 4. 坏 JSON：Load-Svc 设 configWarning 并回落 example ----
+  # 消息里必须带文件名：GUI 的弹框用中性前缀（configWarning 可能来自 config.json
+  # 或 services.json，调用方判断不了），来源只能由写入方讲清楚。不带的话用户
+  # 只知道「某个配置坏了」，得逐个猜。
   $script:configWarning = $null
   [IO.File]::WriteAllText($cfg, '{ broken json', [Text.UTF8Encoding]::new($false))
   $loaded = Load-Svc
   if (-not $script:configWarning) { throw 'Load-Svc did not set configWarning on invalid JSON.' }
+  if ($script:configWarning -notmatch 'services\.json 无效') { throw "configWarning should name the broken file, got: $($script:configWarning)" }
   if ($loaded.Count -ne $exampleCount) { throw "Load-Svc should fall back to example on invalid JSON, got $($loaded.Count)." }
 
   # ---- 5. 端口越界：Load-Svc 设 configWarning 并回落 example ----
@@ -46,6 +51,7 @@ try {
   [IO.File]::WriteAllText($cfg, '{"Bad":{"port":99999,"url":"http://x"}}', [Text.UTF8Encoding]::new($false))
   $loaded = Load-Svc
   if (-not $script:configWarning) { throw 'Load-Svc did not reject out-of-range port.' }
+  if ($script:configWarning -notmatch 'services\.json 无效') { throw "configWarning should name the broken file, got: $($script:configWarning)" }
   if ($loaded.Count -ne $exampleCount) { throw "Load-Svc should fall back to example on invalid port, got $($loaded.Count)." }
 
   # ---- 6. Save-Svc 原子写不残留 tmp ----

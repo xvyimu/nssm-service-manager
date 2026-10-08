@@ -1,12 +1,25 @@
 #requires -Version 7.0
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference='Stop'
+
+# 收集失败继续跑下一项，避免一个环境性/偶发失败掩掉后续结果
+# （如沙箱挡 [IO.File]::Replace 导致 config round-trip 挂掉，后面 4 项根本没跑）。
+# 解析阶段若挂了，后面的测试也无从执行——解析失败仍按硬错误直接抛。
+$script:failures = @()
 
 function Invoke-Check([string]$label, [scriptblock]$action) {
   Write-Output "== $label =="
-  & $action
+  try {
+    & $action
+  } catch {
+    if ($label -eq 'PowerShell parser') { throw }
+    $script:failures += @{ Label=$label; Error=$_.Exception.Message }
+    Write-Output "FAIL: $label — $($_.Exception.Message)"
+    return
+  }
   if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
-    throw "$label failed with exit code $LASTEXITCODE."
+    $script:failures += @{ Label=$label; Error="exit code $LASTEXITCODE" }
+    Write-Output "FAIL: $label — exit code $LASTEXITCODE"
   }
 }
 
@@ -32,16 +45,21 @@ $tests = @(
   @{ Name = 'card actions'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-card-actions.ps1')) }
   @{ Name = 'card cache'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-card-cache.ps1')) }
   @{ Name = 'transition race'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-transition-race.ps1')) }
+  @{ Name = 'transition failure'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-transition-failure.ps1')) }
+  @{ Name = 'status lease'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-status-lease.ps1')) }
   @{ Name = 'poll commands'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-poll-commands.ps1')) }
   @{ Name = 'parallel probe'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-parallel-probe.ps1')) }
+  @{ Name = 'probe timeout scope'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-probe-timeout-scope.ps1')) }
   @{ Name = 'security parse'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-security-parse.ps1')) }
   @{ Name = 'svc input'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-svc-input.ps1')) }
   @{ Name = 'service registration'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-add-svc.ps1')) }
   @{ Name = 'config round-trip'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-config.ps1')) }
+  @{ Name = 'log retention'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-log-retention.ps1')) }
   @{ Name = 'config params';     Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-config-params.ps1')) }
   @{ Name = 'tray policy';       Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-tray.ps1')) }
   @{ Name = 'single instance'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-single-instance.ps1')) }
   @{ Name = 'remove async'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-remove-async.ps1')) }
+  @{ Name = 'remove e2e'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-remove-e2e.ps1')) }
 )
 
 foreach ($test in $tests) {
@@ -49,4 +67,10 @@ foreach ($test in $tests) {
   Invoke-Check $test.Name { & pwsh @arguments }
 }
 
+if ($script:failures.Count) {
+  Write-Output ""
+  Write-Output "== $($script:failures.Count) failure(s) =="
+  foreach ($f in $script:failures) { Write-Output "  - $($f.Label): $($f.Error)" }
+  exit 1
+}
 Write-Output "PASS: $($tests.Count) regression tests and parser check completed."

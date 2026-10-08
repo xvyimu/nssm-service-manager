@@ -21,30 +21,46 @@ try {
     Move-Item -LiteralPath $originalRepoConfig $backupRepoConfig -Force
   }
 
-  # ---- 1. 覆盖值生效：全部 6 键换成非默认值后再加载 ----
+  # ---- 1. 覆盖值生效：全部键换成非默认值后再加载 ----
   [IO.File]::WriteAllText((Join-Path $RepoRoot 'config.json'),
-    '{"PerPage":4,"TcpTimeoutMs":50,"HttpTimeoutMs":500,"ToggleCooldownMs":1200,"CrashLogMaxBytes":1024,"WaitStoppedTimeoutMs":800}',
+    '{"PerPage":4,"TcpTimeoutMs":50,"HttpTimeoutMs":500,"ToggleCooldownMs":1200,"CrashLogMaxBytes":1024,"WaitStoppedTimeoutMs":800,"LogKeepCount":3,"LogKeepDays":2,"LogDir":"C:\\sm-test-logs","ProbeThrottleLimit":4,"ProbeIntervalMs":1111,"ProbeIdleMs":2222,"WaitStoppedPollMs":77,"AppRotateBytes":1048576,"AppStopMethodConsole":1234,"AckPollIntervalMs":250}',
     [Text.UTF8Encoding]::new($false))
   $script:config = $null   # 强制重新加载以验证 config.json 覆盖
   . (Join-Path $RepoRoot 'lib/config.ps1')
   Assert ($script:config.PerPage -eq 4) 'PerPage not overridden.'
   Assert ($script:config.WaitStoppedTimeoutMs -eq 800) 'WaitStoppedTimeoutMs not overridden.'
   Assert ($script:config.CrashLogMaxBytes -eq 1024) 'CrashLogMaxBytes not overridden.'
+  Assert ($script:config.LogKeepCount -eq 3) 'LogKeepCount not overridden.'
+  Assert ($script:config.LogKeepDays -eq 2) 'LogKeepDays not overridden.'
+  Assert ($script:config.LogDir -eq 'C:\sm-test-logs') 'LogDir not overridden.'
+  # 轮询/探测节奏与 NSSM 参数收口键（原硬编码在 poll.ps1 / svc-common.ps1 / Get-NssmSetSpec）
+  Assert ($script:config.ProbeThrottleLimit -eq 4) 'ProbeThrottleLimit not overridden.'
+  Assert ($script:config.ProbeIntervalMs -eq 1111) 'ProbeIntervalMs not overridden.'
+  Assert ($script:config.ProbeIdleMs -eq 2222) 'ProbeIdleMs not overridden.'
+  Assert ($script:config.WaitStoppedPollMs -eq 77) 'WaitStoppedPollMs not overridden.'
+  Assert ($script:config.AppRotateBytes -eq 1048576) 'AppRotateBytes not overridden.'
+  Assert ($script:config.AppStopMethodConsole -eq 1234) 'AppStopMethodConsole not overridden.'
+  Assert ($script:config.AckPollIntervalMs -eq 250) 'AckPollIntervalMs not overridden.'
 
-  # runspace 从 $sync 读三个超时，生效值写回 $sync 同键——测试读共享表即可
-  $worker = Start-FakePoll 1 'Stopped' 0 @{ waitStoppedTimeoutMs = 800; tcpTimeoutMs = 50; httpTimeoutMs = 500 }
+  # runspace 从 $sync 读三个超时 + 节奏与并行度，生效值写回 $sync 同键——测试读共享表即可
+  $worker = Start-FakePoll 1 'Stopped' 0 @{ waitStoppedTimeoutMs = 800; tcpTimeoutMs = 50; httpTimeoutMs = 500
+                                              probeIntervalMs = 1234; probeIdleMs = 5678; probeThrottleLimit = 3 }
   try {
     Start-Sleep -Milliseconds 400   # 等脚本块过初始化
     Assert ($worker.Sync.tcpTimeoutMs -eq 50) 'poll tcpMs not read from sync'
     Assert ($worker.Sync.httpTimeoutMs -eq 500) 'poll httpMs not read from sync'
     Assert ($worker.Sync.waitStoppedTimeoutMs -eq 800) 'poll waitMs not read from sync'
+    Assert ($worker.Sync.probeIntervalMs -eq 1234) 'poll probeIntervalMs not read from sync'
+    Assert ($worker.Sync.probeIdleMs -eq 5678) 'poll probeIdleMs not read from sync'
+    Assert ($worker.Sync.probeThrottleLimit -eq 3) 'poll probeThrottleLimit not read from sync'
   } finally { Close-FakePoll $worker }
 
-  # 未注入键的回落：起一个不带 extraSyncKeys 的 worker，生效值应为默认 200/3000/6000
+  # 未注入键的回落：起一个不带 extraSyncKeys 的 worker，生效值应为默认 200/3000/6000 + 4000/15000/8
   $workerFallback = Start-FakePoll 1 'Stopped' 0
   try {
     Start-Sleep -Milliseconds 400
     Assert ($workerFallback.Sync.tcpTimeoutMs -eq 200 -and $workerFallback.Sync.httpTimeoutMs -eq 3000 -and $workerFallback.Sync.waitStoppedTimeoutMs -eq 6000) 'poll did not fall back to defaults when sync keys absent.'
+    Assert ($workerFallback.Sync.probeIntervalMs -eq 4000 -and $workerFallback.Sync.probeIdleMs -eq 15000 -and $workerFallback.Sync.probeThrottleLimit -eq 8) 'poll probe cadence defaults not restored when sync keys absent.'
   } finally { Close-FakePoll $workerFallback }
 
   # ---- 2. 坏 config.json：回落默认值且设置 configWarning ----
@@ -53,6 +69,8 @@ try {
   . (Join-Path $RepoRoot 'lib/config.ps1')
   Assert ($script:configWarning -match 'config\.json 无效') 'config.json broken should set configWarning.'
   Assert ($script:config.PerPage -eq 6 -and $script:config.WaitStoppedTimeoutMs -eq 6000) 'Defaults not restored on broken config.'
+  # LogDir 默认空串 = 用仓内 logs/（主脚本据此回落，见 service-manager-gui.ps1 顶部）
+  Assert ($script:config.LogKeepCount -eq 10 -and $script:config.LogKeepDays -eq 14 -and $script:config.LogDir -eq '') 'Log retention defaults not restored on broken config.'
 
   # ---- 3. mock restart：Wait-Stopped 用 $sync 注入的 waitMs=50——
   # 若误用默认 6000，restart 会卡在轮询直到 6s，executed 里只有 stop；

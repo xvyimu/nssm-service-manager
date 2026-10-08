@@ -6,6 +6,7 @@ $cfgExisted = Test-Path -LiteralPath $cfg
 $before = if ($cfgExisted) { (Get-FileHash -LiteralPath $cfg).Hash } else { $null }
 . (Join-Path $RepoRoot 'lib/util.ps1')
 . (Join-Path $RepoRoot 'lib/add-svc.ps1')
+. (Join-Path $RepoRoot 'lib/logview.ps1')   # Get-LogFiles 随拆分移来（util.ps1 只留配置持久化）
 $script:svc = Load-Svc
 $script:sync = @{gate=[object]::new()}
 $logDir = Join-Path $RepoRoot 'logs'
@@ -64,6 +65,55 @@ try {
   Assert ($null -eq (Test-EnvPairs @('APPDATA=C:\Windows\System32\config\systemprofile\AppData\Roaming'))) 'system-profile APPDATA should pass'
   Assert ($null -eq (Test-EnvPairs @())) 'empty pair list should pass'
 
+  # ---- Find-SensitiveEnvKeys：敏感键名检出（应用于先做 *_FILE，避免明文密钥进注册表） ----
+  $hits = Find-SensitiveEnvKeys @('A=1','B=2')
+  Assert ($hits.Count -eq 0) 'no sensitive key names should yield no hits'
+  $hits = Find-SensitiveEnvKeys @('MY_API_KEY=sk-123','B=2','DB_PASSWORD=xyz','MY_TOKEN=abc','NORMAL=1')
+  Assert (($hits -join '|') -eq 'MY_API_KEY|DB_PASSWORD|MY_TOKEN') "expected MY_API_KEY/DB_PASSWORD/MY_TOKEN, got $($hits -join '|')"
+  # *_FILE 后缀 + 值是路径 → 跳过（路径不进注册表，本意成立）
+  $hits = Find-SensitiveEnvKeys @('MY_API_KEY_FILE=C:\keys\my.key')
+  Assert ($hits.Count -eq 0) '_FILE keys with path values should be skipped'
+  # *_FILE 后缀 + 值不是路径（像真密钥） → 仍提示，键名后缀不等于值就是路径
+  $hits = Find-SensitiveEnvKeys @('MY_API_KEY_FILE=sk-live-123456')
+  Assert (($hits -join '|') -eq 'MY_API_KEY_FILE') '_FILE keys with non-path values should still be flagged'
+  # 扩展键名清单：ACCESS_KEY / CREDENTIAL / PRIVATE_KEY / PASSPHRASE / PWD
+  $hits = Find-SensitiveEnvKeys @('AWS_ACCESS_KEY_ID=AKIA...','MY_CREDENTIAL=user:pass','PRIVATE_KEY=-----BEGIN','JWT_PASSPHRASE=abc','DB_PWD=secret')
+  Assert (($hits -join '|') -eq 'AWS_ACCESS_KEY_ID|MY_CREDENTIAL|PRIVATE_KEY|JWT_PASSPHRASE|DB_PWD') "expected expanded patterns, got $($hits -join '|')"
+  # 空/空壳入参
+  Assert ((Find-SensitiveEnvKeys @()).Count -eq 0) 'empty pair list should yield no hits'
+  Assert ((Find-SensitiveEnvKeys $null).Count -eq 0) 'null should yield no hits'
+
+  # ---- Get-LogFiles：服务名含点号时正则转义，不跨服务串台 ----
+  $logTmp = Join-Path ([IO.Path]::GetTempPath()) "sm-log-test-$([guid]::NewGuid().ToString('N'))"
+  New-Item -ItemType Directory -Force $logTmp | Out-Null
+  try {
+    # 造两个名字相近的服务日志：My.Service 与 MyxService，点号若不转义会互相匹配
+    'a' | Set-Content -LiteralPath (Join-Path $logTmp 'My.Service.out.log') -Encoding UTF8
+    'b' | Set-Content -LiteralPath (Join-Path $logTmp 'MyxService.out.log') -Encoding UTF8
+    $svcDotted = Get-LogFiles 'My.Service' $logTmp
+    Assert ($svcDotted.Count -eq 1) "My.Service should match only its own log, got $($svcDotted.Count)"
+    Assert ($svcDotted[0].Path -like '*My.Service.out.log') 'My.Service must not match MyxService'
+    $svcX = Get-LogFiles 'MyxService' $logTmp
+    Assert ($svcX.Count -eq 1 -and $svcX[0].Path -like '*MyxService.out.log') 'MyxService must match only its own log'
+    # 轮转历史也按转义后名字匹配
+    'r' | Set-Content -LiteralPath (Join-Path $logTmp 'My.Service.out-20260101000000.log') -Encoding UTF8
+    $svcRot = Get-LogFiles 'My.Service' $logTmp
+    Assert ($svcRot.Count -eq 2) "My.Service should pick up rotated log, got $($svcRot.Count)"
+    # 不存在的服务返回空，不抛错
+    Assert ((Get-LogFiles 'NoSuch' $logTmp).Count -eq 0) 'absent service should yield empty list'
+
+    # ---- 单参调用：不传 LogPath，靠动态作用域回落外层 $logDir（GUI 走的就是这条） ----
+    # 回归防护：参数若取名 $LogDir 会遮蔽同名的外层 $logDir（PS 变量名大小写不敏感），
+    # 回落变成自己赋给自己，GUI 日志下拉框永远为空。这里把 $logDir 指到同一临时目录验证。
+    $savedLogDir = $logDir
+    try {
+      $logDir = $logTmp
+      $oneArg = Get-LogFiles 'My.Service'
+      Assert ($oneArg.Count -eq 2) "single-arg call must fall back to outer `$logDir, got $($oneArg.Count)"
+      Assert (@($oneArg | Where-Object { $_.Path -like '*My.Service.out.log' }).Count -eq 1) 'single-arg fallback must find the current log'
+    } finally { $logDir = $savedLogDir }
+  } finally { Remove-Item -LiteralPath $logTmp -Recurse -Force -EA SilentlyContinue }
+
   # ---- Get-NssmSetSpec：参数组合（AppExit 双 token / Env 多 token / 可选键省略） ----
   $spec = Get-NssmSetSpec 'SvcA' $null $null @()
   $byKey = @{}; foreach ($s in $spec) { $byKey[$s.k] = $s.v }
@@ -89,7 +139,7 @@ try {
   } elseif (Test-Path -LiteralPath $cfg) {
     throw 'Test created services.json where none existed.'
   }
-  Write-Output 'PASS: Test-SvcInput (name/exe/port/dup + order), ConvertTo-EnvPairs (sep/trim/drop-empty), Test-EnvPairs (format/APPDATA), Get-NssmSetSpec (AppExit dual-token, env multi-token, optional-key omission, array-typed values).'
+  Write-Output 'PASS: Test-SvcInput (name/exe/port/dup + order), ConvertTo-EnvPairs (sep/trim/drop-empty), Test-EnvPairs (format/APPDATA), Find-SensitiveEnvKeys (sensitive-name detection + _FILE path-aware skip + expanded patterns), Get-LogFiles (regex-escaped service names), Get-NssmSetSpec (AppExit dual-token, env multi-token, optional-key omission, array-typed values).'
 } finally {
   Remove-Item -LiteralPath $fakeExe -Force -EA SilentlyContinue
 }

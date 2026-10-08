@@ -13,7 +13,7 @@ $script:svc = [ordered]@{
   'RouterB'  = @{ port = 20129; url = 'http://127.0.0.1:20129/dashboard' }
   'ProxyA'   = @{ port = 8317;  url = 'http://127.0.0.1:8317/management.html' }
   'BuddyAPI' = @{ port = 7863;  url = 'http://127.0.0.1:7863/panel/' }
-  'TTSShim'  = @{ port = 8001;  url = 'http://127.0.0.1:8001/health' }
+  'ServiceF' = @{ port = 9000;  url = 'http://127.0.0.1:9000/health' }
 }
 $script:cmdQueue = [Collections.Concurrent.ConcurrentQueue[object]]::new()
 $script:sync = @{ wake = [Threading.AutoResetEvent]::new($false) }
@@ -25,7 +25,7 @@ try {
   # 初态：一组有代表性的健康分档（绿/橙/红/灰），让动图开头就是完整全览
   $initial = @(
     @('MyAPI','运行中','正常'), @('RouterA','运行中','正常'), @('RouterB','运行中','正常'),
-    @('ProxyA','已停止',''), @('BuddyAPI','运行中','无响应'), @('TTSShim','运行中','正常')
+    @('ProxyA','已停止',''), @('BuddyAPI','运行中','无响应'), @('ServiceF','运行中','正常')
   )
   foreach ($s in $initial) { Update-CardData $s[0] $s[1] $s[2] }
 

@@ -3,7 +3,7 @@
 # 密钥暴露给本机任意标准用户）。
 #
 # 用法（管理员 PowerShell）：
-#   pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName TTSShim
+#   pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName <服务名>
 #
 # 失败时回退：原 ACL 不变，脚本抛错并 exit 1。成功时打印前后 ACL 摘要。
 # 不删除现有显式 ACE，只禁用继承、移除 BUILTIN\Users 与 Everyone 的读权限，
@@ -65,15 +65,17 @@ try {
   exit 1
 }
 
-# 校验：读回确认 Users/Everyone 已移除
+# 校验：读回确认 Users/Everyone 已移除（Allow 与 Deny 都查——Deny 不会授予读权限，
+# 但残留说明清理不干净，必须能证明）
 $verify = Get-Acl -LiteralPath $keyPath
 $after = ($verify.Access | ForEach-Object { "$($_.IdentityReference.Value) ($($_.RegistryRights) $($_.AccessControlType))" }) -join '; '
 Write-Host "改后 ACL: $after"
 $leaked = $verify.Access | Where-Object {
-  $_.IdentityReference.Value -in @('BUILTIN\Users','NT AUTHORITY\Everyone','Everyone') -and $_.AccessControlType -eq 'Allow'
+  $_.IdentityReference.Value -in @('BUILTIN\Users','NT AUTHORITY\Everyone','Everyone')
 }
 if ($leaked) {
-  Write-Error "校验失败：仍有 Users/Everyone 的 Allow ACE 残留：$($leaked.IdentityReference.Value)"
+  $leakedDesc = ($leaked | ForEach-Object { "$($_.IdentityReference.Value) ($($_.AccessControlType))" }) -join '; '
+  Write-Error "校验失败：仍有 Users/Everyone 的 ACE 残留：$leakedDesc"
   # 不自动回退——回退会把权限重新放宽，更危险。提示人工处理。
   exit 1
 }

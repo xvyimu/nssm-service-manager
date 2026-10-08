@@ -14,8 +14,12 @@ function Get-VisualNodes($node) {
 # 起 runspace 跑 poll 脚本块，mock Get-Service 返回指定 Status。
 # $count=服务数，$serviceStatus=mock 返回状态（'Stopped'/'Running'），$delayMs=每次 Get-Service 延迟。
 # $extraSyncKeys=额外塞进 $shared 的键（如 waitStoppedTimeoutMs），BeginInvoke 前合并——poll 开头只读一次。
+# $scExitCode=非零时让替身 sc.exe 返回该退出码（模拟启停失败；默认 0=成功）。
+# $controllerStatus=非空时给 runspace 注入 $sync.newSc='New-TestSc'，由替身 ServiceController
+#   返回该状态（如 StartPending）。真实 ServiceController 构造在 runspace 里无法替身化，
+#   中间态只能从这里进；未设时 poll 走真实 ServiceController。
 # 返回 @{Sync;Runspace;PowerShell;Handle}。Close-FakePoll 清理。
-function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$delayMs = 0, [hashtable]$extraSyncKeys = $null) {
+function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$delayMs = 0, [hashtable]$extraSyncKeys = $null, [int]$scExitCode = 0, [string]$controllerStatus = '') {
   $services = [ordered]@{}
   for ($i = 0; $i -lt $count; $i++) { $services["Fake$i"] = @{ port = 10000 + $i; url = "http://127.0.0.1:10000/fake$i" } }
   $shared = [hashtable]::Synchronized(@{
@@ -29,7 +33,11 @@ function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$d
     executed     = [Collections.Concurrent.ConcurrentQueue[object]]::new()
     executedReady = [Threading.AutoResetEvent]::new($false)
     nssm = 'Invoke-TestNssm'
+    scExitCode = $scExitCode
+    # serviceGone 由调用方在 BeginInvoke 后按需置位：$true = query 返回 1060（服务已消失）,
+    # 用于让 Remove 路径的实证复核（Test-ServiceGone）认为删除生效。默认未设 = 服务存在。
   })
+  if ($controllerStatus) { $shared.newSc = 'New-TestSc' }
   if ($extraSyncKeys) { foreach ($k in $extraSyncKeys.Keys) { $shared[$k] = $extraSyncKeys[$k] } }
   $rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState = 'STA'; $rs.Open()
   $rs.SessionStateProxy.SetVariable('sync', $shared)
@@ -44,12 +52,28 @@ function Get-Service {
 function sc.exe {
   `$sync.executed.Enqueue([pscustomobject]@{action=`$args[0];name=`$args[1];probes=`$sync.probeCount})
   [void]`$sync.executedReady.Set()
-  `$global:LASTEXITCODE=0
+  if (`$args[0] -eq 'query') {
+    # Test-ServicePresent / Test-ServiceGone 走这里。$sync.serviceGone=$true 时模拟
+    # 「服务已从 SCM 消失」（1060）；否则当它存在。默认 $null -> 存在（0）。
+    `$global:LASTEXITCODE = if (`$sync.serviceGone) { 1060 } else { 0 }
+    return
+  }
+  `$global:LASTEXITCODE = if (`$sync.scExitCode) { `$sync.scExitCode } else { 0 }
 }
 function Invoke-TestNssm {
-  # remove confirm 等——记一次 nssm 调用，成功退出
+  # remove confirm 等——记一次 nssm 调用，退出码由 $sync.nssmExitCode 控制
+  # （0 = nssm 谎报成功但服务其实还在；非零 = 常规失败；未设 = 0）。
   `$sync.executed.Enqueue([pscustomobject]@{action='nssm';name=`$args[1];probes=`$sync.probeCount})
-  `$global:LASTEXITCODE=0
+  `$code = `$sync.nssmExitCode
+  `$global:LASTEXITCODE = if (`$null -eq `$code) { 0 } else { [int]`$code }
+}
+function New-TestSc {
+  # 替身 ServiceController：只实现 Invoke-ServiceStart 用到的 Status 与 finally 里的 Dispose。
+  # 用 Add-Member 挂 ScriptMethod，避免为 ScriptMethod 构造 pscustomobject 的语法噪音。
+  param([string]`$n)
+  `$o = [pscustomobject]@{ Status = '$controllerStatus' }
+  `$o | Add-Member -MemberType ScriptMethod -Name Dispose -Value { }
+  `$o
 }
 "@
   $ps = [powershell]::Create().AddScript($mocks).AddScript($script:poll); $ps.Runspace = $rs
@@ -62,4 +86,17 @@ function Close-FakePoll($worker) {
   $worker.Sync.stop = $true; [void]$worker.Sync.wake.Set()
   $worker.PowerShell.Stop(); $worker.PowerShell.Dispose(); $worker.Runspace.Dispose()
   foreach ($name in 'wake', 'executedReady', 'probeStarted') { $worker.Sync[$name].Dispose() }
+}
+
+# 等一条**命令回执**（done=$true）出队，最多等 $TimeoutSec 秒；超时返回 $null。
+# 队列里混着普通探测结果（无 done 字段）——必须过滤，否则会取到探测结果并误判回执内容。
+# test-poll-commands / test-transition-failure 都用这段，抽出来免得两处各抄一份后漂移。
+function Wait-FakePollAck($worker, [int]$TimeoutSec = 4) {
+  $deadline = [datetime]::UtcNow.AddSeconds($TimeoutSec)
+  while ([datetime]::UtcNow -lt $deadline) {
+    $x = $null
+    while ($worker.Sync.queue.TryDequeue([ref]$x)) { if ($x.done) { return $x } }
+    Start-Sleep -Milliseconds 20
+  }
+  $null
 }

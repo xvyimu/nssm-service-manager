@@ -7,7 +7,7 @@
 param([string]$RepoRoot=(Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Xaml
-foreach ($module in 'theme','util','card','xaml') { . (Join-Path $RepoRoot "lib/$module.ps1") }
+foreach ($module in 'theme','util','svc-input','nssm','card','xaml','dialogs') { . (Join-Path $RepoRoot "lib/$module.ps1") }
 . (Join-Path $RepoRoot 'tests/test-helpers.ps1')
 function Assert($condition,[string]$message) { if (-not $condition) { throw $message } }
 
@@ -30,40 +30,60 @@ try {
   $card=$script:cards['RmSvc']
   Assert ($card -ne $null) 'Card not created for RmSvc.'
 
-  # 直接触发 del_Click 等价路径：Send-ServiceCommand 'remove'（与 Show-Remove 内部一致）
+  # del_Click 的真实路径是 Set-CardTransition $card '删除中' $epoch (Get-Date)——
+  # Show-Remove 弹模态框测不了，但它调的正是这个函数，故直接调它并断言卡片状态。
   $epoch = Send-ServiceCommand 'RmSvc' 'remove'
   Assert ($epoch -gt 0) 'Send-ServiceCommand did not return a positive epoch.'
+  Set-CardTransition $card '删除中' $epoch (Get-Date)
+  Assert ($card.ST -eq '删除中') 'del_Click path did not put card into 删除中.'
+  Assert (-not $card.Btn.IsEnabled) 'Card button enabled while deleting.'
+  Assert (-not $card.ReadyToToggle) 'Card ReadyToToggle set while deleting.'
   Assert ($script:cmdQueue.Count -eq 1) 'Remove command was not enqueued.'
   $cmd=$null; [void]$script:cmdQueue.TryDequeue([ref]$cmd)
   Assert ($cmd.act -eq 'remove' -and $cmd.e -eq $epoch) "Enqueued command wrong: act=$($cmd.act) e=$($cmd.e) epoch=$epoch"
+  # 删除中的过渡态必须扛过 Render-Page（右键菜单路径是 Show-Remove; Render-Page）与探测结果
+  Render-Page
+  Assert ($script:cards['RmSvc'].ST -eq '删除中') "Render-Page reset 删除中 to $($script:cards['RmSvc'].ST)."
+  Update-CardData 'RmSvc' '已停止' ''
+  Assert ($script:cards['RmSvc'].ST -eq '删除中') "Probe overwrote 删除中: $($script:cards['RmSvc'].ST)."
   # svc 与 cards 在 ack 回执到来前不应被清理
   Assert ($script:svc.Contains('RmSvc')) 'svc cleared before ack arrived.'
   Assert ($script:cards.Contains('RmSvc')) 'cards cleared before ack arrived.'
 
   # ---- 3. 模拟 DispatcherTimer 收到 done+act=remove 回执 ----
-  $ackItem = [pscustomobject]@{n='RmSvc';st=$null;h=$null;e=$epoch;done=$true;act='remove'}
+  $ackItem = [pscustomobject]@{n='RmSvc';st=$null;h=$null;e=$epoch;done=$true;act='remove';ok=$true}
   $script:queue.Enqueue($ackItem)
-  # 复刻 service-manager-gui.ps1 的 DispatcherTimer tick 逻辑
-  $item=$null
-  while ($script:queue.TryDequeue([ref]$item)) {
-    if ($item.done -and $item.act -eq 'remove') {
-      [Threading.Monitor]::Enter($script:sync.gate)
-      try { $script:svc.Remove($item.n) } finally { [Threading.Monitor]::Exit($script:sync.gate) }
-      $script:cards.Remove($item.n)
-      Save-Svc $script:svc
-      Render-Page
-    }
-  }
+  # 调真实实现（lib/util.ps1 Update-StatusTick）而非复刻：T4 把 tick 抽出后这里能直测生产代码，
+  # 不再抄一份逻辑——抄本与实现漂移是静默失效的常见来源（本段此前就是这么坏的）。
+  $script:msgQueue=[Collections.Concurrent.ConcurrentQueue[string]]::new()
+  Update-StatusTick
   Assert (-not $script:svc.Contains('RmSvc')) 'svc not cleared after remove ack.'
   Assert (-not $script:cards.Contains('RmSvc')) 'cards not cleared after remove ack.'
   Assert ($script:cardPanel.Children.Count -eq 0) 'Card still visible after remove ack.'
+  Assert ($script:statusBar.Text -eq 'RmSvc 已删除') "Success note wrong: '$($script:statusBar.Text)'."
 
-  Write-Output 'PASS: remove enqueues to background (not synchronous); ack clears svc/cards/panel.'
+  # ---- 4. Save-Svc 抛异常时，状态栏必须保留「保存失败」文案（T6）----
+  # 修前：catch 里写完「保存失败」后紧接着无条件写「已删除」，把提示盖掉——
+  # services.json 未落盘时重开 GUI 服务会复活，用户却看不到原因。
+  $script:svc=[ordered]@{RmSvc2=@{port=9001;url='http://127.0.0.1:9001'}}
+  Render-Page
+  function Save-Svc($data) { throw '磁盘只读' }
+  $script:queue.Enqueue([pscustomobject]@{n='RmSvc2';st=$null;h=$null;e=($epoch+1);done=$true;act='remove';ok=$true})
+  Update-StatusTick
+  Assert (-not $script:svc.Contains('RmSvc2')) 'svc not cleared when save failed.'
+  $shown=[string]$script:statusBar.Text
+  Assert ($shown -match '保存失败') "Save failure notice was overwritten: '$shown'."
+  Assert ($shown -match '磁盘只读') "Save failure reason missing: '$shown'."
+
+  Write-Output 'PASS: remove enqueues to background (not synchronous); ack clears svc/cards/panel; save failure notice survives.'
 } finally { $win.Close(); $script:sync.wake.Dispose() }
 
 # ---- 2. runspace 侧 remove action 调 stop→Wait-Stopped→nssm remove confirm ----
 . (Join-Path $RepoRoot 'lib/poll.ps1')
 $worker=Start-FakePoll 1 'Stopped'
+# 声明「删完后服务已从 SCM 消失」——poll.ps1 的 remove 分支新增实证复核
+# （Test-ServiceGone），不置位会被判「服务仍存在」而报删除失败。
+$worker.Sync.serviceGone=$true
 try {
   Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Worker did not start.'
   $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='remove';e=1})
@@ -87,6 +107,28 @@ try {
   [void]$worker.Sync.queue.TryDequeue([ref]$ack)
   Assert ($ack -ne $null -and $ack.done -eq $true -and $ack.act -eq 'remove') "ack wrong: $ack"
   Assert ($ack.e -eq 1) "ack epoch mismatch: got $($ack.e)"
+  Assert ($ack.ok -eq $true) "Successful remove should report ok=`$true, got ok=$($ack.ok)."
   Assert ($worker.PowerShell.Streams.Error.Count -eq 0) 'Background errors present during remove.'
   Write-Output 'PASS: runspace remove action runs stop→Wait-Stopped→nssm remove confirm; ack carries done+act+epoch.'
 } finally { Close-FakePoll $worker }
+
+# ---- 3. nssm remove 谎报 0 时，必须按「删除失败」处理 ----
+# 实测（2026-10-05，NSSM 2.24-103-gdee49fc）：提权不足或服务不存在时，nssm remove/install
+# 打印「Administrator access is needed to ...」却返回 exit code 0。只信退出码会把删除失败
+# 判成功——UI 清掉卡片并落盘，而服务仍在：用户以为删了、配置却丢了。
+# 故 poll.ps1 的 remove 分支以「服务是否真的从 SCM 消失」复核（Test-ServiceGone）。
+# 修前红：这段会拿到 ok=$true（缺陷漏过）；修后绿：ok=$false。
+$worker=Start-FakePoll 1 'Stopped' 0 $null 0
+# 不置 serviceGone —— sc.exe query 返回 0（服务仍存在），nssm 又谎报 0，两步都"成功"
+try {
+  Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Worker did not start.'
+  $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='remove';e=1})
+  [void]$worker.Sync.wake.Set()
+  $ack = Wait-FakePollAck $worker
+  Assert ($null -ne $ack) 'Remove command produced no ack.'
+  Assert ($ack.ok -eq $false) "nssm 谎报 0 但服务仍在，应判删除失败（ok=`$false）；实际 ok=$($ack.ok)。"
+  $msgs=@($worker.Sync.msg.ToArray())
+  Assert ($msgs.Count -ge 1) '删除失败应向 msg 队列反馈原因。'
+  Assert (($msgs -join ' ') -match '删除失败') "msg 应含「删除失败」：$($msgs -join ' | ')"
+} finally { Close-FakePoll $worker }
+Write-Output 'PASS: nssm remove reporting exit 0 while the service survives is treated as a failure.'
