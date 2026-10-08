@@ -60,8 +60,10 @@ if (Test-Path -LiteralPath $script:configPath) {
     # 再加载 config」的将来顺序变动兜底；那时也不该带租约（Set-StatusMessage 定义在 util.ps1，
     # 本文件之前，此刻尚不可用）。
     # Load-Svc 尊重已设的 configWarning（util.ps1 不覆盖）。
-    $msg = "config.json 无效：$($_.Exception.Message)，用默认配置"
+    # 消息格式与 Load-Svc 的 `"services.json 无效：…"` 保持一致——弹框只加处置说明，
+    # 不再拼文件名或「用默认配置」（那两处在弹框文案里已有），否则会重复。
+    $msg = "config.json 无效：$($_.Exception.Message)"
     if (-not $script:configWarning) { $script:configWarning = $msg }
-    if ($script:statusBar) { $script:statusBar.Text = $msg }
+    if ($script:statusBar) { $script:statusBar.Text = "$msg，用默认配置" }
   }
 }

@@ -54,6 +54,13 @@ function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$
 # 序列本体在 svc-common.ps1 的 Invoke-ServiceRemove——那里与 poll.ps1 的 runspace 共享
 # 同一份文本，避免「两处各写一份、只改一边」的漂移。本函数只负责把失败**抛成异常**，
 # 供 UI/CLI 侧调用方（它们用 try/catch）。
+#
+# 【当前无生产调用方，保留是有意的】GUI 删除走 Show-Remove → 命令队列 → runspace 的
+# Invoke-ServiceRemove（异步，不阻塞 UI）；CLI 只有 -Add，没有 -Remove。本函数是
+# Install-NssmService 的对称出口，也是「同步删除、失败抛异常」这条契约的唯一实现——
+# CLI 将来加 -Remove 时要用它。留着的另一个作用：它是 Invoke-ServiceRemove 的直接
+# 单测入口（tests/test-add-svc.ps1）。**下次死代码扫描请勿再删**，除非同时撤掉
+# README / docs/PROJECT.md 的模块 API 登记。
 function Remove-NssmService([string]$n){
   $r = Invoke-ServiceRemove $n $script:nssm
   if(-not $r.ok){

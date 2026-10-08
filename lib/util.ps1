@@ -15,7 +15,11 @@
 
 # ---- 配置层（services.json 是 SSOT，services.example.json 是兜底）----
 # 兜底直接读仓里的示例清单，不在源码里再抄一份服务名（避免双源漂移）。
-$script:configWarning = $null
+# 【不要在此初始化 $script:configWarning】本文件在 config.ps1 **之后**加载（主脚本第 34 行
+# vs 模块加载区），config.json 损坏时 config.ps1 已把原因写进该变量；这里再赋 $null 会把它
+# 清空，主脚本末尾那句坏配置弹框（搜 configWarning 即可定位）就永远不触发。
+# 该赋值此前存在并造成过这个静默失效，2026-10-08 删除。Load-Svc 的 catch 是赋值不是读取，
+# 且用 `if (-not $script:configWarning)` 守卫，无需预设。
 
 function Read-SvcFile([string]$path){
   $j = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
@@ -30,13 +34,15 @@ function Read-SvcFile([string]$path){
 function Load-Svc {
   if (Test-Path $cfg) {
     try { return Read-SvcFile $cfg }
-    catch { $script:configWarning = $_.Exception.Message }
+    # 消息自带文件名：主脚本的弹框用中性前缀（configWarning 可能来自 config.json 或
+    # services.json，调用方无从判断），来源只能由写入方在这里讲清楚。
+    catch { $script:configWarning = "services.json 无效：$($_.Exception.Message)" }
   }
   # 兜底：services.json 缺失或损坏时读示例清单，让首次运行有内容可看
   $example = Join-Path (Split-Path $cfg -Parent) 'services.example.json'
   if (Test-Path $example) {
     try { return Read-SvcFile $example }
-    catch { if (-not $script:configWarning) { $script:configWarning = $_.Exception.Message } }
+    catch { if (-not $script:configWarning) { $script:configWarning = "services.example.json 无效：$($_.Exception.Message)" } }
   }
   [ordered]@{}
 }
@@ -240,5 +246,3 @@ function Show-SecurityCheck([string]$n){
   $msg = "$n`n`n路径: $path`n`n引号加固: $qTxt`n目录: $dir`n目录 ACL 过宽: $permissive"
   [System.Windows.MessageBox]::Show($msg,"$n 安全检查",'OK',$(if($quoted -and $permissive -eq '否'){'Information'}else{'Warning'})) | Out-Null
 }
-
-# ---- 安全检查（借鉴 PSSM：路径引号加固 + 目录 ACL 过宽）----

@@ -250,9 +250,12 @@ $timer.Add_Tick({
 })
 $timer.Start()
 
-# 坏 JSON 提示
+# 配置解析失败提示
+# configWarning 由 config.ps1（"config.json 无效：…"）或 Load-Svc（"services.json 无效：…"）
+# 写入，**消息自带文件名**——故此处只加「当前使用恢复配置」的处置说明，不再拼文件名前缀
+# （否则会显示成「配置文件无效：config.json 无效：…」这种重复）。
 if ($script:configWarning) {
-  [System.Windows.MessageBox]::Show("services.json 无效：$($script:configWarning)`n当前使用恢复配置，保存前请修复文件。",'配置错误','OK','Warning') | Out-Null
+  [System.Windows.MessageBox]::Show("$($script:configWarning)`n当前使用恢复配置，保存前请修复该文件。",'配置错误','OK','Warning') | Out-Null
 }
 
 # ---- 显示（Application.Run 等价）----
