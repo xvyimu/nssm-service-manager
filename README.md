@@ -4,7 +4,20 @@
 
 本地 Windows 服务的统一管理 GUI——PowerShell 7 + WPF，卡片式启停/健康探测/日志查看，零外部 npm 依赖。管 NSSM 服务（sc.exe / nssm.exe）。
 
+![演示](assets/demo.gif)
 ![主界面](assets/screenshot.png)
+
+## 为什么用它
+
+NSSM 本身是命令行工具。服务一多，日常启停、查状态、看日志全靠背命令——这个工具把你的 NSSM 服务收敛成一个窗口：
+
+- **一眼看全**——每张卡显示服务名、端口、健康圆点（绿=正常 / 橙=响应慢 / 红=无响应），六个服务一屏扫完，不用逐个 `sc query` 或开任务管理器
+- **点两下启停**——双击卡片切换启停，右键管重启/日志/删除；8 秒冷却 + 健康门闩挡住「刚停下来又点启动」这类误操作
+- **配置是清单不是代码**——`services.json` 一份 JSON 列出所有服务，换机器复制即用；CLI 也有增删入口（`-Add`），脚本和 agent 可以直接调用
+- **健康探测不靠猜**——端口 TCP + HTTP 两档并行探测：服务在但响应慢标「超时」，端口没监听标「无响应」
+- **安全默认**——删除服务要输入完整名称确认；新增服务时环境变量会做敏感键检测（`*_API_KEY` / `*_TOKEN` / `*SECRET` / `*PASSWORD` 命中会提示明文进注册表的风险）
+
+如果你的机器上跑着三五个 NSSM 服务，它值得替代「任务管理器 + 手敲命令」的组合。
 
 ## 快速开始
 
@@ -56,6 +69,7 @@ pwsh -NoProfile -File service-manager-gui.ps1
 | `scripts/set-service-params-acl.ps1` | 收紧 NSSM 服务 `Parameters` 注册表键 ACL（移除 `BUILTIN\Users` 读权限，见下） |
 | `tests/run-all.ps1` | 统一执行 PowerShell 语法检查和全部回归测试 |
 | `tests/make-screenshot.ps1` | 离屏渲染主窗口导出 `assets/screenshot.png` |
+| `tests/make-demo.ps1` | 离屏渲染 12 帧 PNG 序列，供 ffmpeg 合成 `assets/demo.gif` |
 | `logs/` | NSSM 服务运行日志（`.out.log` / `.err.log`，git 忽略） |
 
 ## 启动
@@ -100,14 +114,14 @@ Copy-Item services.example.json services.json
 
 示例清单（服务名/端口/面板/本体可全改）：
 
-| 服务 | 端口 | 面板 |
-|------|------|------|
-| MyAPI | 3000 | http://127.0.0.1:3000 |
-| RouterA | 20128 | http://127.0.0.1:20128/dashboard |
-| RouterB | 20129 | http://127.0.0.1:20129/dashboard |
-| ProxyA | 8317 | http://127.0.0.1:8317/management.html |
-| BuddyAPI | 7863 | http://127.0.0.1:7863/panel/ |
-| ServiceF | 9000 | http://127.0.0.1:9000/health |
+| 服务 | 端口 | 面板 | 本体 |
+|------|------|------|------|
+| MyAPI | 3000 | http://127.0.0.1:3000 | 独立部署 |
+| RouterA | 20128 | http://127.0.0.1:20128/dashboard | 独立部署 |
+| RouterB | 20129 | http://127.0.0.1:20129/dashboard | 独立部署 |
+| ProxyA | 8317 | http://127.0.0.1:8317/management.html | 独立部署 |
+| BuddyAPI | 7863 | http://127.0.0.1:7863/panel/ | 独立部署 |
+| ServiceF | 9000 | http://127.0.0.1:9000/health | 独立部署 |
 
 > **环境变量与注册表密钥暴露面：** NSSM 把 `AppEnvironmentExtra` 明文写入注册表 `HKLM\SYSTEM\CurrentControlSet\Services\<服务名>\Parameters\AppEnvironmentExtra`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出你填进去的环境变量明文。**凡含密钥、令牌、口令的变量（如 `*_API_KEY` / `*_TOKEN` / `*SECRET` / `*PASSWORD` / `*ACCESS_KEY` / `*CREDENTIAL` / `*PRIVATE_KEY` / `*PASSPHRASE`），不要直接填进环境变量框**——改为让服务本体从独立的密钥文件（仅 Administrators+SYSTEM 可读）读取，文件路径不进注册表。GUI 与 CLI 在你填写此类键名时会提示这一点；`*_FILE` 后缀仅在值看起来像路径时才跳过提示，否则照样警告（键名后缀不等于值就是路径）。彻底收紧注册表键 ACL 用 `scripts/set-service-params-acl.ps1`（见下）。
 
@@ -204,6 +218,13 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 ```powershell
 pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 20 项 PowerShell 回归
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
+pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-tmp/，已 git 忽略）
+```
+
+演示 GIF 由 `make-demo.ps1` 离屏渲染 12 帧 PNG 后，用 ffmpeg 合成：
+
+```bash
+ffmpeg -y -framerate 3 -i .demo-tmp/frame-%02d.png -vf "scale=640:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=4" assets/demo.gif
 ```
 
 `run-all.ps1` 先解析全部 PowerShell 文件，再执行 VBS 编译与 UAC 守卫断言、3×2 布局与缩放、卡片启停门闩、翻页冷却、卡片缓存清理与重建、过渡态竞态保护、后台命令唤醒、菜单和 CLI 注册参数测试。NSSM、服务启停、配置保存及菜单的外部操作采用替身，不会注册测试服务或改动 `services.json`。真实 UAC、系统 Mica 效果与 NSSM 服务生命周期需在本机交互验证。
@@ -235,6 +256,17 @@ CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）。
 `launch.vbs` 必须保持纯 ASCII：Windows Script Host 按系统 ANSI 代码页读取，UTF-8 中文注释在部分系统会触发 `800A0400` 编译错误。桌面快捷方式与非管理员 PowerShell 入口共用这个启动器。
 
 `logs/gui-crash.log` 记录管理员状态、WPF 加载、窗口渲染和退出阶段，不记录 CLI 参数或环境变量。只有启动器退出码为 0 不能证明窗口已出现，应检查 `Window content rendered` 或实际窗口。
+
+## Roadmap
+
+这个项目目前是作者自用工具顺手开源。下面按「最可能先做」排序，不承诺时间：
+
+- **健康状态持久化**——目前刷新即弃，服务挂了只看当前页；计划落一份状态历史，打开即见「最近一次异常是什么时候」
+- **分页再宽松**——`PerPage` 已经是可调常量，但服务超过一页时的跨页过滤/排序还欠
+- **服务配置差异对比**——`services.json` 换机器迁移时，一键 diff 出哪些服务/参数不一致
+- **Web 只读视图**——局域网里不动 GUI 也能看各服务健康（NSSM 常驻的机器一般不接显示器）
+
+想提新方向，用仓库里的「功能请求」模板开 issue；修 bug 用「Bug 报告」模板（见 `.github/ISSUE_TEMPLATE/`）。
 
 ## 许可
 

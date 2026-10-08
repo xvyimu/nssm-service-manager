@@ -11,5 +11,8 @@ config.json
 *.key
 *-key
 
+# 演示 GIF 帧序列临时目录（make-demo.ps1 产物，合成完即删）
+.demo-tmp/
+
 # PowerShell
 *.ps1.bak
