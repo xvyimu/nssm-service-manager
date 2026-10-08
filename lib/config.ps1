@@ -8,16 +8,19 @@ $script:config = [ordered]@{
   HttpTimeoutMs       = 3000     # HTTP 探测超时（poll.ps1 共享 HttpClient.Timeout，本地面板冷启动宽限）
   CrashLogMaxBytes    = 524288   # gui-crash.log 轮转阈值（512 KiB，超则挪成 .1）
   ToggleCooldownMs    = 8000     # 双击启停冷却（card.ps1 Invoke-CardToggle）
-  ToggleTimeoutMs     = 30000    # 卡片过渡态超时逃生（card.ps1 Test-TransitionTimedOut）——
+  ToggleTimeoutMs     = 45000    # 卡片过渡态超时逃生（card.ps1 Test-TransitionTimedOut）——
                                  # 命令回执丢失（后台异常退出/命令未入队）时，过渡态不能永久卡住：
                                  # 超时后按到达的探测值收敛并解封按钮。取值须大于正常路径的最长耗时，
                                  # 否则会在正常失败流程里抢先触发。
                                  # 已实测：删除路径 stop + Wait-Stopped ≤ 6s（WaitStoppedTimeoutMs）。
                                  # 已实测：SCM 的 ServicesPipeTimeout 本机注册表未设 = 内置默认 **30000ms**
-                                 # （HKLM\SYSTEM\CurrentControlSet\Control），与本默认值恰好相等——
-                                 # 若启动失败路径真的压满该超时（回落 sc.exe start 走 SCM 同步管道），
-                                 # 逃生会在正常流程里误触发。该路径耗时**未真机实测**（需建服务，见
-                                 # tests/probe-1053-timing.ps1，管理员跑）。实测确认前保持原值不动。
+                                 # （HKLM\SYSTEM\CurrentControlSet\Control）。原默认值 30000 与它恰好
+                                 # 相等——启动失败回落 sc.exe start 走 SCM 同步管道时，管道压满 30s
+                                 # 与逃生阈值同一时刻触发，卡片会先被探测值收敛、再被迟到回执改一次，
+                                 # 表现为状态抖动。故抬到 45000（+15s 余量），让回执先到。
+                                 # **该路径耗时仍未真机实测**（需建服务，见 tests/probe-1053-timing.ps1，
+                                 # 管理员跑）：45000 是按「管道上限 + 余量」推的，不是量出来的。实测后
+                                 # 若确认真实耗时远小于 30s，可回落；若接近 30s，保持本值并考虑再放大。
   WaitStoppedTimeoutMs = 6000    # 重启/删除前轮询 Stopped 的上限（add-svc.ps1 / poll.ps1 Wait-Stopped）
   LogKeepCount        = 10       # 轮转日志保留份数（util.ps1 Remove-RotatedLogs）——
                                  # 口径是**跨服务全局**按修改时间倒序的前 N 份豁免，不是每服务各 N 份

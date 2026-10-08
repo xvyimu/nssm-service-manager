@@ -117,7 +117,7 @@ Copy-Item services.example.json services.json
 sc.exe stop TTSShim
 nssm remove TTSShim confirm
 
-# 2. 删除本机 shim 目录（已 git 忽略，不会影响仓库）
+# 2. 删除本机 shim 目录（已不在版本控制里，删它不影响仓库）
 Remove-Item -Recurse -Force D:\service-manager\st-tts-shim
 
 # 3. 从 services.json 删掉 TTSShim 条目（或直接用 GUI「添加」重建你要的新服务）
@@ -158,7 +158,7 @@ Copy-Item config.example.json config.json
 | `HttpTimeoutMs` | 3000 | HTTP 探测超时（`poll.ps1` 共享 HttpClient.Timeout） |
 | `CrashLogMaxBytes` | 524288 | `gui-crash.log` 轮转阈值（512 KiB，超则挪成 `.1`） |
 | `ToggleCooldownMs` | 8000 | 双击启停冷却（`card.ps1` Invoke-CardToggle） |
-| `ToggleTimeoutMs` | 30000 | 卡片过渡态超时逃生（`card.ps1` Test-TransitionTimedOut）：命令回执丢失时，超时后按到达的探测值收敛并解封按钮，防永久卡在「启动中/停止中/删除中」。须大于正常路径最长耗时，否则会误触发 |
+| `ToggleTimeoutMs` | 45000 | 卡片过渡态超时逃生（`card.ps1` Test-TransitionTimedOut）：命令回执丢失时，超时后按到达的探测值收敛并解封按钮，防永久卡在「启动中/停止中/删除中」。须大于正常路径最长耗时，否则会误触发——启动失败回落 `sc.exe start` 走 SCM 同步管道，上限 `ServicesPipeTimeout`（本机未设 = 默认 30000ms），故取值须留出余量 |
 | `WaitStoppedTimeoutMs` | 6000 | 重启/删除前轮询 Stopped 的上限（`lib/svc-common.ps1` 的 `Wait-Stopped`，UI 线程与 runspace 共用一份） |
 | `LogKeepCount` | 10 | 轮转日志保留份数（`util.ps1` Remove-RotatedLogs）。口径是**跨服务全局**按修改时间倒序的前 N 份豁免，不是每服务各 N 份 |
 | `LogKeepDays` | 14 | 轮转日志保留天数：删除须同时满足「不在全局前 N 份」且「早于 N 天」，故 14 天内高频轮转的档一份都不删（保留份数上限只在跨过天数后生效） |
@@ -220,7 +220,7 @@ pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/scree
 
 `test-remove-e2e.ps1` 把删除流程的**两半接起来**跑：`test-remove-async.ps1` 分别测了「runspace 产出什么回执」与「UI 拿到回执怎么处理」，中间那一跳（worker 的回执真的落进 UI 队列）此前没被验过。本测试让 UI 的命令/结果/消息队列直接指向 worker 的，于是真 runspace 的回执由真 UI tick 消费，成功与失败两个方向都断言到用户可见结果（成功清卡片并落盘；失败回滚卡片、保留服务、状态栏给原因且带租约）。
 
-`tests/probe-1053-timing.ps1` 是**手动探针**（需管理员，不在 `run-all` 里）：注册一个 exe 路径故意写错的服务，实测启动失败路径的真实耗时，用于判定 `ToggleTimeoutMs` 是否够大（SCM 的 `ServicesPipeTimeout` 本机未设 = 默认 30000ms，与该默认值恰好相等，故这条需要真机数字才能定）。
+`tests/probe-1053-timing.ps1` 是**手动探针**（需管理员，不在 `run-all` 里）：注册一个 exe 路径故意写错的服务，实测启动失败路径的真实耗时，用于判定 `ToggleTimeoutMs` 是否够大。SCM 的 `ServicesPipeTimeout` 本机未设 = 默认 30000ms，而启动失败回落 `sc.exe start` 走的正是这条同步管道——故 `ToggleTimeoutMs` 已从 30000 抬到 45000 留余量，但**该路径耗时仍未真机实测**，跑过探针才能确认这个值够不够。
 
 `test-probe-timeout-scope.ps1` 守并行探测块的 runspace 作用域：`ForEach-Object -Parallel` 开新 runspace，不继承父作用域变量，超时变量必须经 `$using:` 传入。裸用 `$tcpMs` 会让子 runspace 取到 `$null`，`WaitOne($null,$false)` 等价 `WaitOne(0)`，TCP 握手没完成就判「无响应」——该状态在 `card.ps1` 落到红色分支，于是「启停一个服务，别的运行中服务变红」。测试两路：静态扫并行块裸引用（剥注释后不误报），行为段用真监听端口 + 真 poll 脚本块端到端验证。`test-parallel-probe.ps1` 探的是未监听端口，0ms 与 200ms 结果都是「无响应」，对这类 bug 天然免疫，故单开一份。
 

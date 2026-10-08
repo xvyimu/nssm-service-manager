@@ -4,7 +4,7 @@
   "HttpTimeoutMs":        3000,
   "CrashLogMaxBytes":     524288,
   "ToggleCooldownMs":     8000,
-  "ToggleTimeoutMs":      30000,
+  "ToggleTimeoutMs":      45000,
   "WaitStoppedTimeoutMs": 6000,
   "LogKeepCount":         10,
   "LogKeepDays":          14,

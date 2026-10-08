@@ -67,24 +67,24 @@ function Invoke-CardToggle($card, [string]$source='Button') {
   $detailed=$source -eq 'DoubleClick'
 
   if ($state -in @('启动中','停止中')) {
-    $script:statusBar.Text=if ($detailed) { "$name 正在切换中，请稍候" } else { "$name 正在切换中" }
+    Set-StatusMessage $(if ($detailed) { "$name 正在切换中，请稍候" } else { "$name 正在切换中" })
     return
   }
   $elapsed=($now-$card.LastToggle).TotalMilliseconds
   if ($elapsed -lt $script:TOGGLE_COOLDOWN_MS) {
     $remaining=[math]::Ceiling(($script:TOGGLE_COOLDOWN_MS-$elapsed)/1000)
     $suffix=if ($detailed) { ' 再操作' } else { '' }
-    $script:statusBar.Text="$name 请等待 ${remaining}s$suffix"
+    Set-StatusMessage "$name 请等待 ${remaining}s$suffix"
     return
   }
   if ($state -notin @('运行中','已停止')) {
-    $script:statusBar.Text="$name 状态尚未就绪"
+    Set-StatusMessage "$name 状态尚未就绪"
     return
   }
   $action=if ($state -eq '运行中') { 'stop' } else { 'start' }
   if ($action -eq 'stop' -and -not $card.ReadyToToggle) {
     $detail=if ($detailed) { '（健康非正常）' } else { '' }
-    $script:statusBar.Text="$name 服务未就绪$detail，暂不能关闭"
+    Set-StatusMessage "$name 服务未就绪$detail，暂不能关闭"
     return
   }
 
@@ -94,7 +94,7 @@ function Invoke-CardToggle($card, [string]$source='Button') {
   $state = if ($action -eq 'stop') { '停止中' } else { '启动中' }
   Set-CardTransition $card $state 0 $now
   $card.PendingEpoch = (Send-ServiceCommand $name $action)
-  $script:statusBar.Text="$name $state..."
+  Set-StatusMessage "$name $state..."
 }
 
 function New-Card([string]$name, $info){

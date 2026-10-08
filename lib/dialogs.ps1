@@ -45,7 +45,7 @@ function Show-Remove([string]$n, $owner){
 
   $del.Add_Click({
     $script:lastActionAt=[datetime]::Now
-    $script:statusBar.Text="正在删除 $n ..."
+    Set-StatusMessage "正在删除 $n ..."
     # 删除走后台命令队列（act=remove），避免 UI 线程同步等 stop+Wait-Stopped+remove 冻结界面。
     # 真正的 stop/wait/remove 在 runspace 里执行；这里只关弹窗，回执由 DispatcherTimer 处理。
     $card = $script:cards[$n]

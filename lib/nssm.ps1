@@ -50,16 +50,14 @@ function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$
   }
 }
 
+# 删除 NSSM 服务（stop → 等 Stopped → nssm remove confirm → 实证复核）。
+# 序列本体在 svc-common.ps1 的 Invoke-ServiceRemove——那里与 poll.ps1 的 runspace 共享
+# 同一份文本，避免「两处各写一份、只改一边」的漂移。本函数只负责把失败**抛成异常**，
+# 供 UI/CLI 侧调用方（它们用 try/catch）。
 function Remove-NssmService([string]$n){
-  sc.exe stop $n 2>&1 | Out-Null
-  # stop 失败不阻断（服务可能已停），等 Stopped 再删，避免删一个还在跑的服务
-  [void](Wait-Stopped $n)
-  $o=& $script:nssm remove $n confirm 2>&1
-  if($LASTEXITCODE -ne 0){ throw "NSSM remove 失败($LASTEXITCODE): $($o -join ' ')" }
-  # 退出码不可信（见 svc-common.ps1 Test-ServiceGone 的实测）：以服务是否真消失为准，
-  # 否则「删失败」会被当成成功，调用方接着把配置里这条删掉，而服务还在。
-  if(-not (Test-ServiceGone $n)){
-    $why = if(($o -join ' ') -match 'Administrator access'){ '需要管理员权限' } else { '服务仍存在' }
-    throw "NSSM remove 未生效：$why"
+  $r = Invoke-ServiceRemove $n $script:nssm
+  if(-not $r.ok){
+    if($r.exitCode -ne 0){ throw "NSSM remove 失败($($r.exitCode)): $($r.detail)" }
+    throw "NSSM remove 未生效：$($r.why)"
   }
 }

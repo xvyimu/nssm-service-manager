@@ -30,34 +30,9 @@ $sync.probeIntervalMs = $probeIntervalMs; $sync.probeIdleMs = $probeIdleMs
 $sync.probeThrottleLimit = $probeThrottle
 
 # sc.exe 不抛异常，只靠 $LASTEXITCODE；包装成 helper，失败时反馈到 UI 状态栏
-# 常见退出码映射（发现 9）：1056=已在运行 / 1062=未启动 / 1060=未安装 / 1051=禁止启动
-# 5=拒绝访问：非管理员调 sc.exe start <已运行服务> 实测返回 5（不是 1056）——
-# 管理员下才返回 1056；两条路径都给中文文案，避免非管理员看到「错误码 5」。
-function Convert-ScExitCode([int]$code){
-  switch ($code) {
-    0      { '' }
-    1056   { '已在运行' }
-    1062   { '未启动' }
-    1060   { '服务未安装' }
-    1051   { '禁止启动（禁用或只读）' }
-    1053   { '服务进程无法启动' }
-    1058   { '服务被禁用' }
-    1067   { '进程意外退出' }
-    1072   { '服务已被标记为删除' }
-    5      { '拒绝访问（可能非管理员）' }
-    default { "错误码 $code" }
-  }
-}
-# ServiceController.Status → 中文状态（单一映射源，避免兜底分支缩水版漂移）
-function Convert-ServiceStatus([string]$s){
-  switch ($s) {
-    'Stopped'      { '已停止' }
-    'StartPending'  { '启动中' }
-    'StopPending'   { '停止中' }
-    'Running'       { '运行中' }
-    default         { '未知' }
-  }
-}
+# 退出码映射与状态映射已移到 lib/svc-common.ps1（本文件头部把它的文本前置进 runspace，
+# 故此处仍可用）；移出去是因为 UI 线程与 CLI 也要同一份映射，而 here-string 里的函数
+# 不进 UI 作用域。
 function Invoke-Sc([string]$verb,[string]$n,[string]$fail){
   sc.exe $verb $n 2>&1 | Out-Null
   if($LASTEXITCODE -ne 0){
@@ -120,23 +95,18 @@ function Invoke-PendingCommands {
         $ok=Invoke-ServiceStart $n '重启后启动失败'
       }
       'remove' {
-        # 删除走后台：stop → Wait-Stopped ≤6s → nssm remove confirm → 回执带 done=remove
+        # 删除走后台：stop → Wait-Stopped ≤6s → nssm remove confirm → 实证复核 → 回执带 done=remove
         # UI 侧（Show-Remove 的 del_Click）入队后立即关弹窗，结果由 ack 回执处理。
+        # 序列本体在 svc-common.ps1 的 Invoke-ServiceRemove（本文件头部前置其文本），
+        # 与 nssm.ps1 的 Remove-NssmService 共用同一份——原先两处各写一份，
+        # 复核逻辑只改一侧就会漂移（例如有人简化这里，以为 nssm.ps1 有 canonical 实现）。
         # $nssm 在 runspace 里不可见——NSSM 路径经 $sync.nssm 从 UI 传入。
         $ok=$true
         try {
-          sc.exe stop $n 2>&1 | Out-Null
-          [void](Wait-Stopped $n)
-          $o=& $sync.nssm remove $n confirm 2>&1
-          # nssm 的退出码**不可信**：实测（2026-10-05，NSSM 2.24-103）提权不足或服务不存在时
-          # 它打印「Administrator access is needed to remove a service.」却返回 0。
-          # 只信退出码，删除失败也会被判成功 → UI 清掉卡片并落盘，而服务仍在：用户以为删了、
-          # 配置却丢了。故以**服务是否真的消失**作为最终判据（sc.exe query 返回 1060 才对）。
-          if($LASTEXITCODE -ne 0){ $sync.msg.Enqueue("$n 删除失败($LASTEXITCODE)"); $ok=$false }
-          if($ok -and -not (Test-ServiceGone $n)){
-            $why = if([string]$o -match 'Administrator access'){ '需要管理员权限' } else { '服务仍存在' }
-            $sync.msg.Enqueue("$n 删除失败：$why")
-            $ok=$false
+          $r = Invoke-ServiceRemove $n $sync.nssm
+          if(-not $r.ok){
+            $msg = if($r.exitCode -ne 0){ "$n 删除失败($($r.exitCode))" } else { "$n 删除失败：$($r.why)" }
+            $sync.msg.Enqueue($msg); $ok=$false
           }
         } catch { $sync.msg.Enqueue("$n 删除失败: $($_.Exception.Message)"); $ok=$false }
       }
