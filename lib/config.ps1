@@ -59,9 +59,13 @@ if (Test-Path -LiteralPath $script:configPath) {
     # 而 $script:statusBar 要到 New-MainWindow（223 行）才建。保留它是给「调用方先建窗口
     # 再加载 config」的将来顺序变动兜底；那时也不该带租约（Set-StatusMessage 定义在 util.ps1，
     # 本文件之前，此刻尚不可用）。
-    # Load-Svc 尊重已设的 configWarning（util.ps1 不覆盖）。
-    # 消息格式与 Load-Svc 的 `"services.json 无效：…"` 保持一致——弹框只加处置说明，
-    # 不再拼文件名或「用默认配置」（那两处在弹框文案里已有），否则会重复。
+    # 消息格式与 Load-Svc 的 `"services.json 无效：…"` 统一为 `<文件名> 无效：<原因>`，
+    # 因为 configWarning 可能来自本文件（config.json）或 Load-Svc（services.json），
+    # 弹框判断不了来源，故文件名只能由写入方带。
+    # 本变量本身不带处置语：弹框会在其后补「当前使用恢复配置…」；statusBar 那条没有
+    # 弹框的第二行，所以自己补「，用默认配置」。
+    # 注：Load-Svc 的 services.json 分支是无条件覆盖本变量（util.ps1:39），只有读示例
+    # 清单的兜底分支带守卫——两份都坏时，用户看到的是 services.json 那条。
     $msg = "config.json 无效：$($_.Exception.Message)"
     if (-not $script:configWarning) { $script:configWarning = $msg }
     if ($script:statusBar) { $script:statusBar.Text = "$msg，用默认配置" }

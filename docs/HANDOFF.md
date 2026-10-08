@@ -281,8 +281,9 @@ backup-guard 只碰 `~/.claude`。故**不做默认迁移**。
 
 - `D:\service-manager\lib\card.ps1` —— P0-1 的两处 `Start-Process`（第 95、134 行）。
 - `D:\service-manager\service-manager-gui.ps1` —— P0-1 的 Dispatcher handler 落点（第 118 行后）；P0-2 的 `$sync` 注入（第 141 行）。
-- `D:\service-manager\lib\poll.ps1` —— P0-2 的 `Invoke-PendingCommands` / `Invoke-Sc` / `Convert-ScExitCode`；P1 的轮询周期。
-- `D:\service-manager\lib\util.ps1` —— P0-1 的 `Open-PanelUrl` 落点；P1 的 `Remove-RotatedLogs` 落点；`Get-LogFiles` 的轮转档识别可复用。
+- `D:\service-manager\lib\poll.ps1` —— P0-2 的 `Invoke-PendingCommands` / `Invoke-Sc`；P1 的轮询周期。
+- `D:\service-manager\lib\svc-common.ps1` —— 退出码/状态中文映射（`Convert-ScExitCode` / `Convert-ServiceStatus`）、删除序列（`Invoke-ServiceRemove`）、实证复核谓词。**原先散在 `poll.ps1` 的 here-string 与 `nssm.ps1` 里，2026-10-08 起统一到本文件**——here-string 里的定义只进 runspace，UI 线程与 CLI 取不到。
+- `D:\service-manager\lib\util.ps1` —— P0-1 的 `Open-PanelUrl` 落点；P1 的 `Remove-RotatedLogs` 落点；`Get-LogFiles` 的轮转档识别可复用（现已移 `lib/logview.ps1`）。
 - `D:\service-manager\lib\config.ps1` —— P2 / P4 的收口键落点。
 - `D:\service-manager\tests\run-all.ps1` —— 回归入口，改完必跑（解析检查 + 20 项）。
 - `D:\service-manager\docs\PROJECT.md` —— 架构与设计决策 SSOT，动结构时同步。

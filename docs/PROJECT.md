@@ -34,9 +34,10 @@ service-manager-gui.ps1（主入口：CLI 分支 + 提权 + 模块加载 + 窗�
 ├─ lib/nssm.ps1       NSSM 操作：nssm-set / Install-NssmService / Remove-NssmService
 ├─ lib/logview.ps1    日志查看器：Get-LogFiles（当前+轮转枚举）+ Show-Log（WPF 窗口）
 ├─ lib/dialogs.ps1    GUI 对话框：Show-Add（添加服务）+ Show-Remove（删除确认）
-├─ lib/svc-common.ps1 UI 与 runspace 共用的 Wait-Stopped（只此一份）
+├─ lib/svc-common.ps1 UI 与 runspace 共用的服务操作原语：Wait-Stopped、退出码/状态中文映射
+│                     （Convert-ScExitCode / Convert-ServiceStatus）、删除序列（Invoke-ServiceRemove）、
+│                     删除/注册的实证复核（Test-ServiceGone / Test-ServicePresent）——均只此一份
 ├─ lib/poll.ps1       后台 runspace 脚本块：Get-Service 批量 + TcpClient + HttpClient 并行探测
-│                     + sc.exe 退出码映射
 ├─ lib/add-svc.ps1    CLI 入口 Add-SvcFromCli（-Add 分支用）
 ├─ lib/tray.ps1       可选托盘（纯函数 Get-CloseAction/Get-MinimizeAction + 惰性 Initialize-Tray）
 ├─ lib/card.ps1       卡片构建 + 双击防抖 + 过渡态保护（Set-CardTransition）+ 右键菜单
@@ -93,9 +94,14 @@ UI DispatcherTimer → ack 分支 → 解封按钮 + 冷却
 
 `Get-Service` 拉 NetTCPIP CIM provider（常驻 +10MB）、`TcpClient` 可能阻塞、`HttpClient` 可能超时 3 秒——任何一个放 UI 线程都会冻结界面。全部挪到后台 runspace，结果经 ConcurrentQueue 回 UI 侧 DispatcherTimer 取。
 
-### 2. Wait-Stopped 只此一份
+### 2. svc-common.ps1 只此一份
 
-原 `poll.ps1` 的 runspace 字符串里一份 `Wait-Stopped`、`add-svc.ps1` 里一份，靠「SYNC: 两处同改」注释人工同步。抽到 `lib/svc-common.ps1`：`poll.ps1` 构造 runspace 时把本文件内容前置进脚本字符串，`add-svc.ps1` 直接 dot-source——两边引用同一份文本。
+原 `poll.ps1` 的 runspace 字符串里一份 `Wait-Stopped`、`add-svc.ps1` 里一份，靠「SYNC: 两处同改」注释人工同步。抽到 `lib/svc-common.ps1`：`poll.ps1` 构造 runspace 时把本文件内容前置进脚本字符串，`add-svc.ps1` / `nssm.ps1` 直接 dot-source——引用同一份文本。
+
+同一处理随后扩到另外三处，动机相同（都是「两处各写一份、只改一边就会漂移」）：
+- **退出码/状态中文映射**（`Convert-ScExitCode` / `Convert-ServiceStatus`）：原在 `poll.ps1` 的 here-string 里，只进 runspace——UI 线程与 CLI 看不到，导致同一个退出码在 GUI 给中文、在 CLI 给裸数字。移入本文件后三个作用域都可见。
+- **删除序列**（`Invoke-ServiceRemove`）：stop → 等 Stopped → `nssm remove confirm` → 实证复核。原在 `nssm.ps1` 与 `poll.ps1` 各写一份。抽出来只共用「判定」，不共用「呈现」——UI/CLI 侧要抛异常、runspace 侧要入 msg 队列，由调用方决定。
+- **删除/注册的实证复核**（`Test-ServiceGone` / `Test-ServicePresent`，底层 `Get-ServiceQueryCode`）：因为 NSSM 的 remove/install 失败也返回 0（见 `HANDOFF.md` 实测），成败必须按「服务是否真的消失/出现」判，不能信退出码。
 
 ### 3. Save-Svc 全量写回
 
@@ -103,7 +109,7 @@ UI DispatcherTimer → ack 分支 → 解封按钮 + 冷却
 
 ### 4. 配置层示例+实配分离
 
-`services.json` / `config.json` 每台机器自定，已 git 忽略；`services.example.json` / `config.example.json` 进仓保证克隆即跑。`Load-Svc` 回落链：`services.json` → `services.example.json` → 空清单。前者缺失或 JSON 解析失败时读示例清单（并在状态栏提示），首次运行不会是一片空白。
+`services.json` / `config.json` 每台机器自定，已 git 忽略；`services.example.json` / `config.example.json` 进仓保证克隆即跑。`Load-Svc` 回落链：`services.json` → `services.example.json` → 空清单。前者缺失或 JSON 解析失败时读示例清单（并在窗口启动后弹框提示原因，见主脚本末尾对 `configWarning` 的处理），首次运行不会是一片空白。
 
 ### 5. 单实例 Mutex 进程级
 
