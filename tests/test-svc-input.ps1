@@ -79,6 +79,14 @@ try {
   # 扩展键名清单：ACCESS_KEY / CREDENTIAL / PRIVATE_KEY / PASSPHRASE / PWD
   $hits = Find-SensitiveEnvKeys @('AWS_ACCESS_KEY_ID=AKIA...','MY_CREDENTIAL=user:pass','PRIVATE_KEY=-----BEGIN','JWT_PASSPHRASE=abc','DB_PWD=secret')
   Assert (($hits -join '|') -eq 'AWS_ACCESS_KEY_ID|MY_CREDENTIAL|PRIVATE_KEY|JWT_PASSPHRASE|DB_PWD') "expected expanded patterns, got $($hits -join '|')"
+  # 无下划线 / 独立 PASS / 常见凭证后缀形态（S3：此前漏报）
+  # APIKEY/PRIVATEKEY 不带下划线；DB_PASS/REDIS_PASS 有 PASS 无 PASSWORD/PWD；
+  # *_AUTH / *_SALT / SIGNING_KEY / *_PAT / *_WEBHOOK 是常见凭证名。
+  $hits = Find-SensitiveEnvKeys @('APIKEY=sk-x','PRIVATEKEY=-----BEGIN','DB_PASS=p','REDIS_PASS=r','MY_AUTH=1','DB_SALT=s','JWT_SIGNING_KEY=k','GH_PAT=p','SLACK_WEBHOOK=https://x')
+  Assert (($hits -join '|') -eq 'APIKEY|PRIVATEKEY|DB_PASS|REDIS_PASS|MY_AUTH|DB_SALT|JWT_SIGNING_KEY|GH_PAT|SLACK_WEBHOOK') "expected S3-expanded patterns, got $($hits -join '|')"
+  # 反例：不得误报 MONKEY / COMPASS / BYPASS / PASSENGER（含 PASS 子串但不是凭证）
+  $hits = Find-SensitiveEnvKeys @('MONKEY=1','COMPASS=2','BYPASS=3','PASSENGER=4','PATH=/usr','LATEST=5')
+  Assert ($hits.Count -eq 0) "普通词不应误报为敏感键：$($hits -join '|')"
   # 空/空壳入参
   Assert ((Find-SensitiveEnvKeys @()).Count -eq 0) 'empty pair list should yield no hits'
   Assert ((Find-SensitiveEnvKeys $null).Count -eq 0) 'null should yield no hits'

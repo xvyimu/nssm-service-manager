@@ -31,3 +31,33 @@ foreach ($c in $cases) {
   }
 }
 Write-Output 'PASS: Resolve-ServiceExeDir handles empty, bare, simple, quoted, spaced, args, UNC, unclosed-quote, slash-normalized, and whitespace cases without throwing.'
+
+# ---- Test-DirAclPermissive：目录 ACL 过宽判定（Show-SecurityCheck 的 ACL 判定此前零覆盖）----
+# 造假的 ACL 对象（只需 .Access 属性，每项含 IdentityReference.Value 与 FileSystemRights），
+# 直测真函数，不复制逻辑。
+function Assert-Acl($got, [string]$expected, [string]$message) {
+  if ($got -ne $expected) { throw "$message : got '$got', expected '$expected'" }
+}
+function New-FakeAce([string]$id, [string]$rights) {
+  [pscustomobject]@{ IdentityReference=[pscustomobject]@{ Value=$id }; FileSystemRights=$rights }
+}
+function New-FakeAcl([object[]]$aces) { [pscustomobject]@{ Access=$aces } }
+
+# Users + Write → 过宽
+Assert-Acl (Test-DirAclPermissive (New-FakeAcl @(New-FakeAce 'BUILTIN\Users' 'Write'))) '是' 'Users+Write should be permissive'
+# Everyone + Modify → 过宽
+Assert-Acl (Test-DirAclPermissive (New-FakeAcl @(New-FakeAce 'Everyone' 'Modify'))) '是' 'Everyone+Modify should be permissive'
+# Users + FullControl → 过宽
+Assert-Acl (Test-DirAclPermissive (New-FakeAcl @(New-FakeAce 'Users' 'FullControl'))) '是' 'Users+FullControl should be permissive'
+# Users 只有 Read → 不过宽（关键：不能只看主体，要看权限）
+Assert-Acl (Test-DirAclPermissive (New-FakeAcl @(New-FakeAce 'BUILTIN\Users' 'ReadAndExecute'))) '否' 'Users+Read must NOT be permissive'
+# 只有 Administrators → 不过宽
+Assert-Acl (Test-DirAclPermissive (New-FakeAcl @(New-FakeAce 'BUILTIN\Administrators' 'FullControl'))) '否' 'Admins-only should not be permissive'
+# 多 ACE：Users 只读 + SYSTEM 全控 → 不过宽（Users 那条不满足权限判据）
+Assert-Acl (Test-DirAclPermissive (New-FakeAcl @(New-FakeAce 'BUILTIN\Users' 'Read'; New-FakeAce 'NT AUTHORITY\SYSTEM' 'FullControl'))) '否' 'mixed should key on rights, not presence'
+# 无 ACL（Get-Acl 失败）→ 未知
+Assert-Acl (Test-DirAclPermissive $null) '未知（无法读取 ACL）' 'null ACL should be 未知'
+# 空 ACE 列表 → 否
+Assert-Acl (Test-DirAclPermissive (New-FakeAcl @())) '否' 'empty ACL should be 否'
+
+Write-Output 'PASS: Test-DirAclPermissive keys on both principal and rights (Users+Write/Modify/FullControl wide; Users+Read not), handles null/empty ACL.'

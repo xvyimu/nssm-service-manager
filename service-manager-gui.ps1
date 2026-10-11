@@ -14,6 +14,9 @@ param(
 
 $root = $PSScriptRoot
 $cfg = "$root\services.json"
+# 单实例互斥名（GUI 占用 + CLI -Add 前检测是否已有 GUI 常驻）。定义在此供两处共用，
+# 避免 CLI 分支与 GUI 分支各写一份字符串而漂移。
+$script:mutexName = 'Local\service-manager-gui'
 # NSSM 探测：优先 env > Get-Command > scoop 安装路径，避免硬编码 scoop
 $script:nssm = $null
 if ($env:NSSM_PATH -and (Test-Path -LiteralPath $env:NSSM_PATH)) {
@@ -63,6 +66,14 @@ function Write-CrashLog([string]$m){
 if ($Add) {
   Add-Type -AssemblyName PresentationFramework  # MessageBox 需要
   . "$root\lib\util.ps1"
+  # CLI -Add 与 GUI 都全量写回 services.json（Save-Svc 无合并语义，见 PROJECT.md 决策 3）。
+  # 若 GUI 常驻，它的内存副本是启动时读的；CLI 加完服务后 GUI 下一次保存会把这条覆盖掉
+  # ——NSSM 服务仍在跑，但配置里没了、界面也不显示。故 GUI 在跑时拒绝 CLI 写入，让调用方
+  # 改用 GUI「添加」或先关 GUI。判据见 util.ps1 的 Test-GuiInstanceRunning。
+  if (Test-GuiInstanceRunning $script:mutexName) {
+    Write-Host "GUI 正在运行，请先关闭它再用 -Add（否则本次新增会被 GUI 的下一次保存覆盖）。"
+    exit 1
+  }
   $script:svc = Load-Svc
   # CLI 模式没有 runspace，但 add-svc.ps1 用 $sync.gate 加锁——给个本地锁
   $script:sync = @{ gate = [object]::new() }
@@ -98,7 +109,7 @@ Write-CrashLog 'WPF assemblies loaded'
 # 命中时要静默退出（不弹窗，重复双击是常见操作）；放在提权之后是为了只让管理员实例占锁。
 # AbandonedMutexException：前一个实例被任务管理器杀掉或崩溃时，OS 把所有权
 # 交给当前进程并抛此异常——不是失败，要当成"已获取"，否则第二个实例也起不来。
-$script:appMutex = [System.Threading.Mutex]::new($false, 'Local\service-manager-gui')
+$script:appMutex = [System.Threading.Mutex]::new($false, $script:mutexName)
 $owned = $false
 try { $owned = $script:appMutex.WaitOne(0) }
 catch [System.Threading.AbandonedMutexException] { $owned = $true }

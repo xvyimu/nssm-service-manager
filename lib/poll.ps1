@@ -84,6 +84,7 @@ function Invoke-PendingCommands {
   $ran=0
   while(-not $sync.stop -and $sync.cmd.TryDequeue([ref]$item)){
     $n=[string]$item.n; $act=[string]$item.act; $e=$item.e
+    $ok=$null  # 每次迭代重置：前一条命令的失败码不得泄漏给下一条（act 不在 switch 表里时兜底判成功）
     switch($act){
       'start'   { $ok=Invoke-ServiceStart $n }
       'stop'    { $ok=Invoke-Sc 'stop' $n '停止失败' }

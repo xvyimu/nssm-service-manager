@@ -44,18 +44,37 @@ function Test-TransitionTimedOut($card, [datetime]$now){
   ($now - $card.TransitionAt).TotalMilliseconds -ge $script:TOGGLE_TIMEOUT_MS
 }
 
-# 命令失败（回执 ok=false）时把卡片从过渡态放回原终态并解封按钮。
+# 命令失败（回执 ok=false）或过渡态超时逃生时，把卡片放回一个确定终态并解封按钮。
 # 不能复用 Invoke-CardToggle 的方向推导：失败时服务状态没变，要的是「回到原样」。
-function Set-CardRollback($card){
+# $toState / $toHealth 可选覆盖目标态：删除中回执丢失时服务实际状态不明，调用方传
+# '未知' 收敛（见 Update-CardData 的删除中分支与 util.ps1 的过渡态 sweep）——回滚到
+# 删除前的终态会让卡片显示「运行中」，但服务可能已被删掉。
+function Set-CardRollback($card, [string]$toState, [string]$toHealth){
   if (-not $card) { return }
-  $st=[string]$card.PrevST
-  if ([string]::IsNullOrEmpty($st) -or $st -in @('启动中','停止中','删除中','查询中')) { $st='未知' }
-  # 先落回原终态，再交给 Update-CardData 走常规渲染——否则过渡态守卫会按旧 ST 拦下这个值。
-  $card.ST=$st
+  if (-not $toState) {
+    $toState=[string]$card.PrevST
+    if ([string]::IsNullOrEmpty($toState) -or $toState -in @('启动中','停止中','删除中','查询中')) { $toState='未知' }
+  }
+  $h = if ($PSBoundParameters.ContainsKey('toHealth')) { $toHealth } else { $card.PrevH }
+  # 先落回目标终态，再交给 Update-CardData 走常规渲染——否则过渡态守卫会按旧 ST 拦下这个值。
+  $card.ST=$toState
   $card.PendingEpoch=0          # 清纪元：失败命令的回执/旧探测不再干扰
   $card.TransitionAt=[datetime]::MinValue
   $card.LastToggle=[datetime]::MinValue  # 清冷却：用户刚吃了失败，应能立刻重试
-  Update-CardData $card.SvcName $st $card.PrevH
+  Update-CardData $card.SvcName $toState $h
+}
+
+# 过渡态超时逃生：把一张超时的过渡态卡片放出来。返回是否放出了。
+# 由 Update-StatusTick 每帧无条件扫描调用——**不依赖队列生产者**：后台 runspace 若已死亡
+# （不再入队任何探测结果），Update-CardData 里的超时分支永远等不到触发点，卡片会永久卡在
+# 「启动中/停止中/删除中」——README 承诺的逃生在「后台死亡」这一前提下不成立。
+# 启动中/停止中：回到命令前的终态（服务状态没变）；删除中：收敛到「未知」（删除成败只有
+# remove 回执知道，丢失时状态不确定，不能按到达的探测值点亮按钮）。
+function Invoke-TransitionTimeoutEscape($card,[datetime]$now){
+  if (-not $card) { return $false }
+  if (-not (Test-TransitionTimedOut $card $now)) { return $false }
+  if ($card.ST -eq '删除中') { Set-CardRollback $card '未知' '' } else { Set-CardRollback $card }
+  $true
 }
 
 # 按钮和双击共用校验与状态切换；仅保留各入口原有的反馈文案。
@@ -217,8 +236,9 @@ function Update-CardInfo([string]$name, $info){
 
 # 更新卡片数据（由 DispatcherTimer 调用）
 # 调用方据 $item.done 分流：命令完成回执走 -ack 分支，探测结果走普通分支。
-# 普通探测结果不带 epoch（视为 0）；过渡态期间 PendingEpoch>0 时旧探测一律丢弃，
-# 直到命令完成回执解封按钮，下一轮探测自然落到终态。原「方向匹配」症状层补丁消除。
+# epoch 只过滤**命令回执**（-ack 分支）：旧命令的回执不解除新命令的过渡态。
+# **普通探测仍按方向匹配收尾**（见下 $transitionExpect）——服务真正进入期望终态时让
+# 过渡态退出，这是有意保留的行为，不是「症状层补丁消除」。回执丢失时由超时逃生兜底。
 function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ack,[bool]$ok=$true){
   if (-not $script:cards.ContainsKey($n)) { return }
   $c = $script:cards[$n]
@@ -229,10 +249,25 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
     # 不能只解封按钮——卡片还停在过渡态文字上，而后续探测会被上面的过渡态守卫
     # 按「期望终态」永久丢弃（启动失败时服务恒为已停止，永远等不到运行中）。
     # 故先回滚到命令前的终态，按钮恢复可用，让用户能重试。
-    if (-not $ok) { Set-CardRollback $c; return }
-    $c.Btn.IsEnabled = $true
-    $c.ReadyToToggle = $true
+    if (-not $ok) {
+      # 但右键菜单的启停（card.ps1 右键 'start'/'stop' 分支）直接 Send-ServiceCommand、
+      # 不置过渡态（TransitionAt 仍为 MinValue）——此时 PrevST/PrevH 还是 New-Card 的初值，
+      # 回滚会把卡片刷成「未知」并清掉按钮，而服务实际状态没变、还在跑。不在过渡态就
+      # 不回滚，只按当前状态/健康重算按钮（与成功分支同一门闩）。
+      if ($c.TransitionAt -eq [datetime]::MinValue) {
+        $c.ReadyToToggle = ($c.ST -eq '已停止') -or ($c.ST -eq '运行中' -and $c.H -eq '正常')
+        $c.Btn.IsEnabled = $c.ReadyToToggle
+        return
+      }
+      Set-CardRollback $c; return
+    }
+    # 成功回执：解封按钮 + 起冷却，但门闩必须按**当前**状态/健康重算——不能无条件置 $true。
+    # 右键菜单的启停（card.ps1 右键 'start'/'stop' 分支）直接 Send-ServiceCommand，不经
+    # Invoke-CardToggle，故回执到达时卡片可能仍停在「运行中/无响应」而没进过渡态；硬置
+    # ReadyToToggle=$true 会绕过健康门闩，用户此刻能双击关掉一个本不该关闭的服务。
     $c.LastToggle = [datetime]::Now
+    $c.ReadyToToggle = ($c.ST -eq '已停止') -or ($c.ST -eq '运行中' -and $c.H -eq '正常')
+    $c.Btn.IsEnabled = $c.ReadyToToggle
     return
   }
   # 删除中：终态由 remove 回执决定（主脚本 ack 分支清 svc/cards + Render-Page），
@@ -242,7 +277,15 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
   # 并重新点亮按钮，用户还能对一个正在删除的服务下命令）。
   # 例外：超时逃生（见下）——回执彻底丢了时删除中同样不能永久卡住。
   $timedOut = Test-TransitionTimedOut $c ([datetime]::Now)
-  if ($c.ST -eq '删除中' -and -not $timedOut) { return }
+  if ($c.ST -eq '删除中') {
+    if (-not $timedOut) { return }
+    # 删除中回执丢失（后台异常退出）时收敛到「未知」，**不用**到达的探测值：
+    # 探测可能报「已停止」（删除本就先 stop）→ 收敛后按钮点亮，用户能对一个正在删除的
+    # 服务下「启动」。删除的成败只有 remove 回执知道，丢失时状态就是不确定，故显示未知、
+    # 不解封按钮。删除路径正常 ≤6s，走到这里说明后台确已失联。
+    Set-CardRollback $c '未知' ''
+    return
+  }
   # 过渡态保护（发现 3）：卡片处于启动中/停止中时，在途的旧探测结果不应覆盖
   # 用户刚刚触发的过渡态，也不应重新启用按钮——否则慢停止期间显示与实际不符。
   # 按方向判期望终态：启动中只接受运行中收尾，停止中只接受已停止收尾；

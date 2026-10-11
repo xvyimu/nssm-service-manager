@@ -60,6 +60,9 @@ $tests = @(
   @{ Name = 'single instance'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-single-instance.ps1')) }
   @{ Name = 'remove async'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-remove-async.ps1')) }
   @{ Name = 'remove e2e'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-remove-e2e.ps1')) }
+  @{ Name = 'dialogs submit'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-dialogs-submit.ps1')) }
+  @{ Name = 'exitcode map'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-exitcode-map.ps1')) }
+  @{ Name = 'acl script'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-acl-script.ps1')) }
 )
 
 foreach ($test in $tests) {

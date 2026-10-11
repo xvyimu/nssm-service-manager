@@ -47,7 +47,11 @@ function Find-SensitiveEnvKeys([object[]]$pairs){
     $kv = $pair -split '=',2
     if($kv.Count -ne 2){ continue }
     $key = $kv[0].Trim()
-    if($key -match '(?i)API_KEY|TOKEN|SECRET|PASSWORD|ACCESS_KEY|CREDENTIAL|PRIVATE_KEY|PASSPHRASE|PWD'){
+    # 键名形态清单：常见密钥/令牌/口令变量名。刻意不收裸 KEY——会误报 MONKEY 这类词。
+    # 单独的 PASS 用 (^|[_-])PASS([_-]|$) 匹配 DB_PASS / REDIS_PASS——**不能**用 \bPASS\b：
+    # 下划线是 \w，DB_PASS 的 _P 之间没有词边界，\bPASS\b 实测对 DB_PASS 返回 False。
+    # APIKEY / PRIVATEKEY 无下划线；*_AUTH / *_SALT / *_PAT / *_WEBHOOK 是常见凭证后缀。
+    if($key -match '(?i)(API[_-]?KEY|APIKEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|ACCESS[_-]?KEY|CREDENTIAL|PRIVATE[_-]?KEY|PASSPHRASE|SIGNING[_-]?KEY|_AUTH|_SALT|_PAT$|_WEBHOOK)|(^|[_-])PASS([_-]|$)'){
       $looksLikePath = $kv[1] -match '^[A-Za-z]:[\\/]|^\\\\|^\.{1,2}[\\/]|^/'
       if($key -notmatch '(?i)_FILE$' -or -not $looksLikePath){ $hits += $key }
     }

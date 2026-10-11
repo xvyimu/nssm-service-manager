@@ -168,12 +168,40 @@ function Update-StatusTick {
   }
   $msg = $null
   while ($script:msgQueue.TryDequeue([ref]$msg)) { Set-StatusMessage $msg }
+  # 过渡态超时逃生（T1 的后台死亡分支）：无条件扫描所有卡片，把超时的过渡态放出来。
+  # 不能只靠 Update-CardData 里的超时分支——那条只在**有探测结果到达**时才跑；后台 runspace
+  # 若已异常退出，队列再无生产者，卡片会永久卡在「启动中/停止中/删除中」。这里不依赖队列，
+  # 每帧独立判一次，是逃生口的兜底。卡片缓存未建时（CLI/部分单测）跳过。
+  if ($script:cards) {
+    $now = [datetime]::Now
+    foreach ($card in @($script:cards.Values)) {
+      if (Test-TransitionTimedOut $card $now) { Invoke-TransitionTimeoutEscape $card $now }
+    }
+  }
   # 空闲 4 秒后自动刷新状态文字；消息租约未到期时不覆盖（T4）。
   if ($script:statusBar -and (-not $script:lastActionAt -or ([datetime]::Now - $script:lastActionAt).TotalSeconds -ge 4)) {
     if (-not $script:msgUntil -or [datetime]::Now -ge $script:msgUntil) {
       $script:statusBar.Text = "$(Get-Date -Format 'HH:mm:ss')  状态自动刷新"
     }
   }
+}
+
+# 探测单实例 mutex 是否已被 GUI 持有。抽成函数以便直测（CLI -Add 分支与 GUI 都靠它，
+# 但内联在主脚本里测试够不着）。$mutexName 形如 'Local\service-manager-gui'。
+# OpenExisting 在 mutex 不存在时抛（无 GUI 常驻）→ 返回 $false，是正常路径。
+# 抢到（WaitOne(0)=true）要立即释放，否则会把所有权留在本线程、影响后续判断。
+function Test-GuiInstanceRunning([string]$mutexName){
+  try {
+    $m = [Threading.Mutex]::OpenExisting($mutexName)
+  } catch { return $false }
+  try {
+    $held = -not $m.WaitOne(0)
+    if (-not $held) { $m.ReleaseMutex() }
+    $held
+  } catch {
+    # AbandonedMutexException 等：视为「有实例曾持有」——保守判为运行中，宁可让 CLI 让路
+    $true
+  } finally { $m.Dispose() }
 }
 
 # ---- 日志轮转档保留策略：NSSM 只改名不删档，logs/ 会无界增长 ----
@@ -219,6 +247,18 @@ function Resolve-ServiceExeDir([string]$path){
   @{ dir = $dir; quoted = $quoted }
 }
 
+# 判定目录 ACL 是否「过宽」——本机任意标准用户可写。抽成纯函数以便直测（Show-SecurityCheck
+# 直接弹 MessageBox，够不着）。判据：主体是 Users/Everyone 之一，且权限含 Write/Modify/FullControl。
+# 传入已读到的 ACL 对象（不在此处 Get-Acl），返回 '是' / '否' / '未知（无法读取 ACL）'。
+function Test-DirAclPermissive($acl){
+  if (-not $acl) { return '未知（无法读取 ACL）' }
+  foreach ($a in $acl.Access) {
+    if (@('BUILTIN\Users','Everyone','Users') -contains $a.IdentityReference.Value -and
+        $a.FileSystemRights.ToString() -match 'Write|Modify|FullControl') { return '是' }
+  }
+  '否'
+}
+
 function Show-SecurityCheck([string]$n){
   try {
     $ci = Get-CimInstance Win32_Service -Filter "Name='$n'" -EA Stop
@@ -235,12 +275,8 @@ function Show-SecurityCheck([string]$n){
   $dir = $r.dir; $quoted = $r.quoted
   $permissive = '否'
   if ($dir -and (Test-Path $dir)) {
-    try {
-      $acl = Get-Acl -Path $dir
-      foreach ($a in $acl.Access) {
-        if (@('BUILTIN\Users','Everyone','Users') -contains $a.IdentityReference.Value -and $a.FileSystemRights.ToString() -match 'Write|Modify|FullControl') { $permissive = '是'; break }
-      }
-    } catch { $permissive = '未知（无法读取 ACL）' }
+    try { $permissive = Test-DirAclPermissive (Get-Acl -Path $dir) }
+    catch { $permissive = '未知（无法读取 ACL）' }
   }
   $qTxt = if($quoted){'是（已加固）'}else{'否（路径含空格时有提权风险）'}
   $msg = "$n`n`n路径: $path`n`n引号加固: $qTxt`n目录: $dir`n目录 ACL 过宽: $permissive"
