@@ -44,6 +44,13 @@ function Test-TransitionTimedOut($card, [datetime]$now){
   ($now - $card.TransitionAt).TotalMilliseconds -ge $script:TOGGLE_TIMEOUT_MS
 }
 
+# 健康门闩：卡片此刻是否允许切换（停止或启动）。已停止 → 可启动；运行中且健康正常 → 可停止。
+# 单一来源：ack 成功分支、ack 失败的非过渡态分支、Update-CardData 末尾三处都用它——三处
+# 各写一遍表达式时，改判据（如健康档位）只改一处就会漂移。
+function Test-CardToggleReady([string]$state, [string]$health){
+  ($state -eq '已停止') -or ($state -eq '运行中' -and $health -eq '正常')
+}
+
 # 命令失败（回执 ok=false）或过渡态超时逃生时，把卡片放回一个确定终态并解封按钮。
 # 不能复用 Invoke-CardToggle 的方向推导：失败时服务状态没变，要的是「回到原样」。
 # $toState / $toHealth 可选覆盖目标态：删除中回执丢失时服务实际状态不明，调用方传
@@ -255,7 +262,7 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
       # 回滚会把卡片刷成「未知」并清掉按钮，而服务实际状态没变、还在跑。不在过渡态就
       # 不回滚，只按当前状态/健康重算按钮（与成功分支同一门闩）。
       if ($c.TransitionAt -eq [datetime]::MinValue) {
-        $c.ReadyToToggle = ($c.ST -eq '已停止') -or ($c.ST -eq '运行中' -and $c.H -eq '正常')
+        $c.ReadyToToggle = Test-CardToggleReady $c.ST $c.H
         $c.Btn.IsEnabled = $c.ReadyToToggle
         return
       }
@@ -266,7 +273,7 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
     # Invoke-CardToggle，故回执到达时卡片可能仍停在「运行中/无响应」而没进过渡态；硬置
     # ReadyToToggle=$true 会绕过健康门闩，用户此刻能双击关掉一个本不该关闭的服务。
     $c.LastToggle = [datetime]::Now
-    $c.ReadyToToggle = ($c.ST -eq '已停止') -or ($c.ST -eq '运行中' -and $c.H -eq '正常')
+    $c.ReadyToToggle = Test-CardToggleReady $c.ST $c.H
     $c.Btn.IsEnabled = $c.ReadyToToggle
     return
   }
@@ -329,7 +336,7 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
   } else {
     '等待服务状态更新'
   }
-  $c.ReadyToToggle = ($st -eq '已停止') -or ($running -and $healthy)
+  $c.ReadyToToggle = Test-CardToggleReady $st $h
   $c.Btn.Content = if ($running) { '停止' } else { '启动' }
   $c.Btn.IsEnabled = $c.ReadyToToggle
 }

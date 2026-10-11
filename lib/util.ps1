@@ -172,11 +172,12 @@ function Update-StatusTick {
   # 不能只靠 Update-CardData 里的超时分支——那条只在**有探测结果到达**时才跑；后台 runspace
   # 若已异常退出，队列再无生产者，卡片会永久卡在「启动中/停止中/删除中」。这里不依赖队列，
   # 每帧独立判一次，是逃生口的兜底。卡片缓存未建时（CLI/部分单测）跳过。
-  if ($script:cards) {
+  if ($script:cards -and (Get-Command Invoke-TransitionTimeoutEscape -EA SilentlyContinue)) {
     $now = [datetime]::Now
-    foreach ($card in @($script:cards.Values)) {
-      if (Test-TransitionTimedOut $card $now) { Invoke-TransitionTimeoutEscape $card $now }
-    }
+    # Invoke-TransitionTimeoutEscape 内部自带 Test-TransitionTimedOut 判据，此处不再预判。
+    # Get-Command 守卫与主脚本的 Dispatcher handler 同款：card.ps1 未加载（CLI/部分单测）
+    # 时该函数不存在，不能让它把整个 tick 带崩。
+    foreach ($card in @($script:cards.Values)) { [void](Invoke-TransitionTimeoutEscape $card $now) }
   }
   # 空闲 4 秒后自动刷新状态文字；消息租约未到期时不覆盖（T4）。
   if ($script:statusBar -and (-not $script:lastActionAt -or ([datetime]::Now - $script:lastActionAt).TotalSeconds -ge 4)) {

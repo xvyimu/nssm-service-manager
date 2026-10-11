@@ -114,6 +114,15 @@ try {
   Assert ($card.ST -eq '已停止') "Sweep did not escape a stuck 启动中 without a probe result: ST=$($card.ST)."
   Assert ($card.Btn.IsEnabled) 'Sweep left the button disabled (永久卡死 on background death).'
 
+  # ---- 5a. Test-CardToggleReady 真值表（门闩单一来源）----
+  Assert (Test-CardToggleReady '已停止' '') '已停止应可切换。'
+  Assert (Test-CardToggleReady '运行中' '正常') '运行中+正常应可切换。'
+  Assert (-not (Test-CardToggleReady '运行中' '无响应')) '运行中+无响应不可切换（健康门闩）。'
+  Assert (-not (Test-CardToggleReady '运行中' '超时')) '运行中+超时不可切换。'
+  Assert (-not (Test-CardToggleReady '运行中' '')) '运行中+空健康不可切换。'
+  Assert (-not (Test-CardToggleReady '未知' '')) '未知态不可切换。'
+  Assert (-not (Test-CardToggleReady '未安装' '')) '未安装不可切换。'
+
   # ---- 5. ack 门闩按当前状态/健康重算，不无条件点亮 ----
   # 右键菜单的启停直接 Send-ServiceCommand、不置过渡态，回执到达时卡片可能仍是
   # 「运行中/无响应」。成功回执若硬置 ReadyToToggle=$true，用户能双击关掉一个本不该
