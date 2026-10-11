@@ -84,9 +84,11 @@ UI DispatcherTimer → ack 分支 → 解封按钮 + 冷却
 
 ### 命令纪元（epoch）
 
-每次 `Send-ServiceCommand` 递增 `$script:cmdEpoch`，随命令对象入队；后台执行完把同一 epoch 跟着结果回 UI。`Update-CardData` 据此过滤在途旧探测——过渡态期间只接受 epoch ≥ 卡片 `PendingEpoch` 的回执，旧探测（无 epoch）直接丢弃。
+每次 `Send-ServiceCommand` 递增 `$script:cmdEpoch`，随命令对象入队；后台执行完把同一 epoch 跟着结果回 UI。`Update-CardData` 的 **ack 分支**据此过滤：epoch 低于卡片 `PendingEpoch` 的命令回执直接丢弃——旧命令的回执不解除新命令的过渡态。
 
-这是为了解决一个竞态：用户点「停止」，服务慢停止期间旧探测仍报「运行中」，不该覆盖用户刚触发的「停止中」过渡态。原方案靠「方向匹配」做症状层补丁（启动中只接受运行中收尾），现在用 epoch 过滤更干净——旧探测一律丢，直到命令完成回执解封按钮，下一轮探测自然落到终态。
+**普通探测结果不带 epoch（视为 0），仍按 `$transitionExpect` 方向匹配收尾**：过渡态期间，启动中只接受「运行中」收尾、停止中只接受「已停止」收尾，反向探测丢弃。这是有意保留的行为，不是「症状层补丁」——它让服务真正进入终态时过渡态退出。两处各管一段：epoch 管回执的新旧，方向匹配管探测的收尾。
+
+竞态背景：用户点「停止」，服务慢停止期间旧探测仍报「运行中」，不该覆盖用户刚触发的「停止中」过渡态。方向匹配挡住反向探测；命令完成回执（epoch 匹配）解封按钮。若回执彻底丢失（后台异常退出），由 `Test-TransitionTimedOut` 超时逃生兜底（见「已知限制」与 `test-transition-failure.ps1`）。
 
 ## 设计决策
 
@@ -127,9 +129,12 @@ NSSM remove 是 stop → Wait-Stopped ≤6s → nssm remove confirm，同步执�
 
 - 真实 UAC、系统 Mica 效果与 NSSM 服务生命周期需在本机交互验证（单测用替身）
 - `launch.vbs` 必须保持纯 ASCII（Windows Script Host 按系统 ANSI 代码页读取，UTF-8 中文注释在部分系统触发 `800A0400`）
+- **`ToggleTimeoutMs` 是推出来的、不是量出来的**：启动失败回落 `sc.exe start` 走 SCM 同步管道，上限 `ServicesPipeTimeout`（本机未设 = 默认 30000ms）。该路径真实耗时未真机实测（需建服务，`tests/probe-1053-timing.ps1` 管理员跑），当前值 45000 是按「管道上限 + 6s 删除路径余量」推的。跑过探针才能确认够不够。
+- **CLI `-Add` 与 GUI 不能并行**：两者都全量写回 `services.json`（`Save-Svc` 无合并语义），GUI 常驻时 CLI 新增会被 GUI 下一次保存覆盖。故 `-Add` 前检测单实例 mutex（`Test-GuiInstanceRunning`），GUI 在跑则拒绝并提示先关 GUI。
+- **`Show-SecurityCheck` 的 ACL 判定只认 `Users`/`Everyone` 三种写法**：目录 ACL 若被改写为其它宽松主体（如某个具体用户账户 FullControl），判定为「否」。这是启发式检查，不是权威审计。
 
 ## 测试
 
-`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 20 项回归测试。详见 README「测试与截图」节。
+`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 23 项回归测试。详见 README「测试与截图」节。
 
 CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）。

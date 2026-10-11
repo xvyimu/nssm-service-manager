@@ -1,15 +1,57 @@
 <!-- doc-template: project/HANDOFF v1 -->
 # HANDOFF
 
-> **更新日：** 2026-10-05
-> **状态：** 进行中（P0-1 / P0-2 / P1 / P2 / P4 已落地；P3 未做，判定收益过小。本轮 T1–T7 已落地并提交，见下节）
+> **更新日：** 2026-10-11
+> **状态：** 进行中（P0-1 / P0-2 / P1 / P2 / P4 已落地；P3 未做。T1–T7 已落地并提交；2026-10-11 审计修复批次已落地，见下节）
 > 本文件**无日期后缀**（带日期会让链接永久腐烂）。当前在哪一天由上一行回答。
+
+---
+
+## 上一段做到哪（2026-10-11 审计修复批次）
+
+对一份外部审计报告（基线 `f8936b6`）逐条核对并修复。审计的 20 项里，一部分在 `f8936b6`
+之后的 4 个提交（`591037b` / `cf17369` / `593f8bc` / `d6c81ca`）已改掉（README 文件表、
+PROJECT.md 模块描述、`ToggleTimeoutMs` 抬到 45000），本轮补上剩余的：
+
+| 类 | 项 | 改动 |
+|----|----|------|
+| 正确性 | C1 | CLI `-Add` 绕过单实例 mutex → 加 `Test-GuiInstanceRunning` 检测，GUI 在跑则拒绝 |
+| 正确性 | C2 | ack 成功回执无条件点亮按钮/门闩 → 按当前状态/健康重算 |
+| 正确性 | C3 | 非过渡态的失败回执错误回滚 → 加守卫（右键启停路径） |
+| 正确性 | C4 | 后台 runspace 死亡时过渡态永久卡住 → `Update-StatusTick` 每帧无条件扫卡片逃生 |
+| 正确性 | C5 | 删除中超时按探测值收敛会点亮按钮 → 收敛到「未知」 |
+| 正确性 | C7 | `poll.ps1` 的 `$ok` 未逐迭代重置 → 循环开头置 `$null` |
+| 正确性 | C8 | `xaml.ps1` btnNext 读 svc.Count 未走 gate → 加锁，与 Render-Page 对称 |
+| 安全 | S1 | ACL 脚本只摘 Users，漏 `ALL APPLICATION PACKAGES` / `S-1-15-3-*` → 判据抽 `Test-LeakyAce`，移除与校验共用 |
+| 安全 | S2 | 只判「ACE 存在」不判 FullControl → 改 `Set-FullControlAce` 判权限 |
+| 安全 | S3 | 敏感键名正则漏 `DB_PASS`/`APIKEY`/`*_AUTH` 等 → 扩充（`\bPASS\b` 对 `DB_PASS` 不成立，改 `(^\|[_-])PASS([_-]\|$)`） |
+| 测试 | T1 | single-instance 夹具 finally 抛异常吞掉后两段 → `ReleaseMutex` 包 try/catch |
+| 测试 | T2/T3 | dialogs 两个 Click 提交体零覆盖 → 抽 `Submit-AddService` / `Submit-RemoveCommand` + 新测试 |
+| 测试 | T4 | `Show-SecurityCheck` ACL 判定零覆盖 → 抽 `Test-DirAclPermissive` + 断言 |
+| 测试 | T5 | ACL 脚本零覆盖 → `test-acl-script.ps1` 守「判据单源」不变量 |
+| 测试 | T6 | 退出码映射无直接断言 → `test-exitcode-map.ps1` 直测完整表 |
+| 测试 | T7 | 颜色矩阵缺「未安装」「未知」 → 补两个 case |
+| 文档 | D3 | card.ps1 注释说「方向匹配已消除」与实现不符 → 订正；PROJECT.md 同步 |
+| 文档 | D4 | HANDOFF 量纲混用「项」 → 改为「PASS 输出行 / 解析文件 / 测试条目」三分量 |
+| 文档 | D5 | CHANGELOG 缺 10-05 批次 → 补 `[0.6.0]` 段；HANDOFF 提交表补 `40bffbb`/`f8936b6` |
+| 文档 | D6 | HANDOFF 引用仓外文件 → 注明未进版本控制 |
+| 文档 | S5 | README 未写 UAC 被拒/提权 GUI 结束不掉 → 补「启动」「排错」两节 |
+
+**实测证据（本机，非引用文档）**：
+- `Parameters` 键默认 ACL 实测含 `BUILTIN\Users` + `ALL APPLICATION PACKAGES` + 裸 SID
+  `S-1-15-3-*`（均 ReadKey，inherited）——S1 成立。
+- `sc.exe query`：存在返回 0，不存在返回 1060——T8 的语义确认（见「本轮真机复核」）。
+- `pwsh -NoProfile -File tests/run-all.ps1` → 23 项全 PASS，exit 0。
+
+**没做的**：C6（`ServicesPipeTimeout` 耗时竞争）仍未有真机数字，`ToggleTimeoutMs=45000`
+是按管道上限推的——已记进 PROJECT.md「已知限制」。`tests/probe-1053-timing.ps1` 需管理员跑。
 
 ---
 
 ## 上一段做到哪（本轮 T1–T7）
 
-按 `service-manager-修复任务-提示词.md` 的七条任务逐条修复，各一个提交（基线 `eca4b86` 起）：
+按外部给的七条修复任务逐条修复，各一个提交（基线 `eca4b86` 起）。
+**注：原始任务清单是仓外的 `service-manager-修复任务-提示词.md`，未进版本控制**——下表按任务号概述其要求，仓外读者据此可追溯。
 
 | 任务 | 提交 | 说明 |
 |------|------|------|
@@ -24,9 +66,11 @@
 | 收尾 | `223d066` | `ToggleTimeoutMs` 注释不写未实测的耗时数字 |
 | 收尾 | `74af131` | 自审收口：Open-PanelUrl 失败提示补租约、测试抽 `Wait-FakePollAck`、README/PROJECT 配置表与测试计数补齐 |
 | 收尾 | `36bd21f` | **nssm 退出码不可信**（remove/install 失败返回 0）→ 删除/注册改按「服务是否真的消失/出现」实证复核 |
+| 收尾 | `40bffbb` | 把未验项尽量转成可验证：T5 自动回归 + 删除流程端到端接缝（`test-remove-e2e.ps1`） |
+| 收尾 | `f8936b6` | CLI 注册后启动失败不报「已启动」+ 合并重复的 `sc.exe query` |
 
 新增测试四个：`test-transition-failure.ps1`、`test-status-lease.ps1`、`test-log-retention.ps1`、`test-remove-e2e.ps1`。
-回归 27 → 37 项 PASS；解析文件 34 → 39；测试项 16 → 20。唯一失败项仍是 `single-instance` 环境敏感问题。
+**三个量纲别混**：PASS 输出行 27 → 37 条；解析文件 34 → 39；`run-all.ps1` 的测试条目 16 → 20。
 
 ### 本轮真机复核到的（原先标「未验」的，已收口）
 
@@ -41,6 +85,10 @@
 - **非管理员 `sc.exe start <已运行服务>` 返回 5**（拒绝访问），不是 1056 —— 与代码注释一致。
 - **nssm 退出码实测**：`remove`/`install` 失败返回 **0**、`stop`/`start`/`restart` 返回 3、
   `set`/`reset` 返回 1。已据此修复（见 `36bd21f`）。
+- **`sc.exe query` 退出码实测**（2026-10-11，非管理员）：服务存在返回 **0**，不存在返回
+  **1060**——正是 `Test-ServiceGone`（认 1060/1072）与 `Test-ServicePresent`（认 0）依赖的语义。
+  注：测试替身里这两个码由旋钮（`$sync.serviceGone` / `$script:nssmInstalled`）决定，
+  「服务真消失」这个事实由 SCM 决定——判定逻辑真跑，被替身的是 SCM 那一端。
 - **`Remove-RotatedLogs` 口径**：真 `logs/` 现有 112 份轮转档，全在 14 天窗口内 → 删除 0 份，
   与注释订正后的一致（跨窗口时的行为见 `test-log-retention.ps1`）。
 - **`DispatcherUnhandledException` 可无头触发** → T5 那条「人工确认」已改成自动回归（真抛真接）。
@@ -285,7 +333,7 @@ backup-guard 只碰 `~/.claude`。故**不做默认迁移**。
 - `D:\service-manager\lib\svc-common.ps1` —— 退出码/状态中文映射（`Convert-ScExitCode` / `Convert-ServiceStatus`）、删除序列（`Invoke-ServiceRemove`）、实证复核谓词。**原先散在 `poll.ps1` 的 here-string 与 `nssm.ps1` 里，2026-10-08 起统一到本文件**——here-string 里的定义只进 runspace，UI 线程与 CLI 取不到。
 - `D:\service-manager\lib\util.ps1` —— P0-1 的 `Open-PanelUrl` 落点；P1 的 `Remove-RotatedLogs` 落点；`Get-LogFiles` 的轮转档识别可复用（现已移 `lib/logview.ps1`）。
 - `D:\service-manager\lib\config.ps1` —— P2 / P4 的收口键落点。
-- `D:\service-manager\tests\run-all.ps1` —— 回归入口，改完必跑（解析检查 + 20 项）。
+- `D:\service-manager\tests\run-all.ps1` —— 回归入口，改完必跑（解析检查 + 23 项）。
 - `D:\service-manager\docs\PROJECT.md` —— 架构与设计决策 SSOT，动结构时同步。
 
 ## 决策与坑（本次新增）

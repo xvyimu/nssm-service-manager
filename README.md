@@ -76,6 +76,10 @@ pwsh -NoProfile -File service-manager-gui.ps1
 
 双击 `launch.vbs`（wscript 无控制台，不闪黑窗）→ UAC → 管理员 GUI。也可以直接 `pwsh -NoProfile -File service-manager-gui.ps1`（非管理员时脚本会用同一个 `launch.vbs` 提权）。
 
+**UAC 被拒时 GUI 不会启动**：`launch.vbs` 弹出「需要管理员权限」的提示框，然后以退出码 1 结束；非管理员 PowerShell 入口把这个码原样透传（`exit $launcher.ExitCode`）。诊断看 `logs/gui-crash.log` 里的 `Elevation launcher exited: code=1`。
+
+**提权后的 GUI 由管理员进程持有**：普通权限的任务管理器或命令行**结束不掉**它（受 UIPI 限制），要退出请用窗口的 ✕、托盘的「退出」，或用管理员权限的进程结束。同理，非管理员侧也驱动不了它的窗口。
+
 NSSM 路径按三档探测：`$env:NSSM_PATH` → `Get-Command nssm.exe` → scoop 安装路径（`~/scoop/apps/nssm/current/nssm.exe`）。都找不到时弹窗提示安装。进程声明 DPI Aware，高缩放屏下卡片不模糊。
 
 ## 配置层（防漂移）
@@ -216,7 +220,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 ## 测试与截图
 
 ```powershell
-pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 20 项 PowerShell 回归
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 23 项 PowerShell 回归
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-tmp/，已 git 忽略）
 ```
@@ -239,11 +243,13 @@ ffmpeg -y -framerate 3 -i .demo-tmp/frame-%02d.png -vf "scale=640:-1:flags=lancz
 
 `Send-ServiceCommand` 统一提交 GUI 命令并触发唤醒；`test-poll-commands.ps1` 用隔离 runspace 验证空闲唤醒、慢探测之间的命令优先、FIFO 与关闭唤醒。正在进行的单次探测或服务命令仍需结束后才能处理后续命令。另覆盖两点：服务处于 `StartPending` 时下「启动」不调 `sc.exe`、不产生失败消息（否则会回落取回 1056，拼出「启动失败(1056 已在运行)」的矛盾文案）；刚执行过命令的那一轮睡眠用 `ProbeIntervalMs` 而非 `ProbeIdleMs`，否则卡片会停在「启动中」最长约 15 秒。
 
-过渡态必须有失败出口，否则卡片会永久卡死：`test-transition-failure.ps1` 覆盖三层——失败命令仍要发回执（`ok=$false`，修前失败即静默，UI 侧收不到失败事实）；`ok=$false` 时回滚到命令前的终态并解封按钮；回执彻底丢失时超过 `ToggleTimeoutMs` 按到达的探测值收敛。`test-transition-race.ps1` 覆盖的是反向：过渡态期间在途的旧探测不得覆盖状态。
+过渡态必须有失败出口，否则卡片会永久卡死：`test-transition-failure.ps1` 覆盖多层——失败命令仍要发回执（`ok=$false`，修前失败即静默，UI 侧收不到失败事实）；`ok=$false` 时回滚到命令前的终态并解封按钮（右键启停不置过渡态时只重算门闩、不回滚）；回执彻底丢失时超过 `ToggleTimeoutMs` 逃生；**后台 runspace 死亡**（队列再无生产者）时由 `Update-StatusTick` 每帧无条件扫卡片逃生，不依赖探测结果到达；成功回执按当前状态/健康重算门闩（不无条件点亮，否则绕过健康门闩）；删除中超时收敛到「未知」而非到达的探测值（否则会点亮按钮让用户启动一个正在删除的服务）。`test-transition-race.ps1` 覆盖的是反向：过渡态期间在途的旧探测不得覆盖状态。
 
 `test-status-lease.ps1` 守状态栏消息的显示租约：后台失败消息写入后不得被同一帧的「状态自动刷新」覆盖（用户没在操作时距上次操作早已超过 4 秒门槛，而 remove 路径的 stop + Wait-Stopped 最长 6 秒，失败消息必然跨过）。另覆盖 UI 回调异常的截断提示，以及**真触发一次 `DispatcherUnhandledException`**（注册到真 dispatcher、真抛真接）验证「兜底接住异常、窗口不消失、状态栏出提示」——提示词原本把这条列为人工确认，现已自动化。`test-log-retention.ps1` 锁住 `Remove-RotatedLogs` 的真实口径：全局前 N 份豁免 + 天数窗口两个条件是「且」的关系，窗口内一份都不删，当前档（无轮转后缀）永不动。
 
 `test-remove-e2e.ps1` 把删除流程的**两半接起来**跑：`test-remove-async.ps1` 分别测了「runspace 产出什么回执」与「UI 拿到回执怎么处理」，中间那一跳（worker 的回执真的落进 UI 队列）此前没被验过。本测试让 UI 的命令/结果/消息队列直接指向 worker 的，于是真 runspace 的回执由真 UI tick 消费，成功与失败两个方向都断言到用户可见结果（成功清卡片并落盘；失败回滚卡片、保留服务、状态栏给原因且带租约）。
+
+`test-dialogs-submit.ps1` 直测两个对话框的提交体（`Submit-AddService` / `Submit-RemoveCommand`）——弹模态框在测试里够不着，但校验顺序、`Test-EnvPairs`、敏感键 OKCancel 的取消/继续两分支、`Save-Svc` 失败分支、删除入队与过渡态这些真正会写错的地方现可无头驱动（`MessageBox` 用薄包装替身）。`test-exitcode-map.ps1` 直测 `Convert-ScExitCode` / `Convert-ServiceStatus` 的完整文案表（此前只断言消息前缀，不校验「1060 → 服务未安装」这类用户可见映射）。`test-acl-script.ps1` 守 `scripts/set-service-params-acl.ps1` 的不变量：泄漏主体判据只有一份（`Test-LeakyAce`），移除与校验共用，覆盖默认 ACL 里的 AppContainer 包 SID（`ALL APPLICATION PACKAGES` 与 `S-1-15-3-*`）。
 
 `tests/probe-1053-timing.ps1` 是**手动探针**（需管理员，不在 `run-all` 里）：注册一个 exe 路径故意写错的服务，实测启动失败路径的真实耗时，用于判定 `ToggleTimeoutMs` 是否够大。SCM 的 `ServicesPipeTimeout` 本机未设 = 默认 30000ms，而启动失败回落 `sc.exe start` 走的正是这条同步管道——故 `ToggleTimeoutMs` 已从 30000 抬到 45000 留余量，但**该路径耗时仍未真机实测**，跑过探针才能确认这个值够不够。
 
@@ -256,6 +262,8 @@ CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）。
 `launch.vbs` 必须保持纯 ASCII：Windows Script Host 按系统 ANSI 代码页读取，UTF-8 中文注释在部分系统会触发 `800A0400` 编译错误。桌面快捷方式与非管理员 PowerShell 入口共用这个启动器。
 
 `logs/gui-crash.log` 记录管理员状态、WPF 加载、窗口渲染和退出阶段，不记录 CLI 参数或环境变量。只有启动器退出码为 0 不能证明窗口已出现，应检查 `Window content rendered` 或实际窗口。
+
+窗口起不来时先看这个日志：`Elevation requested via launch.vbs` 之后若无 `Single-instance mutex acquired`，要么 UAC 被拒（看 `Elevation launcher exited: code=1`），要么已有实例在跑（看 `Already running`）。提权后的 GUI 由管理员进程持有，普通权限的进程结束不掉——要关它得用窗口 ✕ 或托盘「退出」。
 
 ## Roadmap
 

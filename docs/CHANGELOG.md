@@ -3,6 +3,34 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
+## [0.6.0] — 2026-10-05：过渡态健壮性与 NSSM 退出码实证
+
+这一批的主线是「**不能把状态押在会撒谎的信号上**」：NSSM/sc.exe 的退出码、命令回执、后台 runspace 的存活，三处都曾让界面显示与实际不符。按「为什么」归并：
+
+### 过渡态不再永久卡死（T1 + P5）
+
+- 命令回执带 `ok`，成功失败都入队；失败时回滚卡片到命令前的终态并解封按钮（`c1526fd`）。
+- 卡片过渡态加 `ToggleTimeoutMs` 超时逃生：回执丢失时按到达的探测值收敛（`c1526fd`）。
+- 删除中的过渡态单独守卫：它没有「期望终态」，期间探测一律不覆盖（`a03d0fe`）。
+- 过渡态设置抽 `Set-CardTransition`，启停与删除共用同一字段集（`a03d0fe`）——删除路径此前漏了 `LastToggle`/`ReadyToToggle`。
+
+### NSSM/sc.exe 退出码不可信（`36bd21f`）
+
+实测（NSSM 2.24-103）：`remove`/`install` 失败也返回 **0**，提权不足或服务不存在时打印「Administrator access is needed」却成功退出。只信退出码会把「删失败」判成功——UI 清掉卡片并落盘，而服务仍在。改为按「服务是否真的从 SCM 消失/出现」实证复核（`Test-ServiceGone` / `Test-ServicePresent`）。CLI 注册后启动失败也不再谎报「已启动」（`f8936b6`）。
+
+### 交互与轮询收口（T2–T7）
+
+- `StartPending` 视作已在启动，不再回落 `sc.exe` 取回 1056 拼出「启动失败(1056 已在运行)」的矛盾文案（`3ebaf86`）。
+- 刚下发命令的那一轮用 `ProbeIntervalMs`，不再走 15s 空闲长睡眠（`338457d`）。
+- 状态栏消息加显示租约，不被同一 tick 的自动刷新吞掉（`eb01d2e`）。
+- Dispatcher 异常兜底补状态栏提示（`057e164`）；remove 回执「配置保存失败」不再被「已删除」覆盖（`428e22a`）。
+- 订正日志保留注释口径 + 补 `test-log-retention.ps1`（`ead4bba`）。
+
+### 测试与文档
+
+- 把「未验项」尽量转成可验证：`test-transition-failure` / `test-status-lease` / `test-log-retention` / `test-remove-e2e` 四个新测试，删除流程端到端接缝（`40bffbb`）。
+- 回归 PASS 输出行 27 → 37；解析文件 34 → 39；`run-all.ps1` 测试条目 16 → 20。
+
 ## [Unreleased] — 移除 WSL 纳管
 
 ### 移除
