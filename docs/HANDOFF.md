@@ -46,6 +46,33 @@ PROJECT.md 模块描述、`ToggleTimeoutMs` 抬到 45000），本轮补上剩余
 **没做的**：C6（`ServicesPipeTimeout` 耗时竞争）仍未有真机数字，`ToggleTimeoutMs=45000`
 是按管道上限推的——已记进 PROJECT.md「已知限制」。`tests/probe-1053-timing.ps1` 需管理员跑。
 
+### 第二轮审计（自查，2026-10-11）
+
+对修复后的 HEAD 再做一轮三方向审计（正确性 / 安全 / 测试+文档）。新发现：
+
+| 类 | 项 | 改动 |
+|----|----|------|
+| 正确性 | **H1（最严重）** | 探测驱动的过渡态不写 `TransitionAt` → 方向守卫永久丢弃反向探测、45s 逃生也失效（`Test-TransitionTimedOut` 对 MinValue 恒 false）→ 卡片永久卡死。已实跑复现。修法：方向守卫只保护命令驱动的过渡态 |
+| 正确性 | M1 | 离开过渡态时 `TransitionAt` 不复位 → 旧时间戳污染后续判据。随 H1 一并修 |
+| 安全 | **S1（本批引入的回归）** | ACL 脚本扩了泄漏主体后，`RemoveAccessRule` 对不可翻译的 `ALL APPLICATION PACKAGES` 抛异常，`$ErrorActionPreference='Stop'` → 脚本中止、`Set-Acl` 从不执行、ACL 永远没收紧。修法：`SetAccessRuleProtection($true,$false)` 丢弃继承 + 移除循环 try/catch |
+| 安全 | S2 | `NSSM_PATH` 只做 `Test-Path` → 加文件名校验（须为 `nssm.exe`） |
+| 安全 | S3 | 服务名允许纯 `.`/`..` → 拒绝（路径归一化会指错注册表键） |
+| 安全 | S4 | `Test-DirAclPermissive` 漏判 `Authenticated Users` / AppContainer SID → 补入 |
+| 安全 | S5 | APPDATA 检测等号后空格可绕过（`$kv[1]` 未 Trim）→ Trim 后判 |
+| 安全 | S8 | `Save-Svc` 的 `.tmp` 未进 `.gitignore` → 补规则 |
+| 文档 | — | HANDOFF「关键文件」指向旧克隆 `D:\service-manager\` 且行号失效 → 改相对路径 + 函数名定位；Mica「已验」措辞澄清（验的是 DWM 返回值，非可见效果）；CHANGELOG 补本批段 |
+
+**H1 实跑复现（本机，自建 harness）**：
+```
+2.probe=启动中           ST=启动中 TransAtSet=False Btn=False
+3.probe=已停止(期望终态否) ST=启动中 TransAtSet=False Btn=False   ← 修前：永久丢弃
+5.after sweep            ST=启动中 ...                            ← 修前：45s 逃生也不动
+6.double-click           status='S 正在切换中'                     ← 用户无法操作
+```
+修后第 3 步即收敛为「已停止 Btn=True」。回归见 `tests/test-transition-failure.ps1` 第 4b 段。
+
+**未修（设计取舍，记入 PROJECT.md 已知限制）**：L1 `Test-GuiInstanceRunning` 的 TOCTOU（GUI 启动早期探测判「无 GUI」是固有窗口）；L2 删除失败回滚到删除前终态（≤4s 自愈）；S7 `Open-PanelUrl` 的 URL 来自用户自己的 `services.json`。
+
 ---
 
 ## 上一段做到哪（本轮 T1–T7）
@@ -78,8 +105,9 @@ PROJECT.md 模块描述、`ToggleTimeoutMs` 抬到 45000），本轮补上剩余
   （PID 10988，13:10 启动，早于本轮改动）。`gui-crash.log` 里 16:44 那次
   `Already running; another instance holds the mutex` 是真实的第二实例被拒记录。
 - **UAC 提权路径有效**：crash log 每次启动均记 `admin=True`（launch.vbs → ShellExecute runas）。
-- **Mica 实测生效**：离屏建窗后 `DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE=38, 2)`
-  返回 hr=0，`DwmGetWindowAttribute` 回读 = 2。
+- **Mica 的 DWM 调用实测成功**：离屏建窗后 `DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE=38, 2)`
+  返回 hr=0，`DwmGetWindowAttribute` 回读 = 2。（注：验的是**调用返回值**，不是肉眼可见的
+  玻璃效果——后者仍需真机交互确认，见文末「未验的部分」。）
 - **`ServiceController` 行为与注释相符**：构造不抛；对不存在服务 `.Status` 返回空串不抛；
   `.Start()` 抛 `MethodInvocationException`（内层 `InvalidOperationException`）。
 - **非管理员 `sc.exe start <已运行服务>` 返回 5**（拒绝访问），不是 1056 —— 与代码注释一致。
@@ -327,14 +355,17 @@ backup-guard 只碰 `~/.claude`。故**不做默认迁移**。
 
 ## 关键文件
 
-- `D:\service-manager\lib\card.ps1` —— P0-1 的两处 `Start-Process`（第 95、134 行）。
-- `D:\service-manager\service-manager-gui.ps1` —— P0-1 的 Dispatcher handler 落点（第 118 行后）；P0-2 的 `$sync` 注入（第 141 行）。
-- `D:\service-manager\lib\poll.ps1` —— P0-2 的 `Invoke-PendingCommands` / `Invoke-Sc`；P1 的轮询周期。
-- `D:\service-manager\lib\svc-common.ps1` —— 退出码/状态中文映射（`Convert-ScExitCode` / `Convert-ServiceStatus`）、删除序列（`Invoke-ServiceRemove`）、实证复核谓词。**原先散在 `poll.ps1` 的 here-string 与 `nssm.ps1` 里，2026-10-08 起统一到本文件**——here-string 里的定义只进 runspace，UI 线程与 CLI 取不到。
-- `D:\service-manager\lib\util.ps1` —— P0-1 的 `Open-PanelUrl` 落点；P1 的 `Remove-RotatedLogs` 落点；`Get-LogFiles` 的轮转档识别可复用（现已移 `lib/logview.ps1`）。
-- `D:\service-manager\lib\config.ps1` —— P2 / P4 的收口键落点。
-- `D:\service-manager\tests\run-all.ps1` —— 回归入口，改完必跑（解析检查 + 23 项）。
-- `D:\service-manager\docs\PROJECT.md` —— 架构与设计决策 SSOT，动结构时同步。
+> 用**仓内相对路径**，不写绝对盘符——本文件曾指向旧克隆 `D:\service-manager\`（当前仓在
+> `D:\projects\nssm-service-manager`），行号也随重构失效。行号会继续漂，定位以函数名为准。
+
+- `lib/card.ps1` —— 卡片状态机：`Update-CardData` / `Set-CardTransition` / `Set-CardRollback` / `Test-CardToggleReady` / `Invoke-TransitionTimeoutEscape`。
+- `service-manager-gui.ps1` —— Dispatcher handler（`add_UnhandledException`）；`$sync` 注入；CLI `-Add` 分支的单实例守卫。
+- `lib/poll.ps1` —— 后台 runspace：`Invoke-PendingCommands` / `Invoke-Sc` / `Invoke-ServiceStart`；轮询周期。
+- `lib/svc-common.ps1` —— 退出码/状态中文映射（`Convert-ScExitCode` / `Convert-ServiceStatus`）、删除序列（`Invoke-ServiceRemove`）、实证复核谓词（`Test-ServiceGone` / `Test-ServicePresent`）。**原先散在 `poll.ps1` 的 here-string 与 `nssm.ps1` 里，2026-10-08 起统一到本文件**——here-string 里的定义只进 runspace，UI 线程与 CLI 取不到。
+- `lib/util.ps1` —— `Open-PanelUrl` / `Remove-RotatedLogs` / `Update-StatusTick` / `Test-GuiInstanceRunning`；`Get-LogFiles` 已移 `lib/logview.ps1`。
+- `lib/config.ps1` —— 可调常量收口。
+- `tests/run-all.ps1` —— 回归入口，改完必跑（解析检查 + 23 项）。
+- `docs/PROJECT.md` —— 架构与设计决策 SSOT，动结构时同步。
 
 ## 决策与坑（本次新增）
 

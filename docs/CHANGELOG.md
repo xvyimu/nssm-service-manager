@@ -3,6 +3,27 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
+## [0.7.0] — 2026-10-11：审计修复 + 探测驱动过渡态卡死
+
+两轮审计（外部报告 + 本轮自查）逐条核对后的修复。主线两条：**「过渡态不能只靠命令驱动」** 与 **「ACL 脚本得真能跑完」**。
+
+### 探测驱动的过渡态永久卡死（H1，最严重）
+
+`Update-CardData` 的探测分支把卡片带进「启动中/停止中」时**不写 `TransitionAt`**（那是 `Set-CardTransition` 才写的）。于是方向守卫（启动中只接受运行中收尾）把回落探测永久丢弃，而 `Test-TransitionTimedOut` 对 `TransitionAt=MinValue` 恒返回 false → 45s 逃生也失效。触发路径：外部工具启动服务、右键直接 `Send-ServiceCommand` 时探测到 `StartPending`，服务启动失败回落 `Stopped` → 卡片永久卡在「启动中」、按钮永久灰。
+
+修法：**方向守卫只保护命令驱动的过渡态**（`TransitionAt` 有值 = `Set-CardTransition` 设过）；探测驱动的过渡态可被探测值收尾。顺带修 M1：离开过渡态时复位 `TransitionAt`（否则旧时间戳会让后续探测驱动的过渡态被误判成命令驱动）。已实跑复现 + 加回归。
+
+### ACL 脚本完全失效（S1，2026-10-11 引入并当场修掉）
+
+`set-service-params-acl.ps1` 移除泄漏 ACE 用 `RemoveAccessRule`，而 `APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES` 在本机**无法翻译回 SID** → 抛异常 → `$ErrorActionPreference='Stop'` 让脚本中止，`Set-Acl` 从不执行，ACL 永远没收紧。修法：`SetAccessRuleProtection($true,$false)` 丢弃继承（继承来的泄漏 ACE 直接消失，不撞翻译）+ 移除循环逐条 `try/catch` + 校验阶段报告失败主体。
+
+### 其余审计项
+
+- **正确性**：C1 CLI `-Add` 绕过单实例 mutex（抽 `Test-GuiInstanceRunning`）；C2 ack 成功回执无条件点亮门闩；C3 非过渡态失败回执错误回滚；C5 删除中超时收敛到「未知」；C7 `poll.ps1` 的 `$ok` 未逐迭代重置；C8 `xaml.ps1` btnNext 未走 gate。
+- **安全**：S2 `NSSM_PATH` 只做 `Test-Path`（加文件名校验）；S3 服务名允许纯 `.`/`..`（拒绝）；S4 `Test-DirAclPermissive` 漏判 `Authenticated Users`；S5 APPDATA 检测等号后空格可绕过；S8 `Save-Svc` 的 `.tmp` 未进 `.gitignore`。
+- **测试**：T1 single-instance 夹具 finally 抛异常吞断言；T2/T3 dialogs 两个提交体零覆盖（抽 `Submit-AddService`/`Submit-RemoveCommand`）；T4 `Show-SecurityCheck` ACL 判定零覆盖（抽 `Test-DirAclPermissive`）；T5 ACL 脚本零覆盖；T6 退出码映射无直接断言；T7 颜色矩阵缺分支。回归 20 → 23 项。
+- **文档**：README 补 UAC 被拒/提权 GUI 说明；PROJECT.md 订正「方向匹配已消除」的失实描述；HANDOFF 量纲三分量 + 关键文件改相对路径；本段补记。
+
 ## [0.6.0] — 2026-10-05：过渡态健壮性与 NSSM 退出码实证
 
 这一批的主线是「**不能把状态押在会撒谎的信号上**」：NSSM/sc.exe 的退出码、命令回执、后台 runspace 的存活，三处都曾让界面显示与实际不符。按「为什么」归并：
