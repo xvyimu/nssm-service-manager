@@ -7,6 +7,10 @@ services.json
 # 本机实配（可调常量覆盖）——仓里只放 config.example.json
 config.json
 
+# Save-Svc 原子写的临时文件（services.json.$PID.$guid.tmp）——崩溃可能残留，别让它入仓
+services.json.*.tmp
+config.json.*.tmp
+
 # 本地密钥文件——永不入仓
 *.key
 *-key

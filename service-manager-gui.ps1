@@ -18,8 +18,11 @@ $cfg = "$root\services.json"
 # 避免 CLI 分支与 GUI 分支各写一份字符串而漂移。
 $script:mutexName = 'Local\service-manager-gui'
 # NSSM 探测：优先 env > Get-Command > scoop 安装路径，避免硬编码 scoop
+# NSSM_PATH 只做「存在 + 文件名是 nssm.exe」两项校验，不校验签名/路径——它随后会以管理员
+# 身份被调用（install/set/remove），只做 Test-Path 会让「指向任意 exe」直接以管理员运行。
+# 文件名校验挡住最直接的滥用，又不破坏 README 明写的「自备 NSSM 后设 NSSM_PATH」用法。
 $script:nssm = $null
-if ($env:NSSM_PATH -and (Test-Path -LiteralPath $env:NSSM_PATH)) {
+if ($env:NSSM_PATH -and (Test-Path -LiteralPath $env:NSSM_PATH) -and (Split-Path -Leaf $env:NSSM_PATH) -ieq 'nssm.exe') {
   $script:nssm = $env:NSSM_PATH
 } else {
   $found = $null

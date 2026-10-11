@@ -12,6 +12,10 @@
 # 调用顺序与两处原逻辑一致（名称 → 可执行文件 → 端口 → 重名），保持报错优先级不变。
 function Test-SvcInput([string]$n,[int]$p,[string]$exe,$existing){
   if($n -notmatch '^[A-Za-z0-9_.-]+$'){ return @{code='name'; msg="服务名含非法字符（仅允许字母数字 . _ -）：$n"} }
+  # 拒绝纯 `.` / `..`：它们作为路径段会被归一化（`Services\..` → `Services` 父键），
+  # 拼进注册表路径 `...\Services\<名>\Parameters` 时会指到祖先键，脚本可能收紧错的键。
+  # 点开头/含点但非纯点段的名字（`.hidden` / `A..B`）合法，放行。
+  if($n -eq '.' -or $n -eq '..'){ return @{code='name'; msg="服务名不能是 . 或 ..（路径归一化会指错注册表键）：$n"} }
   if(-not (Test-Path -LiteralPath $exe)){ return @{code='exe'; msg="可执行文件不存在：$exe"} }
   if($p -lt 1 -or $p -gt 65535){ return @{code='port'; msg="端口非法: $p"} }
   if($existing -and $existing.Contains($n)){ return @{code='dup'; msg="$n 已存在"} }
@@ -29,7 +33,9 @@ function Test-EnvPairs([object[]]$pairs){
   foreach($pair in $pairs){
     $kv=$pair -split '=',2
     if($kv.Count -ne 2 -or [string]::IsNullOrWhiteSpace($kv[0])){ return "环境变量格式错误: $pair`n应为 KEY=VAL" }
-    if($kv[0].Trim() -eq 'APPDATA' -and $kv[1] -match '^C:\\Users\\'){ return 'LocalSystem 服务不能使用交互用户的 APPDATA。' }
+    # 键与值都 Trim 再判：`APPDATA= C:\Users\x`（等号后带空格）此前绕过检测——$kv[1] 未 Trim，
+    # 正则锚 `^C:\\Users\\` 匹配不到前导空格。
+    if($kv[0].Trim() -eq 'APPDATA' -and $kv[1].Trim() -match '^C:\\Users\\'){ return 'LocalSystem 服务不能使用交互用户的 APPDATA。' }
   }
   $null
 }

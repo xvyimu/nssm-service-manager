@@ -253,9 +253,14 @@ function Resolve-ServiceExeDir([string]$path){
 # 传入已读到的 ACL 对象（不在此处 Get-Acl），返回 '是' / '否' / '未知（无法读取 ACL）'。
 function Test-DirAclPermissive($acl){
   if (-not $acl) { return '未知（无法读取 ACL）' }
+  # 「宽泛主体」= 本机任意登录用户即可写。Authenticated Users 是最常见的漏判形态
+  # （目录只对 NT AUTHORITY\Authenticated Users 开放时，任何登录用户可替换 exe → 提权）；
+  # AppContainer 包 SID（S-1-15-3-*）同理。判据与 set-service-params-acl.ps1 的
+  # Test-LeakyAce 概念一致，但这里是文件系统 ACL、权限枚举不同，故不共用函数、只对齐主体清单。
   foreach ($a in $acl.Access) {
-    if (@('BUILTIN\Users','Everyone','Users') -contains $a.IdentityReference.Value -and
-        $a.FileSystemRights.ToString() -match 'Write|Modify|FullControl') { return '是' }
+    $id = $a.IdentityReference.Value
+    $wide = @('BUILTIN\Users','Everyone','Users','NT AUTHORITY\Authenticated Users','Authenticated Users') -contains $id -or $id -like 'S-1-15-3-*'
+    if ($wide -and $a.FileSystemRights.ToString() -match 'Write|Modify|FullControl') { return '是' }
   }
   '否'
 }

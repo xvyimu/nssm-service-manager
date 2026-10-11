@@ -297,17 +297,26 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
   # 用户刚刚触发的过渡态，也不应重新启用按钮——否则慢停止期间显示与实际不符。
   # 按方向判期望终态：启动中只接受运行中收尾，停止中只接受已停止收尾；
   # 未安装/未知属异常态（服务被卸载或出错），允许通过。
-  # 命令纪元（PendingEpoch）用于 ack 回执过滤：旧命令的回执不应解封新命令的过渡态。
-  # 普通探测仍按方向匹配收尾——服务真正进入终态时应当让过渡态退出。
-  # 超时逃生（T1）：回执丢失时（后台异常退出/命令未入队），过渡态不能永久卡住——
-  # 超过 ToggleTimeoutMs 后不再按方向过滤，直接接受到达的探测值并解封按钮。
-  # 正常的慢启动/慢停止由 ack 回执解封，远早于这个上限，不会误触发。
+  # **方向守卫只保护「命令发起」的过渡态**（TransitionAt 有值 = Set-CardTransition 设过，
+  # 即用户经双击/右键走 Invoke-CardToggle 或 Submit-RemoveCommand）。探测驱动的过渡态
+  # （TransitionAt=MinValue，如外部工具启动、右键直接 Send-ServiceCommand 时探测到
+  # StartPending）没有在途命令要保护，不该按方向丢弃——否则服务启动失败回落「已停止」
+  # 会被永久丢弃、卡片卡死在「启动中」、连 45s 逃生也失效（因为 Test-TransitionTimedOut
+  # 对 MinValue 恒 false）。H1。
+  # 超时逃生（T1）：命令驱动的过渡态若回执丢失，超过 ToggleTimeoutMs 后不再按方向过滤，
+  # 直接接受到达的探测值并解封按钮。
+  $commandDriven = $c.TransitionAt -ne [datetime]::MinValue
   $transitionExpect = @{ '启动中' = '运行中'; '停止中' = '已停止' }
-  if (-not $timedOut -and $transitionExpect.ContainsKey($c.ST)) {
+  if (-not $timedOut -and $commandDriven -and $transitionExpect.ContainsKey($c.ST)) {
     $expected = $transitionExpect[$c.ST]
     if ($st -ne $expected -and $st -notin @('未安装','未知')) { return }
   }
   if ($timedOut) { $c.PendingEpoch=0 }  # 逃生后清纪元，避免迟到回执再搅一次
+  # 离开过渡态（旧 ST 是过渡态、新 ST 不是）→ 复位 TransitionAt。不复位它就会停在旧时间戳：
+  # 之后任何探测驱动的过渡态都会被误判成命令驱动（M1），方向守卫被错误施加。
+  if ($c.ST -in @('启动中','停止中') -and $st -notin @('启动中','停止中')) {
+    $c.TransitionAt = [datetime]::MinValue
+  }
   $c.ST = $st
   $c.H = $h   # 记住生效的健康文案：进入下一次过渡态时由 Set-CardTransition 留档为 PrevH
   $running = $st -eq '运行中'

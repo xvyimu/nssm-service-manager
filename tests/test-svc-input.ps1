@@ -25,6 +25,13 @@ try {
   Assert ($r.code -eq 'name') 'space in name should be rejected'
   $r = Test-SvcInput 'ok_name.v2-x' 8080 $fakeExe $null
   Assert ($null -eq $r) 'legal charset should pass'
+  # 纯 . / .. 被拒（路径归一化会指错注册表键）；点开头/含点但非纯点段放行
+  foreach ($dot in '.','..') {
+    $r = Test-SvcInput $dot 8080 $fakeExe $null
+    Assert ($r.code -eq 'name') "bare '$dot' should be rejected, got $($r.code)"
+  }
+  Assert ($null -eq (Test-SvcInput '.hidden' 8080 $fakeExe $null)) '.hidden should pass'
+  Assert ($null -eq (Test-SvcInput 'A..B' 8080 $fakeExe $null)) 'A..B should pass'
 
   # exe 不存在
   $missing = Join-Path ([IO.Path]::GetTempPath()) "sm-neg-missing-$([guid]::NewGuid().ToString('N')).exe"
@@ -62,6 +69,8 @@ try {
   Assert ((Test-EnvPairs @('NOVALUE')) -match '格式错误') 'pair without = should fail'
   Assert ((Test-EnvPairs @('=1')) -match '格式错误') 'empty key should fail'
   Assert ((Test-EnvPairs @('APPDATA=C:\Users\bob\AppData\Roaming')) -match 'APPDATA') 'interactive APPDATA should fail'
+  # 等号后带空格也应被识别（S5：$kv[1] 未 Trim 曾绕过）
+  Assert ((Test-EnvPairs @('APPDATA= C:\Users\bob\AppData\Roaming')) -match 'APPDATA') 'APPDATA with leading space should still fail'
   Assert ($null -eq (Test-EnvPairs @('APPDATA=C:\Windows\System32\config\systemprofile\AppData\Roaming'))) 'system-profile APPDATA should pass'
   Assert ($null -eq (Test-EnvPairs @())) 'empty pair list should pass'
 

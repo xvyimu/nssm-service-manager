@@ -114,6 +114,23 @@ try {
   Assert ($card.ST -eq '已停止') "Sweep did not escape a stuck 启动中 without a probe result: ST=$($card.ST)."
   Assert ($card.Btn.IsEnabled) 'Sweep left the button disabled (永久卡死 on background death).'
 
+  # ---- 4b. H1 回归：探测驱动的过渡态不得永久卡死 ----
+  # 探测报 StartPending/StopPending 会把卡片带进过渡态，但**不经过 Set-CardTransition**，
+  # 故 TransitionAt 仍是 MinValue。修前：方向守卫按「启动中只接受运行中」把回落「已停止」
+  # 永久丢弃，而 Test-TransitionTimedOut 对 MinValue 恒 false → 45s 逃生也失效 → 卡片卡死
+  # 在「启动中」、按钮永久灰。修后：方向守卫只保护命令驱动的过渡态（TransitionAt 有值）。
+  $script:queue=[Collections.Concurrent.ConcurrentQueue[object]]::new()
+  $script:msgQueue=[Collections.Concurrent.ConcurrentQueue[string]]::new()
+  $card.LastToggle=[datetime]::MinValue
+  Update-CardData 'TestService' '已停止' ''
+  Update-CardData 'TestService' '启动中' ''   # 探测到 StartPending（非命令驱动）
+  Assert ($card.ST -eq '启动中' -and -not $card.Btn.IsEnabled) 'Probe-driven start transition not entered.'
+  Assert ($card.TransitionAt -eq [datetime]::MinValue) 'Probe-driven transition must not set TransitionAt.'
+  # 服务启动失败回落「已停止」——修前被永久丢弃
+  Update-CardData 'TestService' '已停止' ''
+  Assert ($card.ST -eq '已停止') "Probe-driven transition never converged (H1): ST=$($card.ST)."
+  Assert ($card.Btn.IsEnabled) 'Probe-driven transition left the button disabled (H1 永久卡死).'
+
   # ---- 5a. Test-CardToggleReady 真值表（门闩单一来源）----
   Assert (Test-CardToggleReady '已停止' '') '已停止应可切换。'
   Assert (Test-CardToggleReady '运行中' '正常') '运行中+正常应可切换。'

@@ -88,4 +88,47 @@ $aclC = New-FakeAceAcl '' ''
 Set-FullControlAce $aclC 'NT AUTHORITY\SYSTEM'
 Assert ($aclC.SetCalls.Count -eq 1) '缺失主体应被添加 FullControl。'
 
-Write-Output 'PASS: ACL script has a single leaky-principal predicate (Test-LeakyAce) shared by removal and verification; covers AppContainer package SIDs; no inlined principal list; Set-FullControlAce keys on rights (ReadKey-only gets FullControl, already-full is idempotent).'
+# ---- S1：移除循环必须能在真实 ACL 上走通，不能因个别主体名翻译失败而中止 ----
+# 这条是 2026-10-11 引入并当场修掉的回归：脚本原先用 SetAccessRuleProtection($true,$true)
+# 把继承 ACE 复制成显式，再逐条 RemoveAccessRule——而
+# `APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES` 在本机无法翻译回 SID，
+# RemoveAccessRule 抛 "Some or all identity references could not be translated."，
+# $ErrorActionPreference='Stop' 让整个脚本中止，Set-Acl 从不执行 → ACL 永远没收紧。
+# 修法：$false 丢弃继承 + 移除循环逐条 try/catch。这里用一个**真实键的只读内存副本**
+# 跑同一套逻辑（丢弃继承 + 移除 + 补 FullControl），断言不抛、无泄漏残留。
+# 不写注册表。
+$probeKey = $null
+foreach ($svc in 'wuauserv','Spooler','BITS') {
+  $k = "HKLM:\SYSTEM\CurrentControlSet\Services\$svc\Parameters"
+  if (Test-Path -LiteralPath $k) { $probeKey = $k; break }
+}
+if ($probeKey) {
+  $fnFull = $ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Set-FullControlAce'
+  }, $true) | Select-Object -First 1
+  . ([scriptblock]::Create($fnFull.Extent.Text))
+
+  $newAcl = Get-Acl -LiteralPath $probeKey
+  # 复刻脚本的修法：丢弃继承（$false），逐条 try/catch 移除
+  $newAcl.SetAccessRuleProtection($true, $false)
+  $removeFailed = @()
+  foreach ($ace in @($newAcl.Access | Where-Object { Test-LeakyAce $_.IdentityReference.Value })) {
+    try { [void]$newAcl.RemoveAccessRule($ace) } catch { $removeFailed += $ace.IdentityReference.Value }
+  }
+  Set-FullControlAce $newAcl 'BUILTIN\Administrators'
+  Set-FullControlAce $newAcl 'NT AUTHORITY\SYSTEM'
+  $leaked = @($newAcl.Access | Where-Object { Test-LeakyAce $_.IdentityReference.Value })
+  Assert ($leaked.Count -eq 0) "丢弃继承后不应有泄漏残留，实际 $($leaked.Count)：$(($leaked | ForEach-Object { $_.IdentityReference.Value }) -join '; ')"
+  # Administrators 与 SYSTEM 都应有 FullControl
+  $full = [Security.AccessControl.RegistryRights]::FullControl
+  foreach ($p in 'BUILTIN\Administrators','NT AUTHORITY\SYSTEM') {
+    $has = $newAcl.Access | Where-Object { $_.IdentityReference.Value -eq $p -and ($_.RegistryRights -band $full) -eq $full }
+    Assert ($has) "补 FullControl 后 $p 应有 FullControl。"
+  }
+  Write-Output "  (S1) 真实键内存副本跑通：丢弃继承后无泄漏残留，Administrators+SYSTEM FullControl。"
+} else {
+  Write-Output '  (S1) 跳过：本机找不到带 Parameters 的服务键做只读验证。'
+}
+
+Write-Output 'PASS: ACL script has a single leaky-principal predicate (Test-LeakyAce) shared by removal and verification; covers AppContainer package SIDs; no inlined principal list; Set-FullControlAce keys on rights; removal loop survives untranslatable principals on a real ACL (drop-inheritance fix).'

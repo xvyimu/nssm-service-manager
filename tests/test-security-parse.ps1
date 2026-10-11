@@ -51,6 +51,10 @@ Assert-Acl (Test-DirAclPermissive (New-FakeAcl @(New-FakeAce 'Everyone' 'Modify'
 Assert-Acl (Test-DirAclPermissive (New-FakeAcl @(New-FakeAce 'Users' 'FullControl'))) '是' 'Users+FullControl should be permissive'
 # Users 只有 Read → 不过宽（关键：不能只看主体，要看权限）
 Assert-Acl (Test-DirAclPermissive (New-FakeAcl @(New-FakeAce 'BUILTIN\Users' 'ReadAndExecute'))) '否' 'Users+Read must NOT be permissive'
+# Authenticated Users + Write → 过宽（S4：常见漏判形态）
+Assert-Acl (Test-DirAclPermissive (New-FakeAcl @(New-FakeAce 'NT AUTHORITY\Authenticated Users' 'Write'))) '是' 'Authenticated Users+Write should be permissive'
+# AppContainer 包 SID + Modify → 过宽
+Assert-Acl (Test-DirAclPermissive (New-FakeAcl @(New-FakeAce 'S-1-15-3-1024-1234' 'Modify'))) '是' 'AppContainer SID+Modify should be permissive'
 # 只有 Administrators → 不过宽
 Assert-Acl (Test-DirAclPermissive (New-FakeAcl @(New-FakeAce 'BUILTIN\Administrators' 'FullControl'))) '否' 'Admins-only should not be permissive'
 # 多 ACE：Users 只读 + SYSTEM 全控 → 不过宽（Users 那条不满足权限判据）
