@@ -3,6 +3,36 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
+## [未发布] — 2026-10-20：静默不执行的日志清理
+
+### `Dispatcher.BeginInvoke` 挑错重载，首帧后的日志清理从未执行
+
+`ContentRendered` 里用 `$win.Dispatcher.BeginInvoke([Action]{ Invoke-LogCleanup ... }, 'Background')`
+把清理排到后台优先级。`Dispatcher` 的重载表里**没有** `(Delegate, DispatcherPriority)` 这一组——
+C# 会把 `'Background'` 隐式转成枚举、绑到 `(Delegate, DispatcherPriority, Object[])`；
+**PowerShell 不转**，退回 `(Delegate, Object[])`，把字符串当成**委托的实参数组**。
+
+后果是**静默**的，这是本次最值得记的一点：
+
+- `BeginInvoke` 调用本身不抛错，正常返回
+- 委托在 UI 线程被以 1 个参数调用，而 `[Action]` 要 0 个 → `TargetParameterCountException`
+- 异常被 Dispatcher 兜底 handler `Handled=$true` 接住
+- **窗口正常显示、动作永不执行**
+
+于是 `gui-crash.log` 里那一行 `TargetParameterCountException` 被长期当成「兜底生效了」的证据
+（前几批文档里甚至写着「被兜住，不影响关闭」）。**兜底接住异常 ≠ 动作完成**——两者在这条链路上长得一模一样。
+
+修法：优先级写成显式枚举 `[System.Windows.Threading.DispatcherPriority]::Background`。
+新增 `tests/test-dispatcher-priority.ps1` 守住，它不看源码文本，而是真排队 + 跑帧循环验委托执行了；
+并用**反证**确认护栏本身有效（字符串写法必须仍抛 `TargetParameterCountException` 且委托体不执行）。
+同族但**安全**的写法也实测过、别误伤：`MessageBox.Show(...,'OK','Warning')` 与 `SetDock($el,'Top')`
+都不踩——判据不是「字符串一律不行」，而是**重载之间靠参数个数区分不开时会挑错**。
+
+### 文档
+
+- README 里 `Remove-Item ... D:\service-manager\st-tts-shim` 是死引用（目录与服务都已不存在，照抄会白建目录）→ 改为占位符。
+- HANDOFF 关键文件表补回 D4 的三量纲（PASS 输出行 / 解析文件 / 测试条目），并订正审计命令里指向旧克隆的路径。
+
 ## [0.7.0] — 2026-10-11：审计修复 + 探测驱动过渡态卡死
 
 两轮审计（外部报告 + 本轮自查）逐条核对后的修复。主线两条：**「过渡态不能只靠命令驱动」** 与 **「ACL 脚本得真能跑完」**。

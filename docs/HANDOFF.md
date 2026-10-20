@@ -41,7 +41,7 @@ PROJECT.md 模块描述、`ToggleTimeoutMs` 抬到 45000），本轮补上剩余
 - `Parameters` 键默认 ACL 实测含 `BUILTIN\Users` + `ALL APPLICATION PACKAGES` + 裸 SID
   `S-1-15-3-*`（均 ReadKey，inherited）——S1 成立。
 - `sc.exe query`：存在返回 0，不存在返回 1060——T8 的语义确认（见「本轮真机复核」）。
-- `pwsh -NoProfile -File tests/run-all.ps1` → 23 项全 PASS，exit 0。
+- `pwsh -NoProfile -File tests/run-all.ps1` → 测试条目 23、全部 PASS，exit 0。（历史值：该批次当时的条目数；2026-10-20 加 `test-dispatcher-priority.ps1` 后为 24。）
 
 **没做的**：C6（`ServicesPipeTimeout` 耗时竞争）仍未有真机数字，`ToggleTimeoutMs=45000`
 是按管道上限推的——已记进 PROJECT.md「已知限制」。`tests/probe-1053-timing.ps1` 需管理员跑。
@@ -364,12 +364,12 @@ backup-guard 只碰 `~/.claude`。故**不做默认迁移**。
 - `lib/svc-common.ps1` —— 退出码/状态中文映射（`Convert-ScExitCode` / `Convert-ServiceStatus`）、删除序列（`Invoke-ServiceRemove`）、实证复核谓词（`Test-ServiceGone` / `Test-ServicePresent`）。**原先散在 `poll.ps1` 的 here-string 与 `nssm.ps1` 里，2026-10-08 起统一到本文件**——here-string 里的定义只进 runspace，UI 线程与 CLI 取不到。
 - `lib/util.ps1` —— `Open-PanelUrl` / `Remove-RotatedLogs` / `Update-StatusTick` / `Test-GuiInstanceRunning`；`Get-LogFiles` 已移 `lib/logview.ps1`。
 - `lib/config.ps1` —— 可调常量收口。
-- `tests/run-all.ps1` —— 回归入口，改完必跑（解析检查 + 23 项）。
+- `tests/run-all.ps1` —— 回归入口，改完必跑。**三个量纲别混**（D4）：PASS 输出行 47、解析文件 44、测试条目 24（含 `test-dispatcher-priority.ps1`）。
 - `docs/PROJECT.md` —— 架构与设计决策 SSOT，动结构时同步。
 
 ## 决策与坑（本次新增）
 
-- **本仓缺标准要求的文档**。`node ~/.claude/templates/bin/audit-docs.mjs --repo D:\service-manager`
+- **本仓缺标准要求的文档**。`node ~/.claude/templates/bin/audit-docs.mjs --repo D:\projects\nssm-service-manager`
   报 `docs/ARCHITECTURE.md`、`docs/adr/README.md`、`docs/lessons/README.md`、`docs/README.md`、
   `CHANGELOG.md`(仓根)、`docs/HANDOFF.md` 均缺失（本文件即补其中的 HANDOFF）。
   另有 `AGENTS.md` / `CLAUDE.md` / `CONTRIBUTING.md` / `SECURITY.md` 缺失告警。

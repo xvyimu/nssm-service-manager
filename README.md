@@ -139,8 +139,8 @@ Copy-Item services.example.json services.json
 sc.exe stop TTSShim
 nssm remove TTSShim confirm
 
-# 2. 删除本机 shim 目录（已不在版本控制里，删它不影响仓库）
-Remove-Item -Recurse -Force D:\service-manager\st-tts-shim
+# 2. 删除本机 shim 目录（如仍存在；不在版本控制里，删它不影响仓库）
+Remove-Item -Recurse -Force <shim 目录>
 
 # 3. 从 services.json 删掉 TTSShim 条目（或直接用 GUI「添加」重建你要的新服务）
 
