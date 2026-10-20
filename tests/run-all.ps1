@@ -41,6 +41,7 @@ Invoke-Check 'PowerShell parser' {
 
 $tests = @(
   @{ Name = 'launcher'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-launcher.ps1')) }
+  @{ Name = 'dispatcher priority'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-dispatcher-priority.ps1')) }
   @{ Name = 'GUI smoke'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-gui-smoke.ps1')) }
   @{ Name = 'card actions'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-card-actions.ps1')) }
   @{ Name = 'card cache'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-card-cache.ps1')) }

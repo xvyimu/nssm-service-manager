@@ -277,9 +277,13 @@ $win.Add_ContentRendered({
   Write-CrashLog 'Window content rendered'
   # 启动首帧后异步跑一次日志清理（不占首屏）：轮转档保留策略，见 lib/util.ps1。
   # 走 Dispatcher.BeginInvoke + Background 优先级，避免在 ContentRendered 回调里阻塞渲染。
+  # 优先级必须写成枚举，不能写 'Background' 字符串：Dispatcher 没有 (Delegate, DispatcherPriority)
+  # 这个重载，PowerShell 会退回绑定 BeginInvoke(Delegate, Object[] args)，把字符串当成
+  # 委托的实参数组——委托在 UI 线程被以 1 个参数调用，抛 TargetParameterCountException，
+  # 清理永远不执行（曾记在 gui-crash.log 的 DispatcherUnhandled 里）。
   $win.Dispatcher.BeginInvoke([Action]{
     Invoke-LogCleanup 'Log cleanup failed'
-  }, 'Background') | Out-Null
+  }, [System.Windows.Threading.DispatcherPriority]::Background) | Out-Null
 })
 [void]$win.ShowDialog()
 Write-CrashLog "ShowDialog returned (normal exit path)"
