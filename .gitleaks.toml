@@ -1,0 +1,22 @@
+# gitleaks 配置（v8.25.0+ 语法）
+#
+# 目的：接进 pre-commit hook 后，把「已知的误报」排掉，只留真问题。
+# 加白名单前必须先看过实体：路径级白名单会同时放过该路径在 git 历史里的命中，
+# 所以只对「确认是夹具/文档/第三方库」的路径使用。
+#
+# 每次新增 allowlist，在这里写一行理由。没有理由的白名单不该存在。
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------- 误报 1
+# tools/secret_scan.py 自己的自检用例：用构造的假 JWT 测自己的正则能不能命中。
+# 那个字符串是刻意做出来的假样本，不是真密钥（见该文件 __main__ 段的 cases 列表）。
+# 用路径级而不是行内 #gitleaks:allow，因为它同时出现在当前文件和 git 历史里，
+# 行内注释只能压住当前版本，压不住已提交的历史。
+[[allowlists]]
+description = "secret_scan.py 的假样本自检夹具"
+paths = ['''tools/secret_scan\.py''']
+
+# 注意：tools/supabase-evals/frozen_candidates.json 故意不在白名单里。
+# 它的命中是真泄漏（RSSHub ACCESS_KEY），要清理，不是要放过。

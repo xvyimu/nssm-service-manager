@@ -1,0 +1,28 @@
+#!/bin/sh
+# 提交前扫暂存区，发现疑似密钥就拦下（exit 1）。
+#
+# 为什么用原生 git hook 而不是 pre-commit 框架：
+#   pre-commit 的 gitleaks hook 是 language: golang，会为它建隔离 GOPATH 再从源码
+#   编译一遍（几十个依赖，官方 issue #1941 就是这步下载失败）。本机已有 scoop 装的
+#   gitleaks，走原生 hook 直接复用，零额外依赖。
+#
+# 只扫暂存区（--staged --pre-commit），不扫全历史——历史扫描是单独一次性的动作，
+# 不该挂在每次 commit 上（orca 152 个提交扫一遍 ~600ms，但会随历史增长）。
+#
+# 启用（每个 clone 做一次）：
+#   git config core.hooksPath .githooks
+# 跳过：
+#   git commit --no-verify
+#
+# 真泄漏的正确处理顺序是「先吊销/轮换密钥，再改代码」—— 只删代码不改密钥，
+# 历史里那个值仍然有效。参见 D:\orca\docs\ 里的密钥处置记录。
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  # 没装 gitleaks 不拦提交，但要让人知道保护没生效
+  echo "⚠️  gitleaks 未安装，本次提交未做密钥扫描" >&2
+  echo "    安装：scoop install gitleaks" >&2
+  exit 0
+fi
+
+# --redact：即使命中，也不把密钥明文打到终端/日志里
+exec gitleaks git --pre-commit --redact --staged --verbose --no-banner
