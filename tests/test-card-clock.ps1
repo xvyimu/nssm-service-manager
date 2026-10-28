@@ -22,6 +22,10 @@ Write-Output 'PASS: Format-Elapsed 的秒/分/时边界与负值。'
 $script:sync = @{ wake = [Threading.AutoResetEvent]::new($false) }
 $script:svc = [ordered]@{ SvcClock = @{ port = 8080; url = 'http://127.0.0.1:8080' } }
 $script:cmdQueue = [Collections.Concurrent.ConcurrentQueue[object]]::new()
+# 走**真实的每帧节拍**（Update-StatusTick），不是直接调 Update-CardClock：
+# 断言时钟真被接进了 400ms 的 DispatcherTimer 回调，而不只是「函数单独调用时对」。
+$script:queue = [Collections.Concurrent.ConcurrentQueue[object]]::new()
+$script:msgQueue = [Collections.Concurrent.ConcurrentQueue[string]]::new()
 function Stop-Background {}
 $win = New-MainWindow
 try {
@@ -31,7 +35,7 @@ try {
   # 运行中：显示「已运行」
   Update-CardData 'SvcClock' '运行中' '正常'
   $c.StateSince = [datetime]::Now.AddSeconds(-90)
-  Update-CardClock $c ([datetime]::Now)
+  Update-StatusTick
   Assert ($c.LblUp.Text -like '*已运行 1分30秒*') "运行中应显示已运行时长，got [$($c.LblUp.Text)]"
   # 精确比对而不是 -like '服务响应正常*'：后者抓不到「正文被重复拼接」
   Assert ($c.LblUp.Text -eq '服务响应正常 · 已运行 1分30秒') "健康正文应原样保留且只出现一次，got [$($c.LblUp.Text)]"
@@ -51,7 +55,7 @@ try {
   $c.TransitionAt = [datetime]::MinValue
   Update-CardData 'SvcClock' '已停止' ''
   $c.StateSince = [datetime]::Now.AddSeconds(-30)
-  Update-CardClock $c ([datetime]::Now)
+  Update-StatusTick
   Assert ($c.LblUp.Text -like '*已停 30s*') "已停止应显示已停时长，got [$($c.LblUp.Text)]"
 
   # 探测驱动的过渡态：**必须走 Update-CardData 的真实路径**。手工设 TransitionAt 的写法
