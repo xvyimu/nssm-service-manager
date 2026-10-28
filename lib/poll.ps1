@@ -131,6 +131,8 @@ function Invoke-PendingCommands {
 }
 
 try {
+# 上一次全量健康探测（TCP+HTTP）的时刻：中间态快轮询只加快状态查询，不该把探测也提速
+$lastProbeAt = [datetime]::MinValue
 while(-not $sync.stop){
   $executedCmd = (Invoke-PendingCommands) -gt 0  # 本轮是否执行过命令：影响轮询间隔，见循环尾
   # 拷快照（加锁，避免枚举期间 UI 侧增删）
@@ -190,7 +192,13 @@ while(-not $sync.stop){
 
   # 并行探测运行中服务：每个服务一个并行块，内部 TCP→HTTP 串行，服务间并行。
   # $using:http 传 HttpClient 引用（线程安全）；结果按输入顺序返回，统一入队。
-  if ($toProbe.Count -and -not $sync.stop) {
+  # 中间态快轮询期间（$pendingSeen）按 ProbeIntervalMs 限流：1s 一轮 TCP+HTTP 会把
+  # 运行中服务的探测负载放大 4 倍，而服务卡在 StopPending 可能持续很久。状态本身就靠
+  # 上面那次批量 Get-Service 更新，健康值晚几秒无妨。
+  $probeDue = -not $pendingSeen -or
+              (([datetime]::Now - $lastProbeAt).TotalMilliseconds -ge $probeIntervalMs)
+  if ($toProbe.Count -and -not $sync.stop -and $probeDue) {
+    $lastProbeAt = [datetime]::Now
     $results = $toProbe | ForEach-Object -Parallel {
       $n=$_.n; $p=$_.port; $url=$_.url
       # 每项的生效超时：per-service 覆盖优先，缺省回落经 $using: 传入的全局值

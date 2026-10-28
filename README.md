@@ -212,8 +212,8 @@ Copy-Item config.example.json config.json
 | `LogKeepDays` | 14 | 轮转日志保留天数：删除须同时满足「不在全局前 N 份」且「早于 N 天」，故 14 天内高频轮转的档一份都不删（保留份数上限只在跨过天数后生效） |
 | `LogDir` | `''` | 日志根覆盖；空 = 仓内 `logs/`。只影响新注册的服务——已注册服务的 AppStdout/AppStderr 写死在注册表，须逐个重新注册。**日志窗口与保留策略按每个服务实际的 AppStdout 目录走**（读注册表），`LogDir` 只在读不到时兜底——手工 `nssm install` 的服务日志在别处，也能被看到和清理 |
 | `ProbeThrottleLimit` | 8 | 并行探测的 ThrottleLimit（`poll.ps1` ForEach-Object -Parallel） |
-| `ProbeIntervalMs` | 4000 | 有运行中服务、本轮执行过命令、或有服务停在 StartPending/StopPending 时的轮询间隔（`poll.ps1` 循环尾 WaitOne） |
-| `ProbePendingMs` | 1000 | 有服务处于 `StartPending`/`StopPending` 时的轮询间隔。查状态是廉价查询，不必跟着 4 秒的健康探测节奏——否则「启动中」最多要 4 秒才翻成「运行中」 |
+| `ProbeIntervalMs` | 4000 | 有运行中服务、或本轮执行过命令时的轮询间隔（`poll.ps1` 循环尾 WaitOne），也用作健康探测的最小间隔 |
+| `ProbePendingMs` | 1000 | 有服务处于 `启动中/停止中/暂停中/继续中` 时的轮询间隔。查状态是廉价查询，不必跟着 4 秒的健康探测节奏——否则「启动中」最多要 4 秒才翻成「运行中」。**只加快状态查询**，TCP+HTTP 健康探测仍按 `ProbeIntervalMs` 限流，不会跟着放大 4 倍 |
 | `ProbeIdleMs` | 15000 | 全停止、无在途命令、且没有服务处于中间态时的轮询间隔——省下空转的唤醒与整轮扫描 |
 | `WaitStoppedPollMs` | 300 | `Wait-Stopped` 轮询步长（`svc-common.ps1`） |
 | `AppRotateBytes` | 5242880 | 单日志档轮转阈值（5 MiB，NSSM `AppRotateBytes`） |
@@ -275,7 +275,7 @@ ffmpeg -y -framerate 3 -i .demo-tmp/frame-%02d.png -vf "scale=640:-1:flags=lancz
 
 `run-all.ps1` 先解析全部 PowerShell 文件，再依次跑 11 项回归：调度优先级、卡片按钮门闩、卡片时长、过渡态失败逃生、探测命令队列、按服务超时、输入校验、服务注册、配置参数、删除端到端、对话框提交。NSSM、服务启停、配置保存及菜单的外部操作采用替身，不会注册测试服务或改动 `services.json`。真实 UAC、系统 Mica 效果与 NSSM 服务生命周期需在本机交互验证。
 
-> 2026-10-28 精简测试：原先 31 个文件 / 3323 行里，多数是同一批状态机在不同夹具下的重复断言。保留的 11 项互不重叠；**因此不再自动覆盖**的几处——`Set-ServiceParamsAcl` 泄漏判据、`Remove-RotatedLogs` 轮转保留窗口、并发探测块的 `$using:` 作用域、托盘策略真值表、启动器/UAC、单实例互斥、GUI 冒烟。这些要么改动频率低，要么只能在真机交互里验；改到对应代码时需手工过一遍。状态栏显示的租约（后台失败消息不被同一帧的自动刷新覆盖）也在其中。
+> 2026-10-28 精简测试：原先 31 个文件 / 3323 行里，多数是同一批状态机在不同夹具下的重复断言。保留的 11 项互不重叠，卡片缓存命中后的 Port/Url 刷新与「停止中收到运行中探测必须丢弃」两条已并入保留用例，不丢覆盖。**仍不再自动覆盖**的几处——`Set-ServiceParamsAcl` 泄漏判据、`Remove-RotatedLogs` 轮转保留窗口、并发探测块的 `$using:` 作用域、托盘策略真值表、启动器/UAC、单实例互斥、GUI 冒烟、`Save-Svc` 的原子写（不留 `.tmp`）、状态栏显示的租约。这些要么改动频率低，要么只能在真机交互里验；改到对应代码时需手工过一遍。
 
 `sc.exe` 一律经 `Get-ScExe` 解析后调用（本机实测 System32 可能不在 PATH，裸调会拿不到命令而让 `$LASTEXITCODE` 停留在上一条的码）。`test-add-svc.ps1` 专门守这条：注入一个**不同名**的替身命令，只有真的走了解析才会调到它——注入名若和裸调同名（`sc.exe`），调用点退回裸调也照样命中，测不出来。
 

@@ -165,7 +165,7 @@ function Invoke-DispatcherErrorFallback($e){
 
 # DispatcherTimer 每帧：排空结果队列（探测结果 / 命令回执）→ 排空消息队列写状态栏
 # → 空闲 4 秒后自动刷新。抽成函数而不内联在 Add_Tick 里，是为了能直接单测：
-# 原实现让 test-remove-async 只能「复刻」这段逻辑，改这里而漏改测试就是静默漂移。
+# 内联在 Add_Tick 里时测试只能「复刻」这段逻辑，改这里而漏改测试就是静默漂移。
 function Update-StatusTick {
   $item = $null
   while ($script:queue.TryDequeue([ref]$item)) {

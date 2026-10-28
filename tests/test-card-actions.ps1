@@ -79,6 +79,13 @@ try {
   Assert (-not $card.Btn.IsEnabled -and -not $card.BtnStop.IsEnabled) 'Paused must disable both buttons.'
   Assert ($card.LblUp.Text -like '*右键*') "Paused hint missing: $($card.LblUp.Text)"
 
+  # 配置变更后，命中缓存的旧卡片要跟着换端口/URL（原 test-card-cache 的覆盖，删文件后并入本项）
+  $card=New-Card 'TestService' $script:svc.TestService
+  $script:cards=@{ TestService=$card }
+  Update-CardInfo 'TestService' @{ port=9090; url='http://127.0.0.1:9090' }
+  Assert ($card.PortText.Text -eq ':9090' -and $card.Endpoint.Text -eq 'http://127.0.0.1:9090' -and
+          $card.OpenBtn.Tag -eq 'http://127.0.0.1:9090') 'Cached card did not pick up new port/url.'
+
   $script:cmdQueue.Clear()
   $card=New-Card 'TestService' $script:svc.TestService
   Update-CardData $card.SvcName '已停止' ''

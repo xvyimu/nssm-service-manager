@@ -2,7 +2,7 @@
 # 抽出以消除多个测试里 Get-VisualNodes / Start-FakePoll 的重复实现。
 # 被 dot-source，不需 #requires（避免被 run-all.ps1 当独立脚本解析）。
 
-# WPF 可视树递归遍历（与 test-gui-smoke 原实现一致）
+# WPF 可视树递归遍历
 function Get-VisualNodes($node) {
   $node
   for ($i = 0; $i -lt [Windows.Media.VisualTreeHelper]::GetChildrenCount($node); $i++) {
@@ -83,7 +83,7 @@ function New-TestSc {
 }
 "@
   $ps = [powershell]::Create().AddScript($mocks).AddScript($script:poll); $ps.Runspace = $rs
-  # runspace 里 `& $sync.nssm remove ...` 解析到 sync.nssm 字符串 'Invoke-TestNssm'，
+  # runspace 里 `Invoke-ExternalQuiet $sync.nssm ...` 解析到 sync.nssm 字符串 'Invoke-TestNssm'，
   # 再由 runspace 内定义的同名函数承接。
   [pscustomobject]@{ Sync = $shared; Runspace = $rs; PowerShell = $ps; Handle = $ps.BeginInvoke() }
 }

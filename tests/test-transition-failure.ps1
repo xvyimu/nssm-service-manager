@@ -53,7 +53,7 @@ try {
   Update-CardData 'TestService' '已停止' ''
   Invoke-CardToggle $card
   Assert ($card.ST -eq '启动中' -and -not $card.Btn.IsEnabled) 'Start transition not entered.'
-  # 未超时：过渡态守卫照旧丢弃反向探测（既有行为，test-transition-race 覆盖）
+  # 未超时：过渡态守卫照旧丢弃反向探测
   Update-CardData 'TestService' '已停止' ''
   Assert ($card.ST -eq '启动中') "Pre-timeout probe overwrote transition: ST=$($card.ST)."
   Assert (-not $card.Btn.IsEnabled) 'Pre-timeout probe re-enabled button.'
@@ -61,8 +61,7 @@ try {
   $card.TransitionAt=[datetime]::Now.AddMilliseconds(-($script:TOGGLE_TIMEOUT_MS+1000))
   Update-CardData 'TestService' '已停止' ''
   Assert ($card.ST -eq '已停止') "Post-timeout probe did not converge: ST=$($card.ST)."
-  Assert ($card.Btn.IsEnabled) 'Post-timeout probe left button disabled (永久卡死).'
-  Assert ($card.Btn.Content -eq '启动') "Post-timeout button label wrong: $($card.Btn.Content)."
+  Assert ($card.Btn.IsEnabled -and -not $card.BtnStop.IsEnabled) 'Post-timeout probe left the wrong buttons enabled.'
 
   # ---- 2. 停止失败：回执 ok=$false 须回滚到命令前的终态并解封 ----
   $card.LastToggle=[datetime]::MinValue
@@ -70,6 +69,11 @@ try {
   Assert ($card.ST -eq '运行中' -and $card.ReadyToToggle) 'Running+healthy not armed.'
   Invoke-CardToggle $card
   Assert ($card.ST -eq '停止中' -and -not $card.Btn.IsEnabled) 'Stop transition not entered.'
+  # 方向守卫的另一半：停止中收到「运行中」必须丢弃，否则慢停止期间卡片会闪回运行中、
+  # 关闭键重新点亮（用户还能对着正在停的服务再点一次）
+  Update-CardData 'TestService' '运行中' '正常'
+  Assert ($card.ST -eq '停止中') "Stop transition overwritten by reverse probe: ST=$($card.ST)."
+  Assert (-not $card.BtnStop.IsEnabled -and -not $card.Btn.IsEnabled) 'Reverse probe re-enabled buttons mid-stop.'
   # 失败回执（ok=$false）：修前只解封按钮、文字仍是「停止中」（红）
   Update-CardData 'TestService' $null $null -e $card.PendingEpoch -ack -ok $false
   Assert ($card.ST -eq '运行中') "Failed stop did not roll back to 运行中: ST=$($card.ST)."
@@ -88,7 +92,7 @@ try {
   $epoch=99
   Set-CardTransition $card '删除中' $epoch ([datetime]::Now)
   Assert ($card.ST -eq '删除中') 'Delete transition not entered.'
-  # 删除没有「期望终态」：未超时时任何探测都不该改写（既有行为，test-transition-race 覆盖）
+  # 删除没有「期望终态」：未超时时任何探测都不该改写
   Update-CardData 'TestService' '未安装' ''
   Assert ($card.ST -eq '删除中') "Pre-timeout probe overwrote 删除中: ST=$($card.ST)."
   # 超时后收敛到「未知」——**不用**到达的探测值：探测可能报「已停止」（删除本就先 stop），
