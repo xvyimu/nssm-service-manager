@@ -32,8 +32,14 @@ try {
   Render-Page
   $c = $script:cards['SvcClock']
 
-  # 运行中：显示「已运行」
+  # 首次观测（打开工具时服务本来就在跑/已停）不记起算点：那时长只能从「打开工具」算起，
+  # 不是服务的真实运行/停止时间，卡片一出现就跳「已运行 3 秒」是误导。
   Update-CardData 'SvcClock' '运行中' '正常'
+  Assert ($c.StateSince -eq [datetime]::MinValue) '首次观测不该起算（StateSince 应为 MinValue）。'
+  Update-StatusTick
+  Assert ($c.LblUp.Text -notlike '*已运行*') "打开工具时不该凭空出现运行时长，got [$($c.LblUp.Text)]"
+
+  # 运行中：显示「已运行」
   $c.StateSince = [datetime]::Now.AddSeconds(-90)
   Update-StatusTick
   Assert ($c.LblUp.Text -like '*已运行 1分30秒*') "运行中应显示已运行时长，got [$($c.LblUp.Text)]"

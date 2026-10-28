@@ -406,8 +406,12 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
   }
   $prevST = $c.ST
   $c.ST = $st
-  # 只在状态**变化**时重记起算点：探测每 4 秒来一次，每次都重置的话时长永远停在 0
-  if ($st -ne $prevST) { $c.StateSince = [datetime]::Now }
+  # 只在状态**变化**时重记起算点：探测每 4 秒来一次，每次都重置的话时长永远停在 0。
+  # **首次观测不算变化**（查询中/未知 → 终态）：那时长只能从「打开工具」算起，
+  # 不是服务真实的运行/停止时刻——一打开就跳「已运行 3 秒」是误导。
+  if ($st -ne $prevST) {
+    $c.StateSince = if ($prevST -in @('查询中','未知')) { [datetime]::MinValue } else { [datetime]::Now }
+  }
   $c.H = $h   # 记住生效的健康文案：进入下一次过渡态时由 Set-CardTransition 留档为 PrevH
   $running = $st -eq '运行中'
   $healthy = $h -eq '正常'
