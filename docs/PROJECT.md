@@ -149,6 +149,8 @@ NSSM remove 是 stop → Wait-Stopped ≤6s → nssm remove confirm，同步执�
 
 自定义用户账户需要一个密码，而 nssm 只收 `nssm set <服务> ObjectName <用户名> <密码>`——用户名走 additional、密码走 value，两者都是命令行参数，同机管理员在进程列表里可见（nssm 自己能做的只是用完 `SecureZeroMemory`）。这个暴露面不值得为一个一次性操作引入，故本工具不做；需要时用 `nssm edit` 或服务管理器改。
 
+单 token 的形状（`ObjectName <账户>`，不带密码位）验到哪一步了：nssm **先解析参数、后打开服务**，所以 `nssm set <不存在的服务> ObjectName "NT AUTHORITY\LocalService"` 返回 `exit 3 / Can't open service!` 即证明参数解析已通过（参数不对会在更早的分支返回 usage）；账户名本身用 `LookupAccountName` 在真机确认能解析到 `S-1-5-19`。**剩下没验的只有 `ChangeServiceConfig` 那一步——它要管理员**。
+
 `Get-NssmSetSpec` 对 `LocalSystem` 和空值**不产生** `ObjectName`——那本来就是 `nssm install` 的默认值，写进去只是多一条无意义的 set，还会让「没选账户」和「选了 LocalSystem」两条路径分叉。
 
 「是不是 GPU/桌面程序」由用户在对话框里勾选声明，不做自动判断：按 exe 名字猜不准，误报比不报更烦。勾了且账户仍是 LocalSystem 时弹一条提示，**不阻断注册**。
@@ -158,8 +160,8 @@ NSSM remove 是 stop → Wait-Stopped ≤6s → nssm remove confirm，同步执�
 - 真实 UAC、系统 Mica 效果与 NSSM 服务生命周期需在本机交互验证（单测用替身）
 - `launch.vbs` 必须保持纯 ASCII（Windows Script Host 按系统 ANSI 代码页读取，UTF-8 中文注释在部分系统触发 `800A0400`）
 - **`ToggleTimeoutMs` 的全局默认值是推出来的、不是量出来的**：启动失败回落 `sc.exe start` 走 SCM 同步管道，上限 `ServicesPipeTimeout`（本机未设 = 默认 30000ms）。该路径真实耗时未真机实测（需建服务，`tests/probe-1053-timing.ps1` 管理员跑），当前值 45000 是按「管道上限 + 6s 删除路径余量」推的。跑过探针才能确认够不够。
-- **探测驱动的中间态没有重试入口**：卡片过渡态超时逃生只覆盖**命令驱动**的过渡态（用户点了启停/删除）。服务若真的卡在 SCM 的 `StartPending`/`StopPending`（停止回调挂死这类），探测会一直报同一中间态，卡片停在「停止中」且按钮禁用，没有重试按钮。这是 H1 修复的有意取舍（探测驱动的值必须能被后续探测覆盖，不能按方向丢弃），且此时 SCM 本身已不可用，重试也不会成功——卡片显示的是实况。
-- **密钥扫描只在本地、且需每个 clone 手动启用**：`.githooks/pre-commit` 要求先 `git config core.hooksPath .githooks`，否则那层保护根本不存在；`gitleaks` 没装时钩子只打警告并放行。**CI（`.github/workflows/test.yml`）只跑回归测试，不扫密钥**——推上 GitHub 的那一侧没有这层保护。
+- **探测驱动的中间态没有重试入口**：卡片过渡态超时逃生只覆盖**命令驱动**的过渡态（用户点了启停/删除）。服务若真的卡在 SCM 的 `StartPending`/`StopPending`（停止回调挂死这类），探测会一直报同一中间态，卡片停在「停止中」且按钮禁用。这是 H1 修复的有意取舍（探测驱动的值必须能被后续探测覆盖，不能按方向丢弃），且此时 SCM 本身已不可用，重试也不会成功——卡片显示的是实况。**出路是右键「删除」**：那条路径不经过卡片的按钮门闩，`Invoke-ServiceRemove` 会照常执行 stop → 等 Stopped → `nssm remove`。
+- **密钥扫描有两层，都有前提**：`.githooks/pre-commit` 要求每个 clone 先 `git config core.hooksPath .githooks`，否则本地那层根本不存在；`gitleaks` 没装时钩子只打警告并放行。CI 侧新增的 `secrets` 任务（`gitleaks-action`）只在**推送 main 或开 PR** 时触发，功能分支推送不跑；该任务尚未在真实 runner 上跑过。
 - **CLI `-Add` 与 GUI 不能并行**：两者都全量写回 `services.json`（`Save-Svc` 无合并语义），GUI 常驻时 CLI 新增会被 GUI 下一次保存覆盖。故 `-Add` 前检测单实例 mutex（`Test-GuiInstanceRunning`），GUI 在跑则拒绝并提示先关 GUI。
 - **CLI `-Add` 拒绝在清单损坏时写入**：`Load-Svc` 解析失败会回落到 `services.example.json`，若继续 `-Add`，末尾的 `Save-Svc` 会把「示例清单 + 新服务」写回真实文件，用户条目整份消失且退出码 0。故 `-Add` 前检查 `Load-Svc` 的专用标志 `$script:svcLoadFailed`（**不能**用 `$script:configWarning`——那个也可能是 config.json 坏了写的，而 config.json 坏了按设计不阻断）。非致命提示（per-service 字段写错）打印后继续。
 - **`Show-SecurityCheck` 的 ACL 判定是启发式**：只认 `Users`/`Everyone`/`Authenticated Users`/AppContainer SID 这几类宽泛主体 + `Write|Modify|FullControl`。目录若被改写为其它宽松形态（如某个具体用户账户 FullControl），判定为「否」。不是权威审计。

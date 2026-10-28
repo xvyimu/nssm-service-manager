@@ -5,6 +5,19 @@
 
 ## [未发布]
 
+### 2026-10-28：收掉两条剩余风险
+
+- **CI 补上密钥扫描**：`.github/workflows/test.yml` 新增 `secrets` 任务（`gitleaks-action`，
+  `fetch-depth: 0` 扫全历史）。本地钩子要每个 clone 手动 `core.hooksPath`，也覆盖不到
+  「网页直接提交 / fork 的 PR」，CI 这一层是独立的。注意它只在推送 main 或开 PR 时触发，
+  功能分支推送不跑，且**尚未在真实 runner 上跑过**——首次开 PR 时才会知道有没有坑
+  （该 action 对个人仓库免费，组织仓库要 `GITLEAKS_LICENSE`）。
+- **`ObjectName` 的单 token 形状补上了真机验证**：nssm 先解析参数、后打开服务，所以
+  `nssm set <不存在的服务> ObjectName "NT AUTHORITY\LocalService"` 返回
+  `exit 3 / Can't open service!` 就证明参数解析通过了（参数不全会更早返回 usage）。
+  账户名也在真机用 `LookupAccountName` 确认解析到 `S-1-5-19`。**只剩 `ChangeServiceConfig`
+  那一步没验——它需要管理员**。
+
 ### 2026-10-28：代码审查后的一轮修正
 
 - **`services.json` 的覆盖键名大小写**：用 `ContainsKey('toggleTimeoutMs')` 判存在，但

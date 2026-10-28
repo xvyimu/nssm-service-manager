@@ -260,7 +260,9 @@ pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-t
 git config core.hooksPath .githooks   # 不设这一行，.githooks/pre-commit 不会执行
 ```
 
-装 `gitleaks` 后（`scoop install gitleaks`）钩子才会真的扫；没装时它只打一行警告然后放行。找不到 `PATH` 里的 `gitleaks` 时钩子会再探 `~/scoop/shims/gitleaks.exe`。CI 目前不跑密钥扫描，只跑回归测试。
+装 `gitleaks` 后（`scoop install gitleaks`）钩子才会真的扫；没装时它只打一行警告然后放行。找不到 `PATH` 里的 `gitleaks` 时钩子会再探 `~/scoop/shims/gitleaks.exe`。
+
+CI 另有一个独立任务跑 `gitleaks-action`（覆盖网页提交与 fork 的 PR，不依赖本地钩子），但它只在**推送 main 或开 PR 时**触发——往功能分支推送不会跑。
 
 演示 GIF 由 `make-demo.ps1` 离屏渲染 12 帧 PNG 后，用 ffmpeg 合成：
 
