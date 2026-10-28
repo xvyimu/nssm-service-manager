@@ -12,13 +12,11 @@
   「网页直接提交 / fork 的 PR」，CI 这一层是独立的。注意它只在推送 main 或开 PR 时触发，
   功能分支推送不跑，且**尚未在真实 runner 上跑过**——首次开 PR 时才会知道有没有坑
   （该 action 对个人仓库免费，组织仓库要 `GITLEAKS_LICENSE`）。
-- **`ObjectName` 单 token 形状的核实边界**（先说结论：**仍是源码级，不是实测**）。
-  真机能测的只有 `nssm set <不存在的服务> ObjectName "NT AUTHORITY\LocalService"` 返回
-  `exit 3 / Can't open service!` ——这只说明「4 个参数的 `set` 能走到打开服务」，任何
-  4 参数的 `set` 都到得了，**证明不了 ObjectName 接受单 token**。要害在顺序：
-  ObjectName 分支（`service.cpp:959`）只挪参数不做校验，真正的「要不要密码」在
-  `native_set_objectname` 里判，而它在**打开服务之后**才执行——没有管理员权限就测不到。
-  账户名本身用 `LookupAccountName` 确认解析到 `S-1-5-19`。
+- **`ObjectName` 单 token 形状已完成真机验证**（管理员）：`nssm install` → `nssm set <svc>
+  ObjectName "NT AUTHORITY\LocalService"` 返回 0 → `sc.exe qc` 读到
+  `SERVICE_START_NAME : NT Authority\LocalService` → `nssm remove` 清干净。即
+  `ChangeServiceConfig` 确实被调用并生效。早先只有源码推断（ObjectName 分支不校验参数、
+  密码检查在打开服务之后、well-known 账户强制空串），现在源码与实测一致。
 
 ### 2026-10-28：代码审查后的一轮修正
 
