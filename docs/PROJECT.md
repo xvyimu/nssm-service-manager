@@ -180,7 +180,7 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 - 真实 UAC、系统 Mica 效果与 NSSM 服务生命周期需在本机交互验证（单测用替身）
 - `launch.vbs` 必须保持纯 ASCII（Windows Script Host 按系统 ANSI 代码页读取，UTF-8 中文注释在部分系统触发 `800A0400`）
 - **`ToggleTimeoutMs` 的全局默认值是推出来的、不是量出来的**：启动失败回落 `sc.exe start` 走 SCM 同步管道，上限 `ServicesPipeTimeout`（本机未设 = 默认 30000ms）。该路径真实耗时未真机实测（需建服务，`tests/probe-1053-timing.ps1` 管理员跑），当前值 45000 是按「管道上限 + 6s 删除路径余量」推的。跑过探针才能确认够不够。
-- **探测驱动的中间态没有重试入口**：卡片过渡态超时逃生只覆盖**命令驱动**的过渡态（用户点了启停/删除）。服务若真的卡在 SCM 的 `StartPending`/`StopPending`（停止回调挂死这类），探测会一直报同一中间态，卡片停在「停止中」且按钮禁用。这是 H1 修复的有意取舍（探测驱动的值必须能被后续探测覆盖，不能按方向丢弃），且此时 SCM 本身已不可用，重试也不会成功——卡片显示的是实况。**出路是右键「删除」**：那条路径不经过卡片的按钮门闩，`Invoke-ServiceRemove` 会照常执行 stop → 等 Stopped → `nssm remove`。
+- **探测驱动的中间态：卡片按钮不可用，但右键菜单照常下发命令**。卡片过渡态超时逃生只覆盖**命令驱动**的过渡态（用户点了启停/删除）。服务若真的卡在 SCM 的 `StartPending`/`StopPending`（停止回调挂死这类），探测会一直报同一中间态，卡片停在「停止中」、正按钮禁用。这是 H1 修复的有意取舍（探测驱动的值必须能被后续探测覆盖，不能按方向丢弃）。但**不是没有出路**：右键菜单的「启动/停止/重启/删除」走的是 `Send-ServiceCommand`，不经卡片的按钮门闩（`card.ps1` 右键 handler），一直可用。
 - **密钥扫描有两层，都有前提**：`.githooks/pre-commit` 要求每个 clone 先 `git config core.hooksPath .githooks`，否则本地那层根本不存在；`gitleaks` 没装时钩子只打警告并放行。CI 侧新增的 `secrets` 任务（`gitleaks-action`）只在**推送 main 或开 PR** 时触发，功能分支推送不跑；已在 PR #7 上首次跑通（12s）。
 - **CLI `-Add` 与 GUI 不能并行**：两者都全量写回 `services.json`（`Save-Svc` 无合并语义），GUI 常驻时 CLI 新增会被 GUI 下一次保存覆盖。故 `-Add` 前检测单实例 mutex（`Test-GuiInstanceRunning`），GUI 在跑则拒绝并提示先关 GUI。
 - **CLI `-Add` 拒绝在清单损坏时写入**：`Load-Svc` 解析失败会回落到 `services.example.json`，若继续 `-Add`，末尾的 `Save-Svc` 会把「示例清单 + 新服务」写回真实文件，用户条目整份消失且退出码 0。故 `-Add` 前检查 `Load-Svc` 的专用标志 `$script:svcLoadFailed`（**不能**用 `$script:configWarning`——那个也可能是 config.json 坏了写的，而 config.json 坏了按设计不阻断）。非致命提示（per-service 字段写错）打印后继续。
