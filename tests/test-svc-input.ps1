@@ -74,6 +74,14 @@ try {
   # 分隔符按字面量切（原实现把 separator 当正则，传 | 会炸）
   $pairs = ConvertTo-EnvPairs 'A=1|B=2' '|'
   Assert ($pairs.Count -eq 2) "字面量分隔符应能切开，got $($pairs.Count): $($pairs -join '|')"
+  # 变量名不限于「字母数字下划线开头」：数字开头、含括号都是合法的 Windows 变量名。
+  # 判据收紧成 ^[A-Za-z_]\w*= 会把它们并进上一个值——变量根本不写进 AppEnvironmentExtra，
+  # 敏感键检测也扫不到（TOKEN 明文进注册表都不提示）。
+  $pairs = ConvertTo-EnvPairs 'A=1,2FA_TOKEN=x' ','
+  Assert ($pairs.Count -eq 2) "数字开头的变量名应被识别，got $($pairs.Count): $($pairs -join '|')"
+  Assert ((Find-SensitiveEnvKeys $pairs) -contains '2FA_TOKEN') '数字开头的敏感键名也应被检出'
+  $pairs = ConvertTo-EnvPairs 'A=1,ProgramFiles(x86)=C:\PF' ','
+  Assert ($pairs.Count -eq 2) "含括号的变量名应被识别，got $($pairs.Count): $($pairs -join '|')"
 
   # ---- Test-EnvPairs：缺 = / 空 key / APPDATA 交互路径 ----
   Assert ($null -eq (Test-EnvPairs @('A=1','B=2'))) 'well-formed pairs should pass'

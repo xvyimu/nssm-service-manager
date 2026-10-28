@@ -56,10 +56,13 @@ function Test-TransitionTimedOut($card, [datetime]$now){
   if ($card.ST -notin @('启动中','停止中','删除中')) { return $false }
   if ($card.TransitionAt -eq [datetime]::MinValue) { return $false }
   $limit = if ($card.ToggleTimeoutMs) { [int]$card.ToggleTimeoutMs } else { $script:TOGGLE_TIMEOUT_MS }
-  # 硬上限：探测报同一过渡态时 TransitionAt 会被刷新（慢启动不误判），但**不能无限刷新**——
-  # 服务永久卡在 StartPending/StopPending（停止回调挂死这类）时，逃生口会彻底失效，
-  # 而那正是这套机制存在的理由。取 10 倍阈值：正常慢启动够用，真挂了也一定会被放出来。
-  # TransitionStartedAt 缺失（MinValue：旧夹具手工置态）时退回 TransitionAt 当起点。
+  # 硬上限：探测报同一过渡态时 TransitionAt 会被刷新（慢启动不误判），但不能无限刷新，
+  # 否则「命令发出去了但没回执」的卡片会一直停在中间态。超过阈值 × 倍数就强制逃生。
+  # TransitionStartedAt 缺失（旧夹具手工置态）时退回 TransitionAt 当起点。
+  #
+  # 【只管命令驱动的过渡态】TransitionAt 为 MinValue（探测驱动，或逃生后探测又报同一中间态）
+  # 时直接 return $false——H1 的有意设计：探测驱动的值必须能被后续探测覆盖。代价是服务真卡在
+  # SCM 的 StopPending 时卡片停在「停止中」且无重试入口，见 docs/PROJECT.md 已知限制。
   $started = if ($card.TransitionStartedAt -and $card.TransitionStartedAt -ne [datetime]::MinValue) { $card.TransitionStartedAt } else { $card.TransitionAt }
   if (($now - $started).TotalMilliseconds -ge ($limit * $script:TRANSITION_HARD_CAP_FACTOR)) { return $true }
   ($now - $card.TransitionAt).TotalMilliseconds -ge $limit

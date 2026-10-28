@@ -149,7 +149,7 @@ Copy-Item services.example.json services.json
 | `httpTimeoutMs` | `HttpTimeoutMs` | 该服务的 HTTP 健康探测超时 |
 | `tcpTimeoutMs` | `TcpTimeoutMs` | 该服务的端口探测超时 |
 
-必须写成正整数毫秒。写错（`0` / 负数 / 非数字）时**只有该字段不生效、回落全局**，服务条目照常保留，启动时弹一条「配置提示」说明是哪个服务的哪个字段——不会因为一个数字写错就把整份清单换成示例配置。这些字段由 `Read-SvcFile` 显式保留，GUI 增删别的服务不会把它们抹掉。
+字段名大小写不敏感（`ToggleTimeoutMs` 与 `toggleTimeoutMs` 等价）。必须写成正整数毫秒。写错（`0` / 负数 / 非数字）时**只有该字段不生效、回落全局**，服务条目照常保留，启动时弹一条「配置提示」说明是哪个服务的哪个字段——不会因为一个数字写错就把整份清单换成示例配置。这些字段由 `Read-SvcFile` 显式保留，GUI 增删别的服务不会把它们抹掉。
 
 > **环境变量与注册表密钥暴露面：** NSSM 把 `AppEnvironmentExtra` 明文写入注册表 `HKLM\SYSTEM\CurrentControlSet\Services\<服务名>\Parameters\AppEnvironmentExtra`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出你填进去的环境变量明文。**凡含密钥、令牌、口令的变量（如 `*_API_KEY` / `*_TOKEN` / `*SECRET` / `*PASSWORD` / `*ACCESS_KEY` / `*CREDENTIAL` / `*PRIVATE_KEY` / `*PASSPHRASE`），不要直接填进环境变量框**——改为让服务本体从独立的密钥文件（仅 Administrators+SYSTEM 可读）读取，文件路径不进注册表。GUI 与 CLI 在你填写此类键名时会提示这一点；`*_FILE` 后缀仅在值看起来像路径时才跳过提示，否则照样警告（键名后缀不等于值就是路径）。彻底收紧注册表键 ACL 用 `scripts/set-service-params-acl.ps1`（见下）。
 
@@ -240,7 +240,9 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 ```
 `Env` 多对用分号分隔：`KEY=VAL;KEY2=VAL2`；逗号分隔也认（`KEY=VAL,KEY2=VAL2`）。不弹 GUI，注册 + 启动后退出。
 
-环境变量格式 `KEY=VAL,KEY2=VAL2`（GUI）或 `KEY=VAL;KEY2=VAL2`（CLI，分号分隔）。**值里自带分隔符不会拆坏**：切分只在「下一段以 `KEY=` 开头」时断开，所以 `NO_PROXY=127.0.0.1,localhost`、`PATH=C:\a;C:\b` 都按一条处理。NSSM `AppEnvironmentExtra` 是整列表替换。
+环境变量格式 `KEY=VAL,KEY2=VAL2`（GUI）或 `KEY=VAL;KEY2=VAL2`（CLI，分号分隔）。**值里自带分隔符不会拆坏**：只有「这一段含 `=`」时才当作新变量，不含 `=` 的片段并回上一个值，所以 `NO_PROXY=127.0.0.1,localhost`、`PATH=C:\a;C:\b` 都按一条处理。变量名不限于字母数字开头——`2FA_TOKEN=x`、`ProgramFiles(x86)=C:\PF` 照样识别。NSSM `AppEnvironmentExtra` 是整列表替换。
+
+`services.json` 解析失败时 `-Add` 会**直接退出**（退出码 1）而不是继续：继续会把回落的示例清单写回你的真实配置。
 
 服务名限 `A-Za-z0-9_.-`，可执行文件路径必须存在——两条入口都校验，共用 `Test-SvcInput`（校验顺序：名称 → 可执行文件 → 端口 → 重名）。`Test-SvcAccount` 单独把关运行账户白名单（只收三个内置账户，空值 = 不改）。`Get-NssmSetSpec` 收口 NSSM 注册后要 set 的全部键值（`AppExit Default Ignore` 这类多 token 值、非 LocalSystem 时的 `ObjectName`），`Install-NssmService` 只负责执行与失败回滚。
 

@@ -39,8 +39,14 @@ function Read-SvcFile([string]$path){
     # **必须在这里显式带走**：Save-Svc 写的是整份 $script:svc，本函数只挑 port/url 的话，
     # 用户在 services.json 里写的覆盖字段会在下一次 GUI 增删服务时被静默抹掉。
     foreach ($opt in 'toggleTimeoutMs','httpTimeoutMs','tcpTimeoutMs') {
-      if (-not $j[$k].ContainsKey($opt)) { continue }
-      $raw = $j[$k][$opt]
+      # **不能用 ContainsKey($opt)**：ConvertFrom-Json -AsHashtable 返回的是
+      # System.Management.Automation.OrderedHashtable，它的键**大小写敏感**（实测：
+      # 写 ToggleTimeoutMs 时 ContainsKey('toggleTimeoutMs') 为 False，点访问却能取到值）。
+      # 而 config.json 的覆盖走 [ordered]@{} 的 Contains()，那个不敏感——两处行为不能不一致。
+      # 按 -ieq 找实际键名：用户照 README 表格写 ToggleTimeoutMs 也得生效。
+      $actual = @($j[$k].Keys | Where-Object { $_ -ieq $opt }) | Select-Object -First 1
+      if (-not $actual) { continue }
+      $raw = $j[$k][$actual]
       $v = 0
       if (-not [int]::TryParse([string]$raw, [ref]$v) -or $v -le 0) {
         # 写错/写 0 只让该字段不生效（回落全局），服务本身照常保留；原因记进收集箱弹给用户。
@@ -55,6 +61,10 @@ function Read-SvcFile([string]$path){
 }
 
 function Load-Svc {
+  # 专用标志：$script:configWarning 有两个写入方（config.ps1 处理 config.json，这里处理
+  # services.json），而两者后果完全不同——config.json 坏了按设计「不阻断，用默认值」。
+  # 调用方（CLI 的 -Add 门闩）要判断的是「服务清单是否回落成了示例」，只能认这个标志。
+  $script:svcLoadFailed = $false
   if (Test-Path $cfg) {
     try {
       $loaded = Read-SvcFile $cfg
@@ -70,7 +80,10 @@ function Load-Svc {
     }
     # 消息自带文件名：主脚本的弹框用中性前缀（configWarning 可能来自 config.json 或
     # services.json，调用方无从判断），来源只能由写入方在这里讲清楚。
-    catch { $script:configWarning = "services.json 无效：$($_.Exception.Message)" }
+    catch {
+      $script:configWarning = "services.json 无效：$($_.Exception.Message)"
+      $script:svcLoadFailed = $true
+    }
   }
   # 兜底：services.json 缺失或损坏时读示例清单，让首次运行有内容可看
   $example = Join-Path (Split-Path $cfg -Parent) 'services.example.json'

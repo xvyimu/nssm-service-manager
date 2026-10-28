@@ -5,6 +5,38 @@
 
 ## [未发布]
 
+### 2026-10-28：代码审查后的一轮修正
+
+- **`services.json` 的覆盖键名大小写**：用 `ContainsKey('toggleTimeoutMs')` 判存在，但
+  `ConvertFrom-Json -AsHashtable` 返回的 `OrderedHashtable` **键大小写敏感**（实测：写
+  `ToggleTimeoutMs` 时 `ContainsKey` 为 False，点访问却能取到值）。于是照 README 表格 /
+  `config.json` 的拼法写大驼峰，字段被**静默丢弃且无任何提示**，功能等于没修。而 config.json
+  那边的 `Contains()` 不敏感——两处行为不能不一致。改成按 `-ieq` 找实际键名。
+- **env 切分的「新变量」判据放宽**：`^[A-Za-z_]\w*=` 会把 `2FA_TOKEN=x`、
+  `ProgramFiles(x86)=C:\PF` 并进上一个值——变量根本没写进 `AppEnvironmentExtra`，
+  敏感键检测也扫不到。改成「这一段含 `=`」即视为新变量（`NO_PROXY=...,localhost` 不受影响，
+  `localhost` 不含 `=`）。
+- **CLI `-Add` 在 services.json 解析失败时直接退出**：原来会拿回落的示例清单继续，
+  `Save-Svc` 把示例 + 新服务写回真实文件，用户真实条目整份消失且**退出码 0**。GUI 至少有弹框，
+  CLI 一点输出都没有。非致命提示（per-service 字段写错）则打印后继续。
+- **硬上限的适用范围写清楚**：只管命令驱动的过渡态。探测驱动的中间态（服务真卡在 SCM 的
+  StopPending）没有重试入口——那是 H1 修复的有意取舍，登记进「已知限制」，不再声称硬上限覆盖它。
+- `docs/HANDOFF.md` 的三个量纲数字更正（47/44/24 → 51/45/25，实测）。
+
+**第二轮复审又抓到自己新引入的问题：**
+
+- **门闩认错了文件**：`$script:configWarning` 有两个写入方——`Load-Svc`（services.json 坏）和
+  `config.ps1`（config.json 坏）。而 config.json 坏了按设计是「不阻断、用默认值」。于是
+  services.json 完全合法 + config.json 写坏一个字符时，`-Add` 会退出 1 并报「services.json 未能解析」
+  ——拦错了，报错也指向没坏的文件。改用 `Load-Svc` 的专用标志 `$script:svcLoadFailed`。
+- **环境变量判据与文档不一致**：代码要求 `=` 前无空白（`^[^=\s]+=`），而文档写的是「含 `=`」，
+  于是 `A=1,B = 2` 会把 `B = 2` 并进上一个值（`B_TOKEN = x` 连敏感键提示都扫不到）。改成 `-match '='`。
+- **那个 CLI 门闩的测试删掉了**：它跑真主脚本副本，会碰真单实例 mutex（GUI 常驻时误报），
+  且门闩一旦回归、又恰好在管理员下跑，会真注册一个服务再留下孤儿。改成测 `svcLoadFailed`
+  的纯函数级断言——不碰服务、不碰 mutex。
+- `PROJECT.md` 两处自相矛盾/缺失：硬上限的适用范围（前一处写成能防「永久卡在 StopPending」，
+  后一处又说探测驱动没有重试入口），以及 CLI 决策清单没跟上新门闩。
+
 ### 2026-10-28：收尾上一轮遗留的风险
 
 - **pre-commit 的密钥扫描其实一次都没跑过**。scoop 明明装好了 gitleaks，但 shims 目录不在

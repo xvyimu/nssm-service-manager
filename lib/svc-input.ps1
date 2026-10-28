@@ -26,6 +26,10 @@ function Test-SvcInput([string]$n,[int]$p,[string]$exe,$existing){
 # **只在「下一段以 KEY= 开头」时才真断开**：值本身可能含分隔符，最典型的是
 # NO_PROXY=127.0.0.1,localhost——原实现无脑 split，逗号把值拆成两段，Test-EnvPairs 随即
 # 报「localhost 格式错误」，GUI 里根本填不进多地址 NO_PROXY。
+# 「像新变量」的判据就是**这一段里有 `=`**——不能收紧成 `^[A-Za-z_]\w*=`：合法的 Windows
+# 变量名可以数字开头（2FA_TOKEN），也可以带括号（ProgramFiles(x86)），收紧会把它们并进上一个值，
+# 变量根本不进 AppEnvironmentExtra，连敏感键检测也扫不到。
+# 也不能要求 `=` 前无空白：`B = 2` 是合法的 env 写法（Test-EnvPairs 会 Trim）。
 # 反例（有意不处理）：值里出现形如 x=1 的片段（如 URL 查询串）会被当成新变量。
 function ConvertTo-EnvPairs([string]$raw,[string]$separator){
   if(-not $raw){ return @() }
@@ -34,8 +38,8 @@ function ConvertTo-EnvPairs([string]$raw,[string]$separator){
   foreach($part in ($raw -split [regex]::Escape($separator))){
     $t = $part.Trim()
     if(-not $t){ continue }
-    if($pairs.Count -and $t -notmatch '^[A-Za-z_][A-Za-z0-9_.]*\s*='){
-      # 不像新变量 → 上一段值的续写，用原分隔符接回去
+    if($pairs.Count -and $t -notmatch '='){
+      # 不含 = → 上一段值的续写（NO_PROXY=127.0.0.1,localhost 的 localhost、PATH 的 C:\b）
       $pairs[$pairs.Count-1] = $pairs[$pairs.Count-1] + $separator + $t
     } else { $pairs.Add($t) }
   }

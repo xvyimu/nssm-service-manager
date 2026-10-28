@@ -78,6 +78,20 @@ if ($Add) {
     exit 1
   }
   $script:svc = Load-Svc
+  # services.json 解析失败时 Load-Svc 会回落到 services.example.json。GUI 有弹框，CLI 没有——
+  # 若继续执行，Add-SvcFromCli 末尾的 Save-Svc 会把**示例清单 + 新服务**写回真实文件，
+  # 用户的真实条目整份消失，而且退出码还是 0。宁可拒绝执行。
+  # 只认 Load-Svc 的专用标志：config.json 坏了按设计不阻断（用默认值），不该连 -Add 一起拦。
+  if ($script:svcLoadFailed) {
+    Write-Host $script:configWarning
+    Write-Host "已停止：services.json 未能解析。现在继续 -Add 会把示例清单写回你的配置。请先修复该文件。"
+    exit 1
+  }
+  # config.json 的坏消息是非致命的（已用默认值），但 CLI 原来一声不响，这里补一句。
+  if ($script:configWarning) { Write-Host "提示: $($script:configWarning)（已用默认值，不阻断）" }
+  # 非致命提示（per-service 覆盖字段写错之类）：清单本身可用，照常继续，但要让人看见。
+  # 用 if 守卫而不是 @($x)：`@($null)` 是「含一个 $null 的数组」，会打印一行空的「提示: 」。
+  if ($script:configNotices) { foreach ($notice in $script:configNotices) { Write-Host "提示: $notice" } }
   # CLI 模式没有 runspace，但 add-svc.ps1 用 $sync.gate 加锁——给个本地锁
   $script:sync = @{ gate = [object]::new() }
   # add-svc.ps1 自加载 svc-input.ps1 + nssm.ps1（纯函数与 NSSM 注册依赖）

@@ -55,6 +55,18 @@ try {
   }
 } finally { Remove-Item -LiteralPath $tmp -Force -EA SilentlyContinue }
 
+# ---- 1a. 键名大小写不敏感 ----
+# README 表格与 config.json 用的都是大驼峰 ToggleTimeoutMs，而 ConvertFrom-Json -AsHashtable
+# 返回的 OrderedHashtable 键**大小写敏感**——用 ContainsKey 判存在会把大驼峰写法静默丢弃，
+# 且不产生任何提示（字段没了，卡片照旧用全局 45s）。
+$tmpCaps = Join-Path ([IO.Path]::GetTempPath()) "sm-caps-$([guid]::NewGuid().ToString('N')).json"
+[IO.File]::WriteAllText($tmpCaps, '{"Caps":{"port":8080,"url":"u","ToggleTimeoutMs":180000,"HTTPTIMEOUTMS":9000}}', [Text.UTF8Encoding]::new($false))
+try {
+  $caps = Read-SvcFile $tmpCaps
+  Assert ($caps['Caps'].toggleTimeoutMs -eq 180000) "大驼峰键名应被识别，实际字段：$((@($caps['Caps'].Keys)) -join ',')"
+  Assert ($caps['Caps'].httpTimeoutMs -eq 9000) '全大写键名应被识别'
+} finally { Remove-Item -LiteralPath $tmpCaps -Force -EA SilentlyContinue }
+
 # ---- 1b. 一个坏字段不得让整份清单退回示例（这是会丢数据的路径）----
 $dir = Join-Path ([IO.Path]::GetTempPath()) "sm-loadsvc-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -81,8 +93,23 @@ try {
   Assert ($script:configNotices -is [array]) "configNotices 应是数组，got $($script:configNotices.GetType().Name)"
   Assert ($script:configNotices.Count -eq 2) "两个坏字段应给两条提示，got $($script:configNotices.Count)：$($script:configNotices -join ' | ')"
   Assert ($script:configNotices[0] -match 'toggleTimeoutMs' -and $script:configNotices[1] -match 'httpTimeoutMs') "提示应逐条点名字段，got $($script:configNotices -join ' | ')"
+  # ---- 1c. svcLoadFailed 只认 services.json，不认 config.json ----
+  # CLI 的 -Add 门闩靠这个标志判断「清单是否回落成示例」。config.json 坏了按设计不阻断
+  # （用默认值），若用 configWarning 当判据，会把 -Add 一起拦下并报错到根本没坏的文件上。
+  $script:configWarning = $null; $script:configNotices = $null; $script:svcLoadFailed = $null
+  [IO.File]::WriteAllText($cfg, '{"Broken":{"port":0,"url":"u"}}', [Text.UTF8Encoding]::new($false))
+  $null = Load-Svc
+  Assert ($script:svcLoadFailed -eq $true) 'services.json 解析失败时 svcLoadFailed 必须为 true'
+  Assert ($script:configWarning -match 'services\.json') "失败消息应点名 services.json：$($script:configWarning)"
+
+  $script:configWarning = 'config.json 无效：故意·坏'   # 模拟 config.ps1 写的（非致命）
+  $script:svcLoadFailed = $null
+  [IO.File]::WriteAllText($cfg, '{"Good":{"port":3000,"url":"http://127.0.0.1:3000"}}', [Text.UTF8Encoding]::new($false))
+  $null = Load-Svc
+  Assert ($script:svcLoadFailed -eq $false) 'config.json 坏不该置 svcLoadFailed（否则 -Add 会被误拦）'
+  Assert ($script:configWarning -match 'config\.json') 'config.json 的提示不该被覆盖'
 } finally { Remove-Item -LiteralPath $dir -Recurse -Force -EA SilentlyContinue }
-Write-Output 'PASS: per-service overrides survive read/save round-trip; a bad override is dropped (with a notice) instead of falling back to the example list.'
+Write-Output 'PASS: per-service overrides survive read/save round-trip; a bad override is dropped (with a notice) instead of falling back to the example list; svcLoadFailed only tracks services.json.'
 
 # ---- 2/3. 卡片阈值与 StartPending 刷新 ----
 $script:sync = @{ wake = [Threading.AutoResetEvent]::new($false) }
