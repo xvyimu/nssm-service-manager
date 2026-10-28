@@ -211,6 +211,7 @@ while(-not $sync.stop){
       }
     }
   }
+  # 到点（或不在中间态）：真探一轮 TCP+HTTP，结果同时刷新 $lastHealth
   if ($toProbe.Count -and -not $sync.stop -and $probeDue) {
     $lastProbeAt = [Environment]::TickCount64
     $results = $toProbe | ForEach-Object -Parallel {
