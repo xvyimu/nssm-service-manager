@@ -69,7 +69,7 @@ function Format-Elapsed([datetime]$since, [datetime]$now) {
 function Update-CardClock($card, [datetime]$now) {
   if (-not $card -or -not $card.LblUp) { return }
   $suffix = ''
-  if ($card.ST -in @('启动中','停止中','删除中')) {
+  if ($card.ST -in @('启动中','停止中','删除中','暂停中','继续中')) {
     # **必须用 StateSince，不能用 TransitionAt**：后者会在每次探测报同一中间态时被刷新
     # （那是超时逃生判据的一部分），拿它算时长的话，慢启动服务会永远显示「已 0s」——
     # 正是这个功能要解决的场景。StateSince 只在进入状态时记一次。
@@ -430,6 +430,10 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
     $h
   } elseif ($st -eq '已停止') {
     '随时可以启动'
+  } elseif ($st -eq '已暂停') {
+    # 暂停态两个按钮都不可用（启动对已运行的服务无效，关闭要求健康正常）；
+    # 恢复得走右键菜单的「重启」——它先 stop 再 start，SCM 接受。
+    '服务已暂停，右键「重启」恢复'
   } elseif ($h) {
     $h
   } else {

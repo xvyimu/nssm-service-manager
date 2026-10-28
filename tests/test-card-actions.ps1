@@ -72,10 +72,17 @@ try {
       }
     }
   }
+  # 暂停态：两个方向都不该可用（启动对已运行的服务无效、关闭要求健康正常），
+  # 副标题要给出可行的恢复路径，否则卡片像卡死了
+  $card=New-Card 'TestService' $script:svc.TestService
+  Update-CardData $card.SvcName '已暂停' ''
+  Assert (-not $card.Btn.IsEnabled -and -not $card.BtnStop.IsEnabled) 'Paused must disable both buttons.'
+  Assert ($card.LblUp.Text -like '*右键*') "Paused hint missing: $($card.LblUp.Text)"
+
   $script:cmdQueue.Clear()
   $card=New-Card 'TestService' $script:svc.TestService
   Update-CardData $card.SvcName '已停止' ''
   Invoke-CardInput $card 'DoubleClick' 'start' 1
   Assert ($script:cmdQueue.IsEmpty) 'Single card click must not start a service.'
-  Write-Output 'PASS: both input paths preserve 20 state/guard cases and feedback; single-click ignored.'
+  Write-Output 'PASS: both input paths preserve 20 state/guard cases and feedback; paused state disables both buttons with a recovery hint; single-click ignored.'
 } finally { $win.Close(); $script:sync.wake.Dispose() }

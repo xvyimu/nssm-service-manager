@@ -158,7 +158,7 @@ while(-not $sync.stop){
   # 改并行后最坏 ~3.2s（HTTP 超时上限）。命令在收集间隙仍优先处理，
   # 但并行探测期间不插 Invoke-PendingCommands——最长等一次并行轮。
   $toProbe = [System.Collections.Generic.List[pscustomobject]]::new()
-  # 有服务停在 StartPending/StopPending 时也算「活跃」：否则慢启动期间整轮没有可探测项，
+  # 有服务停在 StartPending/StopPending/暂停中/继续中时也算「活跃」：否则过渡期间整轮没有可探测项，
   # 轮询退到 ProbeIdleMs(15s)，卡片上的「启动中」十几秒才收到一次状态，过渡计时也迟迟不刷新。
   $pendingSeen = $false
   foreach($n in $snap){
@@ -183,7 +183,7 @@ while(-not $sync.stop){
         tcpMs=[int]$info.tcpTimeoutMs; httpMs=[int]$info.httpTimeoutMs
       })
     } else {
-      if ($st -in @('启动中','停止中')) { $pendingSeen = $true }
+      if ($st -in @('启动中','停止中','暂停中','继续中')) { $pendingSeen = $true }
       $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$st;h=''})
     }
   }
@@ -234,7 +234,7 @@ while(-not $sync.stop){
   # 除「有运行中服务」外，「本轮执行过命令」也算活跃：刚下发的启动命令那一轮里服务通常还
   # 是 Stopped/StartPending（$toProbe 为空），若按空闲走 15s 长睡眠，卡片会停在「启动中」
   # 最长约 15 秒才收到第一份探测结果。有在途命令时用短间隔，让回执与状态尽快收敛。
-  # 第三种活跃情形：有服务停在 StartPending/StopPending（$pendingSeen）——慢启动期间整轮
+  # 第三种活跃情形：有服务停在过渡态（$pendingSeen）——慢启动期间整轮
   # 没有可探测项，若不特殊处理，卡片上的「启动中」要 15 秒才更新一次，过渡计时也迟迟不刷新。
   if (-not $sync.stop) {
     # 有服务停在中间态 → 用更短的间隔，让「启动中 → 运行中」这类翻转在 1 秒内可见；
