@@ -133,6 +133,34 @@ try {
   # 夹具限制：这个窗口没有 ShowDialog 过，处理器末尾设 DialogResult 会抛。排除这一种即可。
   if ($clickEx) { Assert ($clickEx -match 'DialogResult') "点注册抛了非预期异常：$clickEx" }
 
+  # ---- T6：真 ShowDialog 下点「注册并启动」（离屏窗口，不打扰桌面）----
+  # T5 只证明处理器作用域对；这里走真模态消息循环，连 DialogResult / 关闭 / 下拉选中一起验。
+  # 无交互桌面时跳过——那种环境下 ShowDialog 会永久阻塞。
+  if ([Environment]::UserInteractive) {
+    $script:installed = @(); $script:dialogErrors = @(); $script:lastAccount = $null; $script:lastEnvPairs = @()
+    $script:modalDlg = New-AddDialog
+    $mw = $script:modalDlg.Window
+    $mw.WindowStartupLocation = 'Manual'; $mw.Left = -4000; $mw.Top = -4000; $mw.ShowInTaskbar = $false
+    $script:modalDlg.Inputs.name.Text = 'SvcModal'
+    $script:modalDlg.Inputs.port.Text = '8096'
+    $script:modalDlg.Inputs.exe.Text  = $fakeExe
+    $script:modalDlg.Inputs.env.Text  = 'NO_PROXY=127.0.0.1,localhost'
+    $script:modalDlg.Account.SelectedIndex = 1        # LocalService
+    $script:modalClickEx = $null
+    $mw.Add_ContentRendered({
+      try { $script:modalDlg.Ok.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)) }
+      catch { $script:modalClickEx = $_.Exception.Message; $script:modalDlg.Window.Close() }
+    })
+    $mw.ShowDialog() | Out-Null
+    Assert ($null -eq $script:modalClickEx) "真模态点击抛异常：$($script:modalClickEx)"
+    Assert ($script:installed -contains 'SvcModal') '真模态点击没走到 Install-NssmService'
+    Assert ($script:lastAccount -eq 'NT AUTHORITY\LocalService') "下拉选中的账户没传下去：[$($script:lastAccount)]"
+    Assert ($script:lastEnvPairs.Count -eq 1 -and $script:lastEnvPairs[0] -eq 'NO_PROXY=127.0.0.1,localhost') "环境变量值被拆散：$($script:lastEnvPairs -join ' | ')"
+    Write-Output 'PASS: real ShowDialog click registers with the selected account and an intact NO_PROXY value.'
+  } else {
+    Write-Output 'SKIP: 非交互会话，跳过 ShowDialog 模态测试（会永久阻塞）。'
+  }
+
   # ---- T3-f：Save-Svc 失败分支——服务已注册，提示手动迁移，仍关弹窗 ----
   $script:installed = @(); $script:dialogWarnings = @()
   function Save-Svc($data) { throw '磁盘只读' }

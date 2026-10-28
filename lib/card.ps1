@@ -9,6 +9,8 @@ $script:TOGGLE_COOLDOWN_MS = [int]$script:config.ToggleCooldownMs
 # 过渡态超时上限：命令回执迟迟不到时（后台异常/命令丢失），探测到点后按到达值强制收敛，
 # 不让卡片永久卡在启动中/停止中/删除中。取值见 config.ps1 的说明。
 $script:TOGGLE_TIMEOUT_MS = [int]$script:config.ToggleTimeoutMs
+# 过渡计时刷新的硬上限倍数（见 config.ps1）。config 缺该键时回落 10，别让 [int]$null=0 把上限归零。
+$script:TRANSITION_HARD_CAP_FACTOR = if ($script:config.TransitionHardCapFactor) { [int]$script:config.TransitionHardCapFactor } else { 10 }
 
 # 把卡片置为过渡态：状态文字、按钮、指示灯统一转橙并禁用操作，记录命令纪元。
 # 启停（本文件）与删除（dialogs.ps1）共用——两处字段集曾不一致：删除路径漏了
@@ -59,7 +61,7 @@ function Test-TransitionTimedOut($card, [datetime]$now){
   # 而那正是这套机制存在的理由。取 10 倍阈值：正常慢启动够用，真挂了也一定会被放出来。
   # TransitionStartedAt 缺失（MinValue：旧夹具手工置态）时退回 TransitionAt 当起点。
   $started = if ($card.TransitionStartedAt -and $card.TransitionStartedAt -ne [datetime]::MinValue) { $card.TransitionStartedAt } else { $card.TransitionAt }
-  if (($now - $started).TotalMilliseconds -ge ($limit * 10)) { return $true }
+  if (($now - $started).TotalMilliseconds -ge ($limit * $script:TRANSITION_HARD_CAP_FACTOR)) { return $true }
   ($now - $card.TransitionAt).TotalMilliseconds -ge $limit
 }
 

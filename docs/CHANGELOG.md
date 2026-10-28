@@ -5,6 +5,21 @@
 
 ## [未发布]
 
+### 2026-10-28：收尾上一轮遗留的风险
+
+- **pre-commit 的密钥扫描其实一次都没跑过**。scoop 明明装好了 gitleaks，但 shims 目录不在
+  **git hook 拿到的 PATH** 里，hook 里 `command -v gitleaks` 失败 → 打一句警告 → `exit 0`。
+  保护看着接上了，实际从没执行——又一个「声称 ≠ 接线」。改成 PATH 优先、找不到再探
+  `$HOME/scoop/shims/gitleaks.exe`。验证用临时仓库 + 假 AWS key：修前 `exit 0 / no leaks found`，
+  修后 `exit 1 / RuleID: aws-access-token`（值被 REDACTED）。
+- **过渡刷新的硬上限提成可调项** `TransitionHardCapFactor`（默认 10）。原先写死在
+  `Test-TransitionTimedOut` 里，是拍出来的魔数；现在进 `config.json`，与其它可调常量同一处收口。
+- **补上真模态路径的测试**。之前只断言控件树 + 在**未显示**的窗口上点按钮，没走过真正的
+  `ShowDialog`。新增一条：离屏窗口 + `ContentRendered` 里点「注册并启动」，验证下拉选中值、
+  `NO_PROXY` 整条值、`DialogResult` 关闭。非交互会话自动跳过（那里 `ShowDialog` 会永久阻塞）。
+- **方案 2.4 的 `NSSM_PATH` 签名校验：评估后不做**。实测本机官方 scoop 包的 nssm.exe 是
+  `NotSigned`——加「签名无效就警告」会对所有正常安装报黄字，纯噪声。
+
 ### 2026-10-28：添加服务能选运行账户，GPU 程序有提示
 
 给 ComfyUI 注册服务时的第一反应是「SYSTEM 账户能不能用 GPU」。本机实测能（驱动与显卡形态使然），但这不该靠运气——换个环境（纯集显、Optimus 混合、远程会话）就可能拿不到。工具原来对账户完全无感知。

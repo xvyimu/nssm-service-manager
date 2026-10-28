@@ -17,7 +17,15 @@
 # 真泄漏的正确处理顺序是「先吊销/轮换密钥，再改代码」—— 只删代码不改密钥，
 # 历史里那个值仍然有效。参见 D:\orca\docs\ 里的密钥处置记录。
 
-if ! command -v gitleaks >/dev/null 2>&1; then
+# 解析可执行文件：PATH 优先，找不到再探 scoop 的 shims 目录。
+# 为什么需要这一段：scoop 装好后 shims 目录不一定出现在**git hook 拿到的 PATH** 里
+# （本机实测就是），`command -v` 失败后一句警告就 exit 0——保护看着接上了，其实从没跑过。
+# 只认 scoop 默认路径，不做全盘搜索：找错东西比找不到更糟。
+GITLEAKS="$(command -v gitleaks 2>/dev/null || true)"
+if [ -z "$GITLEAKS" ] && [ -x "$HOME/scoop/shims/gitleaks.exe" ]; then
+  GITLEAKS="$HOME/scoop/shims/gitleaks.exe"
+fi
+if [ -z "$GITLEAKS" ]; then
   # 没装 gitleaks 不拦提交，但要让人知道保护没生效
   echo "⚠️  gitleaks 未安装，本次提交未做密钥扫描" >&2
   echo "    安装：scoop install gitleaks" >&2
@@ -25,4 +33,4 @@ if ! command -v gitleaks >/dev/null 2>&1; then
 fi
 
 # --redact：即使命中，也不把密钥明文打到终端/日志里
-exec gitleaks git --pre-commit --redact --staged --verbose --no-banner
+exec "$GITLEAKS" git --pre-commit --redact --staged --verbose --no-banner
