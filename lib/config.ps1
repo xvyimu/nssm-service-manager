@@ -18,9 +18,15 @@ $script:config = [ordered]@{
                                  # 相等——启动失败回落 sc.exe start 走 SCM 同步管道时，管道压满 30s
                                  # 与逃生阈值同一时刻触发，卡片会先被探测值收敛、再被迟到回执改一次，
                                  # 表现为状态抖动。故抬到 45000（+15s 余量），让回执先到。
-                                 # **该路径耗时仍未真机实测**（需建服务，见 tests/probe-1053-timing.ps1，
-                                 # 管理员跑）：45000 是按「管道上限 + 余量」推的，不是量出来的。实测后
-                                 # 若确认真实耗时远小于 30s，可回落；若接近 30s，保持本值并考虑再放大。
+                                 # **2026-10-28 已真机实测**（tests/probe-1053-timing.ps1，管理员）：
+                                 # 注册一个 BinaryPathName 指向「存在但非服务程序」的 exe，SCM 会拉起进程、
+                                 # 等它连 SCP，ServicesPipeTimeout 到点返回 1053——
+                                 #   ServiceController.Start()  30032 ms（抛异常）
+                                 #   sc.exe start              30034 ms（exit 1053）
+                                 # 即该路径确实是 ~30s。45000 留 15s 余量，够用，不需要再调。
+                                 # 注意：**不能用「exe 路径不存在」造这个场景**——那条路 SCM 立刻返回 2
+                                 # （文件找不到），15~18ms 就结束，压根走不到管道等待（本探针 2026-10-28 前
+                                 # 就是那么写的，所以一直没产出过有意义的数字）。
   TransitionHardCapFactor = 10   # 过渡计时刷新的硬上限倍数（card.ps1 Test-TransitionTimedOut）——
                                  # 探测报同一过渡态时 TransitionAt 会刷新（慢启动不误判），但累计时长
                                  # 超过 ToggleTimeoutMs × 本倍数就强制逃生。没有它，永久卡在
