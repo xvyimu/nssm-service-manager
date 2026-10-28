@@ -56,6 +56,12 @@ try {
   Update-CardClock $c ([datetime]::Now)
   Assert ($c.LblUp.Text -like '*已 12s*') "启动中应显示已用时长，got [$($c.LblUp.Text)]"
 
+  # 过渡结束、服务真起来了：计时从「运行中」那一刻重新起算——这才是用户说的
+  # 「启动后才开始计时」；它的起点既不是打开工具，也不是点按钮那一刻
+  Update-CardData 'SvcClock' '运行中' '正常'
+  Assert ($c.ST -eq '运行中') "启动完成后应转到运行中，got $($c.ST)"
+  Assert ((([datetime]::Now) - $c.StateSince).TotalSeconds -lt 2) "运行时长应从启动完成时起算，got StateSince=$($c.StateSince)"
+
   # 已停止：显示已停多久。先把过渡态清掉——命令驱动的过渡态会按方向守卫丢弃反向探测值
   # （那是 H1 的保护，不是 bug），这里要的是「过渡结束后」的场景。
   $c.TransitionAt = [datetime]::MinValue
