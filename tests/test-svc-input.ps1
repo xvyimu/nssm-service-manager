@@ -159,6 +159,8 @@ try {
   Assert ($byKey.ContainsKey('AppEnvironmentExtra') -eq $false) 'AppEnvironmentExtra omitted when env empty'
   Assert ($byKey['AppStdout'] -join '|' -like "*SvcA.out.log") 'AppStdout should embed service name'
   Assert ($byKey['AppRotateBytes'] -join '|' -eq '5242880') 'AppRotateBytes should be 5242880'
+  # 年龄门槛：没有它，AppRotateFiles=1 会在每次服务启动时都轮转一次，频繁重启就堆成几十个档
+  Assert ($byKey['AppRotateSeconds'] -join '|' -eq '86400') 'AppRotateSeconds should be 86400'
 
   $spec = Get-NssmSetSpec 'SvcB' 'C:\app' '-x' @('K1=V1','K2=V2')
   $byKey = @{}; foreach ($s in $spec) { $byKey[$s.k] = $s.v }

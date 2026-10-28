@@ -27,6 +27,7 @@ service-manager-gui.ps1（主入口：CLI 分支 + 提权 + 模块加载 + 窗�
 ├─ lib/config.ps1     可调常量收口（PerPage/超时/轮转/冷却/托盘/日志保留）
 ├─ lib/theme.ps1      系统字体、主题色 $script:T、按钮模板、Mica P/Invoke
 ├─ lib/util.ps1       配置持久化（Read-SvcFile/Load-Svc/Save-Svc）、命令入队（Send-ServiceCommand）、
+│                     每服务日志目录解析（Get-SvcLogDir，读注册表 AppStdout）、
 │                     打开面板（Open-PanelUrl）、日志轮转保留（Remove-RotatedLogs）、
 │                     安全检查（Resolve-ServiceExeDir/Show-SecurityCheck）
 ├─ lib/svc-input.ps1  纯函数族：输入校验（Test-SvcInput/Test-SvcAccount）、env 解析
@@ -181,7 +182,8 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 
 - 真实 UAC、系统 Mica 效果与 NSSM 服务生命周期需在本机交互验证（单测用替身）
 - `launch.vbs` 必须保持纯 ASCII（Windows Script Host 按系统 ANSI 代码页读取，UTF-8 中文注释在部分系统触发 `800A0400`）
-- **`ToggleTimeoutMs` 的全局默认值是推出来的、不是量出来的**：启动失败回落 `sc.exe start` 走 SCM 同步管道，上限 `ServicesPipeTimeout`（本机未设 = 默认 30000ms）。该路径真实耗时未真机实测（需建服务，`tests/probe-1053-timing.ps1` 管理员跑），当前值 45000 是按「管道上限 + 6s 删除路径余量」推的。跑过探针才能确认够不够。
+- **`ToggleTimeoutMs = 45000` 已实测（2026-10-28）**：启动失败回落 `sc.exe start` 走 SCM 同步管道，实测 `ServiceController.Start()` 30032ms、`sc.exe start` 30034ms（exit 1053），与 `ServicesPipeTimeout`（本机未设 = 默认 30000ms）吻合。45000 留 15s 余量，够用。
+  测法有个坑：**不能用「exe 路径不存在」造 1053**——那条路 SCM 立刻返回 2（文件找不到），15~18ms 就结束，走不到管道等待。探针原版就是这么写的，所以一直没产出过有意义的数字。现在改用「存在但非服务程序」的 exe（`cmd.exe` 跑长 ping）。
 - **探测驱动的中间态：卡片按钮不可用，但右键菜单照常下发命令**。卡片过渡态超时逃生只覆盖**命令驱动**的过渡态（用户点了启停/删除）。服务若真的卡在 SCM 的 `StartPending`/`StopPending`（停止回调挂死这类），探测会一直报同一中间态，卡片停在「停止中」、正按钮禁用。这是 H1 修复的有意取舍（探测驱动的值必须能被后续探测覆盖，不能按方向丢弃）。但**不是没有出路**：右键菜单的「启动/停止/重启/删除」走的是 `Send-ServiceCommand`，不经卡片的按钮门闩（`card.ps1` 右键 handler），一直可用。
 - **密钥扫描有两层，都有前提**：`.githooks/pre-commit` 要求每个 clone 先 `git config core.hooksPath .githooks`，否则本地那层根本不存在；`gitleaks` 没装时钩子只打警告并放行。CI 侧新增的 `secrets` 任务（`gitleaks-action`）只在**推送 main 或开 PR** 时触发，功能分支推送不跑；已在 PR #7 上首次跑通（12s）。
 - **CLI `-Add` 与 GUI 不能并行**：两者都全量写回 `services.json`（`Save-Svc` 无合并语义），GUI 常驻时 CLI 新增会被 GUI 下一次保存覆盖。故 `-Add` 前检测单实例 mutex（`Test-GuiInstanceRunning`），GUI 在跑则拒绝并提示先关 GUI。

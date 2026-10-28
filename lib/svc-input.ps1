@@ -109,7 +109,7 @@ function Test-SvcAccount([string]$account){
 # 单独点源即可测（不加载 WPF / config）。
 function Get-NssmSetSpec([string]$n,[string]$dir,[string]$par,[object[]]$envPairs,
                          [int]$rotateBytes = 5242880, [int]$stopMethodMs = 5000,
-                         [string]$account = ''){
+                         [string]$account = '', [int]$rotateSeconds = 86400){
   $spec = [System.Collections.Generic.List[object]]::new()
   if($dir){ $spec.Add(@{k='AppDirectory'; v=@($dir)}) }
   if($par){ $spec.Add(@{k='AppParameters'; v=@($par)}) }
@@ -120,6 +120,9 @@ function Get-NssmSetSpec([string]$n,[string]$dir,[string]$par,[object[]]$envPair
   $spec.Add(@{k='AppRotateFiles'; v=@(1)})
   $spec.Add(@{k='AppRotateOnline'; v=@(1)})
   $spec.Add(@{k='AppRotateBytes'; v=@($rotateBytes)})
+  # 年龄门槛：AppRotateFiles=1 是「每次服务启动就轮转」，频繁重启的服务一天能堆几十个档。
+  # 设了这个之后文件至少活 N 秒才允许被轮转，堆积速度立刻降下来。
+  $spec.Add(@{k='AppRotateSeconds'; v=@($rotateSeconds)})
   $spec.Add(@{k='AppStopMethodConsole'; v=@($stopMethodMs)})
   $spec.Add(@{k='Start'; v=@('SERVICE_DEMAND_START')})
   $spec.Add(@{k='AppExit'; v=@('Default','Ignore')})

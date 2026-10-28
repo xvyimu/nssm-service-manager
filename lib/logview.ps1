@@ -11,7 +11,10 @@
 # $LogDir 就会遮蔽同名（不区分大小写）的外层 $logDir，下面那句回落变成自己赋给自己，
 # GUI 的单参调用永远拿到 $null。改名后回落才能经动态作用域读到调用方的 $logDir。
 function Get-LogFiles([string]$n, [string]$LogPath){
-  if(-not $LogPath){ $LogPath = $logDir }
+  # 不给路径时用该服务**实际**的日志目录（读注册表 AppStdout），而不是一律用 $logDir：
+  # 手工 nssm 注册的服务（如 ComfyUI）日志在别处，用 $logDir 会显示「无日志」。
+  # Get-SvcLogDir 内部已处理读不到时回落 $logDir 的情形。
+  if(-not $LogPath){ $LogPath = Get-SvcLogDir $n }
   if(-not $LogPath -or -not (Test-Path -LiteralPath $LogPath)){ return @() }
   $esc = [regex]::Escape($n)
   $current = @()

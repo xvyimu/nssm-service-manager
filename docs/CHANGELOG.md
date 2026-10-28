@@ -5,6 +5,43 @@
 
 ## [未发布]
 
+### 2026-10-28：卡片显示时长 + 日志按服务实际目录走
+
+**卡片时长**：点「启动」后卡片只写「启动中」，没有任何时间感——分不出是真在启动还是卡住了。
+现在过渡态显示已用时（`正在启动… · 已 12s`），运行中显示已运行多久（`· 已运行 1分30秒`），
+已停止显示停了多久。计时只在**状态变化**时重记，探测每 4 秒来一次也不会把计时清零。
+顺手修了个旧的观感问题：进入过渡态时副标题还挂着上一次的「随时可以启动」，现在换成「正在启动…」。
+
+**日志**：两处都假定日志在 `$logDir` 里，但手工 `nssm install` 的服务日志在别处——
+本机 ComfyUI 指向 `D:\AI\...\logs`，于是**日志窗口显示「无日志」、保留策略也永远清不到它**。
+新增 `Get-SvcLogDir`（读注册表里该服务的 `AppStdout`，读不到回落到 `$logDir`），
+日志窗口与 `Remove-RotatedLogs` 都改走它。实测：`Get-LogFiles ComfyUI` 从 0 个变成 38 个。
+
+**轮转年龄门槛**：ComfyUI 一天堆了 37 个轮转档，根因是 `AppRotateFiles=1` 会在**每次服务启动**
+时轮转一次，而它今天重启了十几遍，`AppRotateBytes`/`AppRotateSeconds` 又都是 0（不限制）。
+- 工具注册的服务：`Get-NssmSetSpec` 补上 `AppRotateSeconds`（新配置键，默认 86400），
+  以后新注册的服务不会再每次重启留一个档。
+- 已注册的 ComfyUI：管理员下 `nssm set ComfyUI AppRotateBytes 5242880` /
+  `AppRotateSeconds 86400`，已生效并复核。
+
+### 2026-10-28：`ToggleTimeoutMs` 从「推算」改成「实测」
+
+`45000` 这个值一直标着「按管道上限推的，没量过」。把探针修好后真跑了一遍：
+`ServiceController.Start()` 30032ms、`sc.exe start` 30034ms（exit 1053），与
+`ServicesPipeTimeout` 默认 30000ms 吻合。45000 留 15s 余量，够用，不用改值。
+
+探针本身有两个 bug，不修就永远测不出东西：
+
+1. **造错了场景**：原来用「exe 路径不存在」的服务，SCM 立刻返回 2（文件找不到），
+   15~18ms 就结束，压根走不到 `ServicesPipeTimeout` 的管道等待。1053 要的是
+   「进程起来了但没在 30s 内连上 SCP」——改用「存在但非服务程序」的 exe
+   （`cmd.exe` 跑长 ping）后，两路径都稳定测到 ~30.0s。
+2. **测量值被输出污染**：`Measure-Step` 既 `Write-Output` 一行说明又返回毫秒数，
+   而调用方写的是 `$ms = Measure-Step ...`——说明行被一起收进 `$ms`，屏幕上什么都不显示，
+   `[Math]::Max($msSvc,$msSc)` 也跟着失效。改用 `Write-Host`。
+
+顺带：探针也改用 `Get-ScExe`（它此前裸调 `sc.exe`，在 System32 不在 PATH 的机器上直接跑不起来）。
+
 ### 2026-10-28：`sc.exe` 不再裸调（本机 System32 不在 PATH）
 
 做 `ObjectName` 真机验证时，提权脚本报 `sc.exe` 无法识别。追下去不是权限问题：

@@ -44,6 +44,7 @@ $tests = @(
   @{ Name = 'dispatcher priority'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-dispatcher-priority.ps1')) }
   @{ Name = 'GUI smoke'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-gui-smoke.ps1')) }
   @{ Name = 'card actions'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-card-actions.ps1')) }
+  @{ Name = 'card clock'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-card-clock.ps1')) }
   @{ Name = 'card cache'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-card-cache.ps1')) }
   @{ Name = 'transition race'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-transition-race.ps1')) }
   @{ Name = 'transition failure'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-transition-failure.ps1')) }
