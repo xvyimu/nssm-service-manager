@@ -10,8 +10,8 @@
 - **CI 补上密钥扫描**：`.github/workflows/test.yml` 新增 `secrets` 任务（`gitleaks-action`，
   `fetch-depth: 0` 扫全历史）。本地钩子要每个 clone 手动 `core.hooksPath`，也覆盖不到
   「网页直接提交 / fork 的 PR」，CI 这一层是独立的。注意它只在推送 main 或开 PR 时触发，
-  功能分支推送不跑，且**尚未在真实 runner 上跑过**——首次开 PR 时才会知道有没有坑
-  （该 action 对个人仓库免费，组织仓库要 `GITLEAKS_LICENSE`）。
+  功能分支推送不跑。**已在 PR #7 上首次跑通**（12s，`no leaks found`）——该 action 对个人
+  仓库免费，组织仓库要 `GITLEAKS_LICENSE`。
 - **`ObjectName` 单 token 形状已完成真机验证**（管理员）：`nssm install` → `nssm set <svc>
   ObjectName "NT AUTHORITY\LocalService"` 返回 0 → `sc.exe qc` 读到
   `SERVICE_START_NAME : NT Authority\LocalService` → `nssm remove` 清干净。即
