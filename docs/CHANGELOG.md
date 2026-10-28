@@ -24,6 +24,28 @@
 - 已注册的 ComfyUI：管理员下 `nssm set ComfyUI AppRotateBytes 5242880` /
   `AppRotateSeconds 86400`，已生效并复核。
 
+### 2026-10-28：上面那批改动的复核修正
+
+独立复核抓到的，逐条修：
+
+- **过渡态时长每 4 秒被清零**（中等，正好废掉这个功能的目的）：时长读的是 `TransitionAt`，
+  而该字段会在每次探测报同一中间态时被刷新（那是超时逃生判据的一部分）。一个冷启动 90s 的
+  服务会一直显示「已 0s」。改用 `StateSince`（只在进入状态时记一次），与超时判据解耦。
+  原测试手工设 `TransitionAt`，正好绕过了这条路径——补了一条**走 `Update-CardData` 真实路径**
+  的用例，回退到旧写法立刻失败。
+- **`Get-SvcLogDir` 的服务名没校验**：注册表 provider **会**归一化 `..`，实测
+  `Get-SvcLogDir '..\..\CurrentControlSet\Services\ComfyUI'` 真读到了 ComfyUI 的目录。
+  服务名来自 `services.json`，`Read-SvcFile` 只校验端口不校验名字。已按 `Test-SvcInput` 的
+  字符集把关（不合格回落 `$logDir`），并改用 `-LiteralPath`（避免 `*` 被当通配符枚举）。
+  > 我先前在注释里写「provider 不归一化 `..`，不需要校验」——那是错的，当时看到的
+  > `Test-Path` 为 False 是「穿越后键不存在」，不是「没归一化」。已订正。
+- **保留策略口径变了但文档没跟**：`Invoke-LogCleanup` 现在按目录各调一次，每个目录留各自的
+  前 N 份；`config.ps1` / `util.ps1` / README 三处仍写着「跨服务全局」。已同步。
+- **测试自身两处**：`Invoke-InRunspace` 不看 `HadErrors`，子脚本的终止性错误会被静默吞掉、
+  断言拿到 `$null` 反而「通过」；步骤 3 只 Dispose 持有句柄，内核对象直接销毁，走的是
+  「对象已消失」分支，**从没真正触发过 `AbandonedMutexException`**。改为：HadErrors 直接抛；
+  用子进程持有后退出（进程终止才是 abandoned 的真实形态），并保留一个句柄让对象活着。
+
 ### 2026-10-28：`ToggleTimeoutMs` 从「推算」改成「实测」
 
 `45000` 这个值一直标着「按管道上限推的，没量过」。把探针修好后真跑了一遍：

@@ -30,6 +30,9 @@ function Set-CardTransition($card, [string]$state, [int]$epoch, [datetime]$at){
   # 过渡态的**起点**，只在进入时记一次；TransitionAt 会被探测刷新（慢启动），它不刷新。
   # 逃生硬上限用它算，防止刷新把逃生口永久顶掉。
   $card.TransitionStartedAt=$at
+  # 卡片时长的起算点：与 TransitionStartedAt 同步。分开是因为语义不同——
+  # 那个服务超时判据，这个服务显示，将来改一个不该动另一个。
+  $card.StateSince=$at
   $card.Btn.IsEnabled=$false
   $card.Btn.Content=$state
   $card.ReadyToToggle=$false
@@ -43,6 +46,8 @@ function Set-CardTransition($card, [string]$state, [int]$epoch, [datetime]$at){
     default  { $card.LblUpBase }
   }
   if ($card.LblUp) { $card.LblUp.Text = [string]$card.LblUpBase }
+  # 立刻补一次时长后缀：否则最长有 400ms 的空窗，副标题会「没有后缀」再「有后缀」闪一下
+  if (Get-Command Update-CardClock -EA SilentlyContinue) { Update-CardClock $card ([datetime]::Now) }
   $card.LblSt.Foreground=[System.Windows.Media.Brushes]::Orange
   $card.Dot.Fill=[System.Windows.Media.Brushes]::Orange
   $card.PendingEpoch=$epoch
@@ -70,8 +75,11 @@ function Update-CardClock($card, [datetime]$now) {
   if (-not $card -or -not $card.LblUp) { return }
   $suffix = ''
   if ($card.ST -in @('启动中','停止中','删除中')) {
-    if ($card.TransitionAt -ne [datetime]::MinValue) {
-      $e = Format-Elapsed $card.TransitionAt $now
+    # **必须用 StateSince，不能用 TransitionAt**：后者会在每次探测报同一中间态时被刷新
+    # （那是超时逃生判据的一部分），拿它算时长的话，慢启动服务会永远显示「已 0s」——
+    # 正是这个功能要解决的场景。StateSince 只在进入状态时记一次。
+    if ($card.StateSince -and $card.StateSince -ne [datetime]::MinValue) {
+      $e = Format-Elapsed $card.StateSince $now
       if ($e) { $suffix = " · 已 $e" }
     }
   } elseif ($card.ST -eq '运行中') {

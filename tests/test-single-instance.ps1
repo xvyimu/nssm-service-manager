@@ -19,7 +19,11 @@ function Invoke-InRunspace([scriptblock]$sb, [hashtable]$vars = @{}) {
   foreach ($k in $vars.Keys) { $rs.SessionStateProxy.SetVariable($k, $vars[$k]) }
   try {
     $ps = [powershell]::Create().AddScript($sb); $ps.Runspace = $rs
-    $ps.Invoke()
+    $out = $ps.Invoke()
+    # 子脚本里的终止性错误**不会**从 Invoke() 抛出，只进 Streams.Error——不看的话，
+    # 断言会拿到 $null 而「恰好」通过（例如把 [Threading.Mutex] 误写成 [Threading]）。
+    if ($ps.HadErrors) { throw "runspace 执行出错：$($ps.Streams.Error[0])" }
+    $out
   } finally { $rs.Close(); $rs.Dispose() }
 }
 
@@ -49,7 +53,9 @@ try {
 
 # ---- 2. 持有者释放后，第二个线程应能获取（夹具自检）----
 $result = Invoke-InRunspace -vars @{ mutexName = $mutexName } -sb {
-  $m = [Threading.Mutex]::OpenExisting($mutexName)
+  # 对象已被 OS 销毁时 OpenExisting 会抛——这是预期的一种结果，下面按 $result 分支处理，
+  # 不能让它变成「runspace 执行出错」（那会被 Invoke-InRunspace 的 HadErrors 守卫抛出来）。
+  try { $m = [Threading.Mutex]::OpenExisting($mutexName) } catch { return $null }
   try { $got = $m.WaitOne(0) } finally { $m.Dispose() }
   $got
 }
@@ -69,39 +75,29 @@ if ($result) {
 }
 
 # ---- 3. AbandonedMutexException 当作「已获取」（service-manager-gui.ps1:81）----
-# 模拟前一个实例崩溃：主线程持有后不 ReleaseMutex 直接 Dispose（OS 未正常释放所有权），
-# 下一个线程 WaitOne(0) 应抛 AbandonedMutexException，按代码逻辑当作已获取。
-$ghost = [Threading.Mutex]::new($true, $mutexName)
-$ghost.Dispose()  # 不 ReleaseMutex，模拟进程被杀
-Start-Sleep -Milliseconds 100  # 给 OS 时间回收
+# 模拟前一个实例崩溃。注意「abandoned」的定义：**持有线程终止**且没 ReleaseMutex。
+# 光 Dispose 句柄不产生 abandoned——所有权按线程算，线程还活着就仍是「被持有」。
+# 所以必须让持有者在**另一个线程**里拿到、然后让那个线程退出。
+$keep = $null
 try {
-  $result = Invoke-InRunspace -vars @{ mutexName = $mutexName } -sb {
-    try {
-      $next = [Threading.Mutex]::OpenExisting($mutexName)
-    } catch { return 'gone' }
-      try {
-        $owned = $false
-        try { $owned = $next.WaitOne(0) }
-        catch [System.Threading.AbandonedMutexException] { $owned = $true }
-        if ($owned) { try { $next.ReleaseMutex() } catch {} }
-        $owned
-      } finally { $next.Dispose() }
-  }
-  if ($result -eq 'gone') {
-    # named mutex 已被 OS 回收——直接新建验证可获取
-    $fresh = [Threading.Mutex]::new($false, $mutexName)
-    try {
-      $got = $fresh.WaitOne(0)
-      Assert $got 'Fresh mutex should be acquirable after OS recycled ghost.'
-      $fresh.ReleaseMutex()
-      Write-Output 'PASS: OS recycled abandoned mutex; new instance acquires it.'
-    } finally { $fresh.Dispose() }
-  } else {
-    Assert $result 'AbandonedMutexException should be treated as acquired.'
-    Write-Output 'PASS: AbandonedMutexException treated as acquired (crash recovery path).'
-  }
+  # 顺序很关键：必须让**子进程先创建** mutex（initiallyOwned 只对「新建对象」生效，
+  # 对象已存在时传 $true 不会拿到所有权），父进程随后 OpenExisting 只保住对象不持有。
+  $childCmd = "& { `$m = [Threading.Mutex]::new(`$true, '" + $mutexName + "'); Start-Sleep -Milliseconds 900 }"
+  $holder = Start-Process pwsh -ArgumentList @('-NoProfile','-Command',$childCmd) -PassThru -WindowStyle Hidden
+  Start-Sleep -Milliseconds 400                          # 等子进程建好并持有
+  $keep = [Threading.Mutex]::OpenExisting($mutexName)    # 保住内核对象（不持有所有权）
+  $holder.WaitForExit()                                  # 进程终止 → 它持有的 mutex 变 abandoned
+  Start-Sleep -Milliseconds 150
+
+  $owned = $false; $abandoned = $false
+  try { $owned = $keep.WaitOne(0) }
+  catch [System.Threading.AbandonedMutexException] { $owned = $true; $abandoned = $true }
+  Assert $owned 'AbandonedMutexException should be treated as acquired.'
+  Assert $abandoned '本轮必须真的抛 AbandonedMutexException（只拿到普通所有权不算测到崩溃恢复）'
+  Write-Output 'PASS: AbandonedMutexException treated as acquired (crash recovery path).'
 } finally {
-  # 清理可能残留的 named mutex
+  # 清理：先放掉用来保住内核对象的句柄，再回收可能残留的 named mutex
+  try { $keep.Dispose() } catch {}
   try { [Threading.Mutex]::OpenExisting($mutexName).Dispose() } catch {}
 }
 

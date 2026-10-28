@@ -34,7 +34,8 @@ $script:config = [ordered]@{
                                  # 默认 45s × 10 = 7.5 分钟；调大只会让「卡死」被放出来得更晚。
   WaitStoppedTimeoutMs = 6000    # 重启/删除前轮询 Stopped 的上限（add-svc.ps1 / poll.ps1 Wait-Stopped）
   LogKeepCount        = 10       # 轮转日志保留份数（util.ps1 Remove-RotatedLogs）——
-                                 # 口径是**跨服务全局**按修改时间倒序的前 N 份豁免，不是每服务各 N 份
+                                 # 口径是**按日志目录**各留前 N 份：共用 $logDir 的服务算一个目录，
+                                 # 有独立 AppStdout 目录的服务（如 ComfyUI）各算一份配额
   LogKeepDays         = 14       # 轮转日志保留天数：删除须同时满足「不在全局前 N 份」且「早于 N 天」。
                                  # 故 14 天内高频轮转的档一份都不删——保留份数上限只在跨过天数后生效
   LogDir              = ''       # 日志根覆盖；空 = 仓内 logs/。改它只影响新注册的服务——

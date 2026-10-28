@@ -257,30 +257,38 @@ function Test-GuiInstanceRunning([string]$mutexName){
   } finally { $m.Dispose() }
 }
 
-# ---- 日志轮转档保留策略：NSSM 只改名不删档，logs/ 会无界增长 ----
-# 只碰轮转档（BaseName 匹配 \.(out|err)-\d{8}，NSSM 实际命名带 T 与毫秒，如
-# NewAPI.err-20261001T154751.222.log），永不动当前档（NewAPI.out.log / .err.log）。
-# 策略：**跨服务全局**按修改时间倒序保留最近 KeepCount 份，其余若早于 KeepDays 天则删除。
-# 两个条件是「且」——删除须同时满足「不在全局前 KeepCount 份」且「早于 KeepDays 天」。
-# 故 KeepDays 窗口内的轮转档一份都不会删（高频轮转的服务在这段时间仍会堆积），
-# 保留份数上限只在该时间之后才起作用。实测（2026-10-05，两个服务各 6 份、均 1 天前）：
-# 删除 0 份；再加 5 份 20 天前的，删掉的是那 5 份（全局前 10 份豁免留给了另外两组）。
-# 返回被删文件路径列表。
-# 注：参数名不能用 $LogDir（PS 变量名大小写不敏感，会遮蔽外层 $logDir，与 Get-LogFiles 同坑）。
 # 某个服务的日志目录：读注册表里 nssm 写的 AppStdout，取它的父目录。
 # 为什么不能直接用 $logDir：服务未必是本工具注册的。手工 `nssm install` 的服务
 # AppStdout 指向别处（本机 ComfyUI 就指向 D:\AI\...\logs），那些日志既不会出现在
 # 日志窗口里，也永远进不了下面的保留策略——一天就堆了 37 个轮转档。
-# 读不到（服务未注册 / 无 AppStdout / 无权限）时回落 $logDir。
+# 读不到（服务未注册 / 无 AppStdout / 无权限 / 名字不合法）时回落 $logDir。
+# **名字必须校验**：服务名来自 services.json，而 Read-SvcFile 只校验端口、不校验名字；
+# 注册表 provider 又会归一化 `.`/`..` ——实测 `Get-SvcLogDir '..\..\CurrentControlSet\Services\ComfyUI'`
+# 真的读到了 ComfyUI 的目录。不校验的话，一个手改出来的坏名字能让保留策略去清
+# 别的服务的日志目录。字符集与 Test-SvcInput 保持一致。
 function Get-SvcLogDir([string]$n){
+  if (-not $n -or $n -notmatch '^[A-Za-z0-9_.-]+$' -or $n -eq '.' -or $n -eq '..') { return $logDir }
   try {
-    $p = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$n\Parameters" -Name AppStdout -EA Stop
+    $p = Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$n\Parameters" -Name AppStdout -EA Stop
     $dir = Split-Path ([string]$p.AppStdout) -Parent
     if ($dir -and (Test-Path -LiteralPath $dir)) { return $dir }
   } catch {}
   $logDir
 }
 
+# ---- 日志轮转档保留策略：NSSM 只改名不删档，日志目录会无界增长 ----
+# 只碰轮转档（BaseName 匹配 \.(out|err)-\d{8}，NSSM 实际命名带 T 与毫秒，如
+# NewAPI.err-20261001T154751.222.log），永不动当前档（NewAPI.out.log / .err.log）。
+# 策略：**按目录各算各的**——调用方对「$logDir + 每个服务实际的 AppStdout 目录」
+# 逐个调用本函数，每个目录保留自己最近 KeepCount 份，其余若早于 KeepDays 天则删除。
+# （2026-10-28 改：此前只有 $logDir 一个目录，是「跨服务全局前 N 份」；引入
+# Get-SvcLogDir 后各服务可能有自己的目录，全局口径不再成立。共用 $logDir 的服务行为不变。）
+# 两个条件是「且」——删除须同时满足「不在该目录前 KeepCount 份」且「早于 KeepDays 天」。
+# 故 KeepDays 窗口内的轮转档一份都不会删（高频轮转的服务在这段时间仍会堆积），
+# 保留份数上限只在该时间之后才起作用。实测（2026-10-05，两个服务各 6 份、均 1 天前）：
+# 删除 0 份；再加 5 份 20 天前的，删掉的是那 5 份。
+# 返回被删文件路径列表。
+# 注：参数名不能用 $LogDir（PS 变量名大小写不敏感，会遮蔽外层 $logDir，与 Get-LogFiles 同坑）。
 function Remove-RotatedLogs([string]$LogPath,[int]$KeepCount=10,[int]$KeepDays=14){
   if (-not $LogPath) { $LogPath = $logDir }
   if (-not $LogPath -or -not (Test-Path -LiteralPath $LogPath)) { return @() }
