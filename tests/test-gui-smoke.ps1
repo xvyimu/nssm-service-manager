@@ -63,7 +63,9 @@ try {
   Write-Output 'PASS: 3x2 layout at 840x540, 1040x640, 1280x800; single-page navigation hidden.'
 
   $card = $script:cardPanel.Children[0]
-  foreach ($case in @(@('运行中','正常','Green'), @('运行中','超时','Orange'), @('运行中','无响应','Red'), @('运行中','HTTP 500','Red'), @('已停止','','Gray'))) {
+  # 注意顺序：「已停止」必须留在最后——循环结束后紧接着的双击断言要求卡片处于已停止态
+  # （双击才会入队 start）。新增的「未安装」「未知」放前面。
+  foreach ($case in @(@('运行中','正常','Green'), @('运行中','超时','Orange'), @('运行中','无响应','Red'), @('运行中','HTTP 500','Red'), @('未安装','','Gray'), @('未知','','Orange'), @('已停止','','Gray'))) {
     Update-CardData $card.SvcName $case[0] $case[1]
     Assert ($card.Dot.Fill.Color -eq [Windows.Media.Colors]::($case[2])) "Wrong state color: $($case[0]) / $($case[1])"
   }

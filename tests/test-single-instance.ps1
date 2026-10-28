@@ -35,7 +35,14 @@ try {
   }
   Assert (-not $result) "Second instance wrongly acquired a held mutex (WaitOne(0)=$result)."
   Write-Output 'PASS: held mutex blocks second instance thread (WaitOne(0)=false).'
-} finally { $holder.ReleaseMutex(); $holder.Dispose() }
+} finally {
+  # 必须包住：mutex 若已被别的进程（如真实 GUI）持有，new($true,$name) **不给创建者所有权**，
+  # ReleaseMutex 会抛 Object synchronization method was called from an unsynchronized block
+  # of code。异常发生在 finally 里会吞掉后面第 2、3 段断言——第 3 段（AbandonedMutexException
+  # 崩溃恢复）是产品最关键分支的唯一覆盖，不能让夹具异常把它带走。
+  try { $holder.ReleaseMutex() } catch {}
+  $holder.Dispose()
+}
 
 # ---- 2. 持有者释放后，第二个线程应能获取（夹具自检）----
 $result = Invoke-InRunspace {
@@ -95,4 +102,25 @@ try {
   try { [Threading.Mutex]::OpenExisting($mutexName).Dispose() } catch {}
 }
 
-Write-Output 'PASS: mutex single-instance logic covered; silent exit verified by WaitOne(0)=false on held mutex across threads.'
+# ---- 4. Test-GuiInstanceRunning：CLI -Add 的「GUI 在跑就拒绝」判据（C1）----
+# CLI -Add 与 GUI 都全量写回 services.json；GUI 常驻时 CLI 新增会被 GUI 下一次保存覆盖。
+# 判据抽在 util.ps1，直测真函数。**必须用独立线程（runspace）测**：mutex 可递归，
+# 同一线程对已持有的 mutex 再 WaitOne(0) 会成功，测不出「被持有」——真实场景是不同进程。
+# 用独立 mutex 名避免与上面的真实 GUI mutex 串扰。
+. (Join-Path $RepoRoot 'lib/util.ps1')
+$probeName = "Local\sm-cli-probe-$([guid]::NewGuid().ToString('N'))"
+# 无实例持有 → false（OpenExisting 抛，正常路径）
+Assert (-not (Test-GuiInstanceRunning $probeName)) 'Absent mutex should report no GUI running.'
+# 独立线程持有 → true
+$hold = [Threading.Mutex]::new($false, $probeName)
+$holdHeld = $hold.WaitOne(0)   # 主线程持有
+try {
+  Assert $holdHeld 'Probe mutex not acquired.'
+  $seen = Invoke-InRunspace ([scriptblock]::Create(@"
+. (Join-Path '$($RepoRoot -replace "'","''")' 'lib/util.ps1')
+Test-GuiInstanceRunning '$probeName'
+"@))
+  Assert ([bool]$seen) "Held mutex should report GUI running from another thread; got '$seen'."
+} finally { try { $hold.ReleaseMutex() } catch {}; $hold.Dispose() }
+
+Write-Output 'PASS: mutex single-instance logic covered; silent exit verified by WaitOne(0)=false on held mutex across threads; CLI -Add GUI-running guard verified.'

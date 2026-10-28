@@ -22,21 +22,68 @@
 # 且用 `if (-not $script:configWarning)` 守卫，无需预设。
 
 function Read-SvcFile([string]$path){
+  # 可选字段写错的收集箱（Load-Svc 读完并入 configNotices 弹给用户）。
+  # 为什么收集而不抛：抛会让 Load-Svc 落到 catch，整份清单退回 services.example.json——
+  # GUI 里显示的是示例服务，用户点一次增删，Save-Svc 就把示例写回真实文件，清单全没。
+  # 一个可选字段写错只该让**那个字段**不生效。
+  $script:svcFieldWarnings = @()
   $j = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
   $o = [ordered]@{}; foreach ($k in $j.Keys) {
     $p = [int]$j[$k].port; $u = [string]$j[$k].url
     if ($p -lt 1 -or $p -gt 65535) { throw "$k 端口非法: $p" }
-    $o[$k] = @{ port = $p; url = $u }
+    $entry = @{ port = $p; url = $u }
+    # 可选 per-service 超时覆盖（缺省回落 config 的全局值）：
+    #   toggleTimeoutMs — 卡片过渡态超时逃生（重服务冷启动一分钟起时调大）
+    #   httpTimeoutMs   — HTTP 健康探测超时
+    #   tcpTimeoutMs    — 端口探测超时
+    # **必须在这里显式带走**：Save-Svc 写的是整份 $script:svc，本函数只挑 port/url 的话，
+    # 用户在 services.json 里写的覆盖字段会在下一次 GUI 增删服务时被静默抹掉。
+    foreach ($opt in 'toggleTimeoutMs','httpTimeoutMs','tcpTimeoutMs') {
+      # **不能用 ContainsKey($opt)**：ConvertFrom-Json -AsHashtable 返回的是
+      # System.Management.Automation.OrderedHashtable，它的键**大小写敏感**（实测：
+      # 写 ToggleTimeoutMs 时 ContainsKey('toggleTimeoutMs') 为 False，点访问却能取到值）。
+      # 而 config.json 的覆盖走 [ordered]@{} 的 Contains()，那个不敏感——两处行为不能不一致。
+      # 按 -ieq 找实际键名：用户照 README 表格写 ToggleTimeoutMs 也得生效。
+      $actual = @($j[$k].Keys | Where-Object { $_ -ieq $opt }) | Select-Object -First 1
+      if (-not $actual) { continue }
+      $raw = $j[$k][$actual]
+      $v = 0
+      if (-not [int]::TryParse([string]$raw, [ref]$v) -or $v -le 0) {
+        # 写错/写 0 只让该字段不生效（回落全局），服务本身照常保留；原因记进收集箱弹给用户。
+        $script:svcFieldWarnings += "$k 的 $opt 无效（$raw），已回落全局值"
+        continue
+      }
+      $entry[$opt] = $v
+    }
+    $o[$k] = $entry
   }
   $o
 }
 
 function Load-Svc {
+  # 专用标志：$script:configWarning 有两个写入方（config.ps1 处理 config.json，这里处理
+  # services.json），而两者后果完全不同——config.json 坏了按设计「不阻断，用默认值」。
+  # 调用方（CLI 的 -Add 门闩）要判断的是「服务清单是否回落成了示例」，只能认这个标志。
+  $script:svcLoadFailed = $false
   if (Test-Path $cfg) {
-    try { return Read-SvcFile $cfg }
+    try {
+      $loaded = Read-SvcFile $cfg
+      # 可选字段写错：清单照常用，只把原因攒成提示（configNotices），不走 configWarning——
+      # 后者配套的弹框会写「当前使用恢复配置」，而这里并没有用恢复配置。
+      # **必须先判空初始化为 @()**：`$null += "x"` 得到的不是数组而是 String（+= 走字符串
+      # 拼接），后面 -join 就失效，多条提示会粘成一行。注意 `@($null)` 也不是空数组，
+      # 是「含一个 $null 的数组」——只能在确认是 $null 时显式赋 @()。
+      # 这里可以初始化：本变量没有别的模块写入，不存在 configWarning 那种被覆盖的问题。
+      if ($null -eq $script:configNotices) { $script:configNotices = @() }
+      foreach ($w in $script:svcFieldWarnings) { $script:configNotices += "services.json：$w" }
+      return $loaded
+    }
     # 消息自带文件名：主脚本的弹框用中性前缀（configWarning 可能来自 config.json 或
     # services.json，调用方无从判断），来源只能由写入方在这里讲清楚。
-    catch { $script:configWarning = "services.json 无效：$($_.Exception.Message)" }
+    catch {
+      $script:configWarning = "services.json 无效：$($_.Exception.Message)"
+      $script:svcLoadFailed = $true
+    }
   }
   # 兜底：services.json 缺失或损坏时读示例清单，让首次运行有内容可看
   $example = Join-Path (Split-Path $cfg -Parent) 'services.example.json'
@@ -168,12 +215,41 @@ function Update-StatusTick {
   }
   $msg = $null
   while ($script:msgQueue.TryDequeue([ref]$msg)) { Set-StatusMessage $msg }
+  # 过渡态超时逃生（T1 的后台死亡分支）：无条件扫描所有卡片，把超时的过渡态放出来。
+  # 不能只靠 Update-CardData 里的超时分支——那条只在**有探测结果到达**时才跑；后台 runspace
+  # 若已异常退出，队列再无生产者，卡片会永久卡在「启动中/停止中/删除中」。这里不依赖队列，
+  # 每帧独立判一次，是逃生口的兜底。卡片缓存未建时（CLI/部分单测）跳过。
+  if ($script:cards -and (Get-Command Invoke-TransitionTimeoutEscape -EA SilentlyContinue)) {
+    $now = [datetime]::Now
+    # Invoke-TransitionTimeoutEscape 内部自带 Test-TransitionTimedOut 判据，此处不再预判。
+    # Get-Command 守卫与主脚本的 Dispatcher handler 同款：card.ps1 未加载（CLI/部分单测）
+    # 时该函数不存在，不能让它把整个 tick 带崩。
+    foreach ($card in @($script:cards.Values)) { [void](Invoke-TransitionTimeoutEscape $card $now) }
+  }
   # 空闲 4 秒后自动刷新状态文字；消息租约未到期时不覆盖（T4）。
   if ($script:statusBar -and (-not $script:lastActionAt -or ([datetime]::Now - $script:lastActionAt).TotalSeconds -ge 4)) {
     if (-not $script:msgUntil -or [datetime]::Now -ge $script:msgUntil) {
       $script:statusBar.Text = "$(Get-Date -Format 'HH:mm:ss')  状态自动刷新"
     }
   }
+}
+
+# 探测单实例 mutex 是否已被 GUI 持有。抽成函数以便直测（CLI -Add 分支与 GUI 都靠它，
+# 但内联在主脚本里测试够不着）。$mutexName 形如 'Local\service-manager-gui'。
+# OpenExisting 在 mutex 不存在时抛（无 GUI 常驻）→ 返回 $false，是正常路径。
+# 抢到（WaitOne(0)=true）要立即释放，否则会把所有权留在本线程、影响后续判断。
+function Test-GuiInstanceRunning([string]$mutexName){
+  try {
+    $m = [Threading.Mutex]::OpenExisting($mutexName)
+  } catch { return $false }
+  try {
+    $held = -not $m.WaitOne(0)
+    if (-not $held) { $m.ReleaseMutex() }
+    $held
+  } catch {
+    # AbandonedMutexException 等：视为「有实例曾持有」——保守判为运行中，宁可让 CLI 让路
+    $true
+  } finally { $m.Dispose() }
 }
 
 # ---- 日志轮转档保留策略：NSSM 只改名不删档，logs/ 会无界增长 ----
@@ -219,6 +295,23 @@ function Resolve-ServiceExeDir([string]$path){
   @{ dir = $dir; quoted = $quoted }
 }
 
+# 判定目录 ACL 是否「过宽」——本机任意标准用户可写。抽成纯函数以便直测（Show-SecurityCheck
+# 直接弹 MessageBox，够不着）。判据：主体是 Users/Everyone 之一，且权限含 Write/Modify/FullControl。
+# 传入已读到的 ACL 对象（不在此处 Get-Acl），返回 '是' / '否' / '未知（无法读取 ACL）'。
+function Test-DirAclPermissive($acl){
+  if (-not $acl) { return '未知（无法读取 ACL）' }
+  # 「宽泛主体」= 本机任意登录用户即可写。Authenticated Users 是最常见的漏判形态
+  # （目录只对 NT AUTHORITY\Authenticated Users 开放时，任何登录用户可替换 exe → 提权）；
+  # AppContainer 包 SID（S-1-15-3-*）同理。判据与 set-service-params-acl.ps1 的
+  # Test-LeakyAce 概念一致，但这里是文件系统 ACL、权限枚举不同，故不共用函数、只对齐主体清单。
+  foreach ($a in $acl.Access) {
+    $id = $a.IdentityReference.Value
+    $wide = @('BUILTIN\Users','Everyone','Users','NT AUTHORITY\Authenticated Users','Authenticated Users') -contains $id -or $id -like 'S-1-15-3-*'
+    if ($wide -and $a.FileSystemRights.ToString() -match 'Write|Modify|FullControl') { return '是' }
+  }
+  '否'
+}
+
 function Show-SecurityCheck([string]$n){
   try {
     $ci = Get-CimInstance Win32_Service -Filter "Name='$n'" -EA Stop
@@ -235,12 +328,8 @@ function Show-SecurityCheck([string]$n){
   $dir = $r.dir; $quoted = $r.quoted
   $permissive = '否'
   if ($dir -and (Test-Path $dir)) {
-    try {
-      $acl = Get-Acl -Path $dir
-      foreach ($a in $acl.Access) {
-        if (@('BUILTIN\Users','Everyone','Users') -contains $a.IdentityReference.Value -and $a.FileSystemRights.ToString() -match 'Write|Modify|FullControl') { $permissive = '是'; break }
-      }
-    } catch { $permissive = '未知（无法读取 ACL）' }
+    try { $permissive = Test-DirAclPermissive (Get-Acl -Path $dir) }
+    catch { $permissive = '未知（无法读取 ACL）' }
   }
   $qTxt = if($quoted){'是（已加固）'}else{'否（路径含空格时有提权风险）'}
   $msg = "$n`n`n路径: $path`n`n引号加固: $qTxt`n目录: $dir`n目录 ACL 过宽: $permissive"

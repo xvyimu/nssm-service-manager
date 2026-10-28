@@ -124,7 +124,12 @@ function New-MainWindow {
   $btnAdd.Add_Click({ Show-Add $script:window; Render-Page })
   $btnPrev.Add_Click({ if ($script:curPage -gt 0) { $script:curPage--; Render-Page } })
   $btnNext.Add_Click({
-    $pages=[math]::Max(1,[math]::Ceiling($script:svc.Count / $script:PER_PAGE))
+    # 读 $script:svc.Count 加 gate，与 Render-Page 的读路径对称（当前 UI 线程是唯一写者，
+    # 但锁不对称后续加后台写入即踩——同 Render-Page 的注释）。
+    $gate = if ($script:sync -and $script:sync.gate) { $script:sync.gate } else { $null }
+    if ($gate) { [Threading.Monitor]::Enter($gate) }
+    try { $count = $script:svc.Count } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }
+    $pages=[math]::Max(1,[math]::Ceiling($count / $script:PER_PAGE))
     if ($script:curPage -lt $pages-1) { $script:curPage++; Render-Page }
   })
   $win

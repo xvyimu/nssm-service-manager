@@ -25,6 +25,13 @@ try {
   Assert ($r.code -eq 'name') 'space in name should be rejected'
   $r = Test-SvcInput 'ok_name.v2-x' 8080 $fakeExe $null
   Assert ($null -eq $r) 'legal charset should pass'
+  # 纯 . / .. 被拒（路径归一化会指错注册表键）；点开头/含点但非纯点段放行
+  foreach ($dot in '.','..') {
+    $r = Test-SvcInput $dot 8080 $fakeExe $null
+    Assert ($r.code -eq 'name') "bare '$dot' should be rejected, got $($r.code)"
+  }
+  Assert ($null -eq (Test-SvcInput '.hidden' 8080 $fakeExe $null)) '.hidden should pass'
+  Assert ($null -eq (Test-SvcInput 'A..B' 8080 $fakeExe $null)) 'A..B should pass'
 
   # exe 不存在
   $missing = Join-Path ([IO.Path]::GetTempPath()) "sm-neg-missing-$([guid]::NewGuid().ToString('N')).exe"
@@ -56,12 +63,33 @@ try {
   Assert ($pairs[1] -eq 'B=2') "trim should strip leading space, got [$($pairs[1])]"
   $pairs = ConvertTo-EnvPairs 'A=1,B=2' ','
   Assert ($pairs.Count -eq 2) 'comma separator should split GUI env'
+  # 值里含分隔符时不得被拆散：GUI 填多地址 NO_PROXY 的真实场景（改前直接报格式错误）
+  $pairs = ConvertTo-EnvPairs 'HTTP_PROXY=http://h:1,NO_PROXY=127.0.0.1,localhost' ','
+  Assert ($pairs.Count -eq 2) "逗号出现在值里不应拆成新变量，got $($pairs.Count): $($pairs -join '|')"
+  Assert ($pairs[1] -eq 'NO_PROXY=127.0.0.1,localhost') "NO_PROXY 的值必须原样保留，got [$($pairs[1])]"
+  Assert ($null -eq (Test-EnvPairs $pairs)) 'NO_PROXY 多地址应通过格式校验'
+  # 分号同理：CLI 的 PATH 值本身就含分号
+  $pairs = ConvertTo-EnvPairs 'PATH=C:\Windows;C:\Windows\System32' ';'
+  Assert ($pairs.Count -eq 1) "分号出现在值里不应拆成新变量，got $($pairs.Count): $($pairs -join '|')"
+  # 分隔符按字面量切（原实现把 separator 当正则，传 | 会炸）
+  $pairs = ConvertTo-EnvPairs 'A=1|B=2' '|'
+  Assert ($pairs.Count -eq 2) "字面量分隔符应能切开，got $($pairs.Count): $($pairs -join '|')"
+  # 变量名不限于「字母数字下划线开头」：数字开头、含括号都是合法的 Windows 变量名。
+  # 判据收紧成 ^[A-Za-z_]\w*= 会把它们并进上一个值——变量根本不写进 AppEnvironmentExtra，
+  # 敏感键检测也扫不到（TOKEN 明文进注册表都不提示）。
+  $pairs = ConvertTo-EnvPairs 'A=1,2FA_TOKEN=x' ','
+  Assert ($pairs.Count -eq 2) "数字开头的变量名应被识别，got $($pairs.Count): $($pairs -join '|')"
+  Assert ((Find-SensitiveEnvKeys $pairs) -contains '2FA_TOKEN') '数字开头的敏感键名也应被检出'
+  $pairs = ConvertTo-EnvPairs 'A=1,ProgramFiles(x86)=C:\PF' ','
+  Assert ($pairs.Count -eq 2) "含括号的变量名应被识别，got $($pairs.Count): $($pairs -join '|')"
 
   # ---- Test-EnvPairs：缺 = / 空 key / APPDATA 交互路径 ----
   Assert ($null -eq (Test-EnvPairs @('A=1','B=2'))) 'well-formed pairs should pass'
   Assert ((Test-EnvPairs @('NOVALUE')) -match '格式错误') 'pair without = should fail'
   Assert ((Test-EnvPairs @('=1')) -match '格式错误') 'empty key should fail'
   Assert ((Test-EnvPairs @('APPDATA=C:\Users\bob\AppData\Roaming')) -match 'APPDATA') 'interactive APPDATA should fail'
+  # 等号后带空格也应被识别（S5：$kv[1] 未 Trim 曾绕过）
+  Assert ((Test-EnvPairs @('APPDATA= C:\Users\bob\AppData\Roaming')) -match 'APPDATA') 'APPDATA with leading space should still fail'
   Assert ($null -eq (Test-EnvPairs @('APPDATA=C:\Windows\System32\config\systemprofile\AppData\Roaming'))) 'system-profile APPDATA should pass'
   Assert ($null -eq (Test-EnvPairs @())) 'empty pair list should pass'
 
@@ -79,6 +107,14 @@ try {
   # 扩展键名清单：ACCESS_KEY / CREDENTIAL / PRIVATE_KEY / PASSPHRASE / PWD
   $hits = Find-SensitiveEnvKeys @('AWS_ACCESS_KEY_ID=AKIA...','MY_CREDENTIAL=user:pass','PRIVATE_KEY=-----BEGIN','JWT_PASSPHRASE=abc','DB_PWD=secret')
   Assert (($hits -join '|') -eq 'AWS_ACCESS_KEY_ID|MY_CREDENTIAL|PRIVATE_KEY|JWT_PASSPHRASE|DB_PWD') "expected expanded patterns, got $($hits -join '|')"
+  # 无下划线 / 独立 PASS / 常见凭证后缀形态（S3：此前漏报）
+  # APIKEY/PRIVATEKEY 不带下划线；DB_PASS/REDIS_PASS 有 PASS 无 PASSWORD/PWD；
+  # *_AUTH / *_SALT / SIGNING_KEY / *_PAT / *_WEBHOOK 是常见凭证名。
+  $hits = Find-SensitiveEnvKeys @('APIKEY=sk-x','PRIVATEKEY=-----BEGIN','DB_PASS=p','REDIS_PASS=r','MY_AUTH=1','DB_SALT=s','JWT_SIGNING_KEY=k','GH_PAT=p','SLACK_WEBHOOK=https://x')
+  Assert (($hits -join '|') -eq 'APIKEY|PRIVATEKEY|DB_PASS|REDIS_PASS|MY_AUTH|DB_SALT|JWT_SIGNING_KEY|GH_PAT|SLACK_WEBHOOK') "expected S3-expanded patterns, got $($hits -join '|')"
+  # 反例：不得误报 MONKEY / COMPASS / BYPASS / PASSENGER（含 PASS 子串但不是凭证）
+  $hits = Find-SensitiveEnvKeys @('MONKEY=1','COMPASS=2','BYPASS=3','PASSENGER=4','PATH=/usr','LATEST=5')
+  Assert ($hits.Count -eq 0) "普通词不应误报为敏感键：$($hits -join '|')"
   # 空/空壳入参
   Assert ((Find-SensitiveEnvKeys @()).Count -eq 0) 'empty pair list should yield no hits'
   Assert ((Find-SensitiveEnvKeys $null).Count -eq 0) 'null should yield no hits'
@@ -134,12 +170,32 @@ try {
   # spec 里每个 value 都必须是数组——nssm-set 的 ValueFromRemainingArguments 靠它展开
   foreach ($s in $spec) { Assert ($s.v -is [array]) "spec value for $($s.k) must be an array, got $($s.v.GetType().Name)" }
 
+  # ---- 运行账户：白名单只有三个内置账户（都不需要密码）----
+  foreach ($a in @('LocalSystem','NT AUTHORITY\LocalService','NT AUTHORITY\NetworkService','locALsystem')) {
+    Assert ($null -eq (Test-SvcAccount $a)) "内置账户应通过：$a"
+  }
+  Assert ($null -eq (Test-SvcAccount '')) '空账户（沿用 nssm install 的默认）应通过'
+  $bad = Test-SvcAccount 'DOMAIN\someone'
+  Assert ($bad.code -eq 'account') "自定义用户账户应被拒绝，got $($bad.code)"
+
+  # ObjectName 必须是一个 token：nssm 把它当 username（additional 参数），密码位留空由
+  # well-known SID 识别路径补空串。多 token 会把第二个当成密码。
+  $spec = Get-NssmSetSpec 'SvcC' $null $null @() 5242880 5000 'NT AUTHORITY\LocalService'
+  $byKey = @{}; foreach ($s in $spec) { $byKey[$s.k] = $s.v }
+  Assert ($byKey['ObjectName'].Count -eq 1) "ObjectName 必须是单个 token，got $($byKey['ObjectName'].Count)"
+  Assert ($byKey['ObjectName'] -join '|' -eq 'NT AUTHORITY\LocalService') "ObjectName 值不对：$($byKey['ObjectName'] -join '|')"
+  # LocalSystem 就是 nssm install 的默认账户，不必再 set（保持 spec 最小）
+  foreach ($a in @('LocalSystem','')) {
+    $spec = Get-NssmSetSpec 'SvcC' $null $null @() 5242880 5000 $a
+    Assert (@($spec | Where-Object { $_.k -eq 'ObjectName' }).Count -eq 0) "账户 [$a] 不该产生 ObjectName"
+  }
+
   if ($cfgExisted) {
     if ((Get-FileHash -LiteralPath $cfg).Hash -ne $before) { throw 'Test changed services.json.' }
   } elseif (Test-Path -LiteralPath $cfg) {
     throw 'Test created services.json where none existed.'
   }
-  Write-Output 'PASS: Test-SvcInput (name/exe/port/dup + order), ConvertTo-EnvPairs (sep/trim/drop-empty), Test-EnvPairs (format/APPDATA), Find-SensitiveEnvKeys (sensitive-name detection + _FILE path-aware skip + expanded patterns), Get-LogFiles (regex-escaped service names), Get-NssmSetSpec (AppExit dual-token, env multi-token, optional-key omission, array-typed values).'
+  Write-Output 'PASS: Test-SvcInput (name/exe/port/dup + order), Test-SvcAccount (built-in whitelist, custom rejected), ConvertTo-EnvPairs (sep/trim/drop-empty, separator inside value kept), Test-EnvPairs (format/APPDATA), Find-SensitiveEnvKeys (sensitive-name detection + _FILE path-aware skip + expanded patterns), Get-LogFiles (regex-escaped service names), Get-NssmSetSpec (AppExit dual-token, env multi-token, ObjectName single token, optional-key omission, array-typed values).'
 } finally {
   Remove-Item -LiteralPath $fakeExe -Force -EA SilentlyContinue
 }

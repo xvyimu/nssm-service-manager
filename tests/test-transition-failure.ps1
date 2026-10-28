@@ -90,12 +90,78 @@ try {
   # 删除没有「期望终态」：未超时时任何探测都不该改写（既有行为，test-transition-race 覆盖）
   Update-CardData 'TestService' '未安装' ''
   Assert ($card.ST -eq '删除中') "Pre-timeout probe overwrote 删除中: ST=$($card.ST)."
-  # 超时后按到达的探测值收敛（回执彻底丢了时的最后逃生口）
+  # 超时后收敛到「未知」——**不用**到达的探测值：探测可能报「已停止」（删除本就先 stop），
+  # 收敛后按钮点亮，用户能对一个正在删除的服务下「启动」。删除成败只有 remove 回执知道，
+  # 丢失时状态不确定，故显示未知且不解封按钮。
   $card.TransitionAt=[datetime]::Now.AddMilliseconds(-($script:TOGGLE_TIMEOUT_MS+1000))
-  Update-CardData 'TestService' '运行中' '正常'
-  Assert ($card.ST -eq '运行中') "Timed-out delete did not converge: ST=$($card.ST)."
-  Assert ($card.Btn.IsEnabled) 'Timed-out delete left button disabled.'
+  Update-CardData 'TestService' '已停止' ''
+  Assert ($card.ST -eq '未知') "Timed-out delete should converge to 未知: ST=$($card.ST)."
+  Assert (-not $card.Btn.IsEnabled) 'Timed-out delete must not re-enable the button (service may be mid-delete).'
 
-  Write-Output 'PASS: transition states have a failure exit (rollback on ok=false, timeout escape); no permanent card lock.'
+  # ---- 4. 后台死亡逃生：无任何探测结果时，Update-StatusTick 的 sweep 也要放出过渡态 ----
+  # 这是 T1 逃生的**兜底分支**：Update-CardData 里的超时逻辑只在有探测结果到达时才跑，
+  # 后台 runspace 若异常退出（队列再无生产者），卡片会永久卡在「启动中」。故 util.ps1 的
+  # Update-StatusTick 每帧无条件扫一遍卡片，不依赖队列生产者。这里故意**不喂任何队列项**。
+  $script:queue=[Collections.Concurrent.ConcurrentQueue[object]]::new()
+  $script:msgQueue=[Collections.Concurrent.ConcurrentQueue[string]]::new()
+  $card.LastToggle=[datetime]::MinValue
+  Update-CardData 'TestService' '已停止' ''
+  Invoke-CardToggle $card
+  Assert ($card.ST -eq '启动中' -and -not $card.Btn.IsEnabled) 'Start transition not entered (sweep case).'
+  # 无队列生产者：模拟后台死亡——把过渡起算点推到超时之外，只跑 Update-StatusTick
+  $card.TransitionAt=[datetime]::Now.AddMilliseconds(-($script:TOGGLE_TIMEOUT_MS+1000))
+  Update-StatusTick
+  Assert ($card.ST -eq '已停止') "Sweep did not escape a stuck 启动中 without a probe result: ST=$($card.ST)."
+  Assert ($card.Btn.IsEnabled) 'Sweep left the button disabled (永久卡死 on background death).'
+
+  # ---- 4b. H1 回归：探测驱动的过渡态不得永久卡死 ----
+  # 探测报 StartPending/StopPending 会把卡片带进过渡态，但**不经过 Set-CardTransition**，
+  # 故 TransitionAt 仍是 MinValue。修前：方向守卫按「启动中只接受运行中」把回落「已停止」
+  # 永久丢弃，而 Test-TransitionTimedOut 对 MinValue 恒 false → 45s 逃生也失效 → 卡片卡死
+  # 在「启动中」、按钮永久灰。修后：方向守卫只保护命令驱动的过渡态（TransitionAt 有值）。
+  $script:queue=[Collections.Concurrent.ConcurrentQueue[object]]::new()
+  $script:msgQueue=[Collections.Concurrent.ConcurrentQueue[string]]::new()
+  $card.LastToggle=[datetime]::MinValue
+  Update-CardData 'TestService' '已停止' ''
+  Update-CardData 'TestService' '启动中' ''   # 探测到 StartPending（非命令驱动）
+  Assert ($card.ST -eq '启动中' -and -not $card.Btn.IsEnabled) 'Probe-driven start transition not entered.'
+  Assert ($card.TransitionAt -eq [datetime]::MinValue) 'Probe-driven transition must not set TransitionAt.'
+  # 服务启动失败回落「已停止」——修前被永久丢弃
+  Update-CardData 'TestService' '已停止' ''
+  Assert ($card.ST -eq '已停止') "Probe-driven transition never converged (H1): ST=$($card.ST)."
+  Assert ($card.Btn.IsEnabled) 'Probe-driven transition left the button disabled (H1 永久卡死).'
+
+  # ---- 5a. Test-CardToggleReady 真值表（门闩单一来源）----
+  Assert (Test-CardToggleReady '已停止' '') '已停止应可切换。'
+  Assert (Test-CardToggleReady '运行中' '正常') '运行中+正常应可切换。'
+  Assert (-not (Test-CardToggleReady '运行中' '无响应')) '运行中+无响应不可切换（健康门闩）。'
+  Assert (-not (Test-CardToggleReady '运行中' '超时')) '运行中+超时不可切换。'
+  Assert (-not (Test-CardToggleReady '运行中' '')) '运行中+空健康不可切换。'
+  Assert (-not (Test-CardToggleReady '未知' '')) '未知态不可切换。'
+  Assert (-not (Test-CardToggleReady '未安装' '')) '未安装不可切换。'
+
+  # ---- 5. ack 门闩按当前状态/健康重算，不无条件点亮 ----
+  # 右键菜单的启停直接 Send-ServiceCommand、不置过渡态，回执到达时卡片可能仍是
+  # 「运行中/无响应」。成功回执若硬置 ReadyToToggle=$true，用户能双击关掉一个本不该
+  # 关闭的服务（健康门闩被绕过）。
+  $card.LastToggle=[datetime]::MinValue
+  Update-CardData 'TestService' '运行中' '无响应'
+  Assert (-not $card.ReadyToToggle) 'Unhealthy running card should not be toggle-ready.'
+  Update-CardData 'TestService' $null $null -e 0 -ack -ok $true
+  Assert (-not $card.ReadyToToggle) "Success ack bypassed the health gate: ReadyToToggle=$($card.ReadyToToggle)."
+  Assert (-not $card.Btn.IsEnabled) 'Success ack enabled the stop button on an unhealthy service.'
+
+  # ---- 6. 非过渡态的失败回执不得回滚（右键启停路径）----
+  # 右键启停不置过渡态（TransitionAt 仍 MinValue），PrevST/PrevH 还是 New-Card 初值。
+  # 失败回执若回滚，会把卡片刷成「未知」并清掉按钮——而服务实际还在跑、状态没变。
+  $card.LastToggle=[datetime]::MinValue
+  Update-CardData 'TestService' '运行中' '正常'
+  $stBefore=$card.ST; $hBefore=$card.H
+  Update-CardData 'TestService' $null $null -e 0 -ack -ok $false
+  Assert ($card.ST -eq $stBefore -and $card.H -eq $hBefore) "Non-transition failure rolled back a live card: ST=$($card.ST) H=$($card.H)."
+  Assert ($card.ReadyToToggle) 'Non-transition failure should re-arm a healthy running card.'
+  Assert ($card.Btn.IsEnabled) 'Non-transition failure left the button disabled.'
+
+  Write-Output 'PASS: transition states have a failure exit (rollback on ok=false, timeout escape, queue-independent sweep); no permanent card lock.'
 } finally { $win.Close(); $script:sync.wake.Dispose() }
 

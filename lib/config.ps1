@@ -21,6 +21,11 @@ $script:config = [ordered]@{
                                  # **该路径耗时仍未真机实测**（需建服务，见 tests/probe-1053-timing.ps1，
                                  # 管理员跑）：45000 是按「管道上限 + 余量」推的，不是量出来的。实测后
                                  # 若确认真实耗时远小于 30s，可回落；若接近 30s，保持本值并考虑再放大。
+  TransitionHardCapFactor = 10   # 过渡计时刷新的硬上限倍数（card.ps1 Test-TransitionTimedOut）——
+                                 # 探测报同一过渡态时 TransitionAt 会刷新（慢启动不误判），但累计时长
+                                 # 超过 ToggleTimeoutMs × 本倍数就强制逃生。没有它，永久卡在
+                                 # StartPending/StopPending 的服务会把逃生口自己刷掉。
+                                 # 默认 45s × 10 = 7.5 分钟；调大只会让「卡死」被放出来得更晚。
   WaitStoppedTimeoutMs = 6000    # 重启/删除前轮询 Stopped 的上限（add-svc.ps1 / poll.ps1 Wait-Stopped）
   LogKeepCount        = 10       # 轮转日志保留份数（util.ps1 Remove-RotatedLogs）——
                                  # 口径是**跨服务全局**按修改时间倒序的前 N 份豁免，不是每服务各 N 份

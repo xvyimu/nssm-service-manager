@@ -15,3 +15,17 @@ jobs:
       - name: Run parser check and PowerShell regression tests
         shell: pwsh
         run: ./tests/run-all.ps1
+
+  secrets:
+    # 本地有 .githooks/pre-commit 兜底，但那要每个 clone 手动 git config core.hooksPath
+    # 才生效，也覆盖不到「网页直接提交 / fork 后提 PR」。CI 这一层是独立的。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # 全历史：gitleaks 按提交范围扫，浅克隆会扫不到东西
+          fetch-depth: 0
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

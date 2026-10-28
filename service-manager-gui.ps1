@@ -14,9 +14,15 @@ param(
 
 $root = $PSScriptRoot
 $cfg = "$root\services.json"
+# 单实例互斥名（GUI 占用 + CLI -Add 前检测是否已有 GUI 常驻）。定义在此供两处共用，
+# 避免 CLI 分支与 GUI 分支各写一份字符串而漂移。
+$script:mutexName = 'Local\service-manager-gui'
 # NSSM 探测：优先 env > Get-Command > scoop 安装路径，避免硬编码 scoop
+# NSSM_PATH 只做「存在 + 文件名是 nssm.exe」两项校验，不校验签名/路径——它随后会以管理员
+# 身份被调用（install/set/remove），只做 Test-Path 会让「指向任意 exe」直接以管理员运行。
+# 文件名校验挡住最直接的滥用，又不破坏 README 明写的「自备 NSSM 后设 NSSM_PATH」用法。
 $script:nssm = $null
-if ($env:NSSM_PATH -and (Test-Path -LiteralPath $env:NSSM_PATH)) {
+if ($env:NSSM_PATH -and (Test-Path -LiteralPath $env:NSSM_PATH) -and (Split-Path -Leaf $env:NSSM_PATH) -ieq 'nssm.exe') {
   $script:nssm = $env:NSSM_PATH
 } else {
   $found = $null
@@ -63,7 +69,29 @@ function Write-CrashLog([string]$m){
 if ($Add) {
   Add-Type -AssemblyName PresentationFramework  # MessageBox 需要
   . "$root\lib\util.ps1"
+  # CLI -Add 与 GUI 都全量写回 services.json（Save-Svc 无合并语义，见 PROJECT.md 决策 3）。
+  # 若 GUI 常驻，它的内存副本是启动时读的；CLI 加完服务后 GUI 下一次保存会把这条覆盖掉
+  # ——NSSM 服务仍在跑，但配置里没了、界面也不显示。故 GUI 在跑时拒绝 CLI 写入，让调用方
+  # 改用 GUI「添加」或先关 GUI。判据见 util.ps1 的 Test-GuiInstanceRunning。
+  if (Test-GuiInstanceRunning $script:mutexName) {
+    Write-Host "GUI 正在运行，请先关闭它再用 -Add（否则本次新增会被 GUI 的下一次保存覆盖）。"
+    exit 1
+  }
   $script:svc = Load-Svc
+  # services.json 解析失败时 Load-Svc 会回落到 services.example.json。GUI 有弹框，CLI 没有——
+  # 若继续执行，Add-SvcFromCli 末尾的 Save-Svc 会把**示例清单 + 新服务**写回真实文件，
+  # 用户的真实条目整份消失，而且退出码还是 0。宁可拒绝执行。
+  # 只认 Load-Svc 的专用标志：config.json 坏了按设计不阻断（用默认值），不该连 -Add 一起拦。
+  if ($script:svcLoadFailed) {
+    Write-Host $script:configWarning
+    Write-Host "已停止：services.json 未能解析。现在继续 -Add 会把示例清单写回你的配置。请先修复该文件。"
+    exit 1
+  }
+  # config.json 的坏消息是非致命的（已用默认值），但 CLI 原来一声不响，这里补一句。
+  if ($script:configWarning) { Write-Host "提示: $($script:configWarning)（已用默认值，不阻断）" }
+  # 非致命提示（per-service 覆盖字段写错之类）：清单本身可用，照常继续，但要让人看见。
+  # 用 if 守卫而不是 @($x)：`@($null)` 是「含一个 $null 的数组」，会打印一行空的「提示: 」。
+  if ($script:configNotices) { foreach ($notice in $script:configNotices) { Write-Host "提示: $notice" } }
   # CLI 模式没有 runspace，但 add-svc.ps1 用 $sync.gate 加锁——给个本地锁
   $script:sync = @{ gate = [object]::new() }
   # add-svc.ps1 自加载 svc-input.ps1 + nssm.ps1（纯函数与 NSSM 注册依赖）
@@ -98,7 +126,7 @@ Write-CrashLog 'WPF assemblies loaded'
 # 命中时要静默退出（不弹窗，重复双击是常见操作）；放在提权之后是为了只让管理员实例占锁。
 # AbandonedMutexException：前一个实例被任务管理器杀掉或崩溃时，OS 把所有权
 # 交给当前进程并抛此异常——不是失败，要当成"已获取"，否则第二个实例也起不来。
-$script:appMutex = [System.Threading.Mutex]::new($false, 'Local\service-manager-gui')
+$script:appMutex = [System.Threading.Mutex]::new($false, $script:mutexName)
 $owned = $false
 try { $owned = $script:appMutex.WaitOne(0) }
 catch [System.Threading.AbandonedMutexException] { $owned = $true }
@@ -258,14 +286,25 @@ if ($script:configWarning) {
   [System.Windows.MessageBox]::Show("$($script:configWarning)`n当前使用恢复配置，保存前请修复该文件。",'配置错误','OK','Warning') | Out-Null
 }
 
+# 配置提示（非致命）：目前唯一的来源是 services.json 里 per-service 可选字段写错
+# （toggleTimeoutMs / httpTimeoutMs / tcpTimeoutMs）。清单照常用，只是那个字段回落全局，
+# 所以单独一条、措辞里不讲「恢复配置」——否则用户会以为整份清单被换掉了。
+if ($script:configNotices) {
+  [System.Windows.MessageBox]::Show(($script:configNotices -join "`n`n"),'配置提示','OK','Warning') | Out-Null
+}
+
 # ---- 显示（Application.Run 等价）----
 $win.Add_ContentRendered({
   Write-CrashLog 'Window content rendered'
   # 启动首帧后异步跑一次日志清理（不占首屏）：轮转档保留策略，见 lib/util.ps1。
   # 走 Dispatcher.BeginInvoke + Background 优先级，避免在 ContentRendered 回调里阻塞渲染。
+  # 优先级必须写成枚举，不能写 'Background' 字符串：Dispatcher 没有 (Delegate, DispatcherPriority)
+  # 这个重载，PowerShell 会退回绑定 BeginInvoke(Delegate, Object[] args)，把字符串当成
+  # 委托的实参数组——委托在 UI 线程被以 1 个参数调用，抛 TargetParameterCountException，
+  # 清理永远不执行（曾记在 gui-crash.log 的 DispatcherUnhandled 里）。
   $win.Dispatcher.BeginInvoke([Action]{
     Invoke-LogCleanup 'Log cleanup failed'
-  }, 'Background') | Out-Null
+  }, [System.Windows.Threading.DispatcherPriority]::Background) | Out-Null
 })
 [void]$win.ShowDialog()
 Write-CrashLog "ShowDialog returned (normal exit path)"

@@ -68,6 +68,26 @@ $cliOutNoPath = (Add-SvcFromCli "__sm_warn_nopath__,8092,$fakeExe,http://127.0.0
 if ($cliOutNoPath -notmatch '明文写入注册表') { throw "_FILE with non-path value SHOULD warn. Output: $cliOutNoPath" }
 
 
+# CLI env 解析：值里的逗号不得被吃掉。原实现 `$spec -split ','` 把 Env 段先拆散，
+# NO_PROXY=127.0.0.1,localhost 会变成一个名为 NO_PROXY、值为 127.0.0.1 的变量 + 一个
+# 名为 localhost 的残片（Test-EnvPairs 在 CLI 不跑，静默注册了错东西）。
+$script:calls.Clear()
+Add-SvcFromCli "__sm_env_comma__,8093,$fakeExe,http://127.0.0.1:8093,,,NO_PROXY=127.0.0.1,localhost" 6>&1 | Out-Null
+$envSetting = @($script:calls | Where-Object { $_[0] -eq 'set' -and $_[2] -eq 'AppEnvironmentExtra' })
+if ($envSetting.Count -ne 1) { throw "应下发一条 AppEnvironmentExtra，got $($envSetting.Count)" }
+$tokens = @($envSetting[0])[3..(@($envSetting[0]).Count - 1)]
+if ($tokens.Count -ne 1 -or $tokens[0] -ne 'NO_PROXY=127.0.0.1,localhost') {
+  throw "CLI env 值被拆坏：$($tokens -join ' | ')"
+}
+# 逗号用作对数分隔符时仍应拆开（A=1,B=2 → 两条），与上手共用同一条解析规则
+$script:calls.Clear()
+Add-SvcFromCli "__sm_env_pairs__,8094,$fakeExe,http://127.0.0.1:8094,,,A=1,B=2" 6>&1 | Out-Null
+$envSetting = @($script:calls | Where-Object { $_[0] -eq 'set' -and $_[2] -eq 'AppEnvironmentExtra' })
+$tokens = @($envSetting[0])[3..(@($envSetting[0]).Count - 1)]
+if ($tokens.Count -ne 2 -or ($tokens -join '|') -ne 'A=1|B=2') {
+  throw "逗号分隔的多对 env 未被拆开：$($tokens -join ' | ')"
+}
+
 # 回滚路径：install 成功后某个 set 失败，应 remove 残骸并抛错。
 $script:calls.Clear()
 $script:removed=$null

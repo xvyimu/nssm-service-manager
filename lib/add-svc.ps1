@@ -12,21 +12,26 @@ if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
 
 # CLI 模式：解析逗号分隔参数，注册 NSSM 服务并启动，不弹 GUI
 # 用法：-Add Name,Port,Exe[,Url,Dir,Args,Env]
-#   Env 多对用分号分隔：KEY=VAL;KEY2=VAL2（逗号已被字段分隔符占用）
+#   Env 多对用分号分隔：KEY=VAL;KEY2=VAL2；逗号分隔也认（只在 KEY= 处断开，值里的逗号不算）
 function Add-SvcFromCli([string]$spec){
-  $parts = $spec -split ','
+  # 只切前 6 段：第 7 段是 Env，里面的逗号必须原样留着（NO_PROXY=127.0.0.1,localhost）。
+  # 原实现先全切再 join 回，看似无损，实际 Env 已按逗号拆散过一次。
+  $parts = $spec -split ',', 7
   if ($parts.Count -lt 3) { Write-Host "用法: -Add Name,Port,Exe[,Url,Dir,Args,Env]"; exit 1 }
   $n=$parts[0].Trim(); $p=[int]$parts[1].Trim(); $exe=$parts[2].Trim()
   $url=if($parts.Count -gt 3){$parts[3].Trim()}else{"http://127.0.0.1:$p"}
   $dir=if($parts.Count -gt 4){$parts[4].Trim()}else{''}
   $par=if($parts.Count -gt 5){$parts[5].Trim()}else{''}
   # Env：第 7 段往后全部属于 Env（Args 可能含逗号的情况不处理——Args 不应含逗号）
-  # 多对 env 用分号分隔，避免与字段逗号冲突
-  $envRaw=if($parts.Count -gt 6){($parts[6..($parts.Count-1)] -join ',').Trim()}else{''}
+  # 多对 env 优先用分号分隔；逗号分隔也认，因为 ConvertTo-EnvPairs 只在 KEY= 处真断开，
+  # 值里的逗号不会被当成下一对。
+  $envRaw=if($parts.Count -gt 6){$parts[6].Trim()}else{''}
   # 校验顺序：名称 → 可执行文件 → 端口 → 重名（与 GUI 同，抽进 Test-SvcInput）
   $bad = Test-SvcInput $n $p $exe $script:svc
   if($bad){ Write-Host $bad.msg; exit 1 }
-  $envPairs = ConvertTo-EnvPairs $envRaw ';'
+  # 先按分号切，再按逗号切一次——逗号这一轮用的是「只在 KEY= 处断开」的规则，
+  # 故 NO_PROXY=127.0.0.1,localhost 原样保留为一条，而 A=1,B=2 会拆成两条。
+  $envPairs = @(ConvertTo-EnvPairs $envRaw ';' | ForEach-Object { ConvertTo-EnvPairs $_ ',' })
   try {
     Install-NssmService $n $exe $dir $par $envPairs
   } catch { Write-Host "注册失败: $($_.Exception.Message)"; exit 1 }

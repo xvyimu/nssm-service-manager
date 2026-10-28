@@ -27,6 +27,16 @@ try {
     [Text.UTF8Encoding]::new($false))
   $script:config = $null   # 强制重新加载以验证 config.json 覆盖
   . (Join-Path $RepoRoot 'lib/config.ps1')
+
+  # 键集合必须与示例文件一致：config.ps1 加了键却忘了同步 config.example.json 时，
+  # 新用户从示例起步根本看不到这个可调项（默认值照样生效，所以不会报错——纯静默漂移）。
+  $exampleKeys = @((Get-Content (Join-Path $RepoRoot 'config.example.json') -Raw -Encoding UTF8 |
+      ConvertFrom-Json -AsHashtable).Keys | Sort-Object)
+  $defaultKeys = @($script:config.Keys | Sort-Object)
+  $keyDiff = @(Compare-Object $exampleKeys $defaultKeys |
+      ForEach-Object { "$($_.InputObject)($($_.SideIndicator))" })
+  Assert (-not $keyDiff.Count) "config.example.json 与 config.ps1 的键集合不一致（<= 只在示例 / => 只在默认）：$($keyDiff -join ', ')"
+
   Assert ($script:config.PerPage -eq 4) 'PerPage not overridden.'
   Assert ($script:config.WaitStoppedTimeoutMs -eq 800) 'WaitStoppedTimeoutMs not overridden.'
   Assert ($script:config.CrashLogMaxBytes -eq 1024) 'CrashLogMaxBytes not overridden.'

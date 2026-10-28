@@ -29,11 +29,13 @@ service-manager-gui.ps1（主入口：CLI 分支 + 提权 + 模块加载 + 窗�
 ├─ lib/util.ps1       配置持久化（Read-SvcFile/Load-Svc/Save-Svc）、命令入队（Send-ServiceCommand）、
 │                     打开面板（Open-PanelUrl）、日志轮转保留（Remove-RotatedLogs）、
 │                     安全检查（Resolve-ServiceExeDir/Show-SecurityCheck）
-├─ lib/svc-input.ps1  纯函数族：输入校验（Test-SvcInput）、env 解析（ConvertTo-EnvPairs/
-│                     Test-EnvPairs/Find-SensitiveEnvKeys）、NSSM set 规格（Get-NssmSetSpec）
+├─ lib/svc-input.ps1  纯函数族：输入校验（Test-SvcInput/Test-SvcAccount）、env 解析
+│                     （ConvertTo-EnvPairs/Test-EnvPairs/Find-SensitiveEnvKeys）、
+│                     NSSM set 规格（Get-NssmSetSpec，含 ObjectName）
 ├─ lib/nssm.ps1       NSSM 操作：nssm-set / Install-NssmService / Remove-NssmService
 ├─ lib/logview.ps1    日志查看器：Get-LogFiles（当前+轮转枚举）+ Show-Log（WPF 窗口）
-├─ lib/dialogs.ps1    GUI 对话框：Show-Add（添加服务）+ Show-Remove（删除确认）
+├─ lib/dialogs.ps1    GUI 对话框：Show-Add / New-AddDialog（添加服务；后者只搭控件，
+│                     留给无头测试）+ Show-Remove（删除确认）
 ├─ lib/svc-common.ps1 UI 与 runspace 共用的服务操作原语：Wait-Stopped、退出码/状态中文映射
 │                     （Convert-ScExitCode / Convert-ServiceStatus）、删除序列（Invoke-ServiceRemove）、
 │                     删除/注册的实证复核（Test-ServiceGone / Test-ServicePresent）——均只此一份
@@ -84,9 +86,11 @@ UI DispatcherTimer → ack 分支 → 解封按钮 + 冷却
 
 ### 命令纪元（epoch）
 
-每次 `Send-ServiceCommand` 递增 `$script:cmdEpoch`，随命令对象入队；后台执行完把同一 epoch 跟着结果回 UI。`Update-CardData` 据此过滤在途旧探测——过渡态期间只接受 epoch ≥ 卡片 `PendingEpoch` 的回执，旧探测（无 epoch）直接丢弃。
+每次 `Send-ServiceCommand` 递增 `$script:cmdEpoch`，随命令对象入队；后台执行完把同一 epoch 跟着结果回 UI。`Update-CardData` 的 **ack 分支**据此过滤：epoch 低于卡片 `PendingEpoch` 的命令回执直接丢弃——旧命令的回执不解除新命令的过渡态。
 
-这是为了解决一个竞态：用户点「停止」，服务慢停止期间旧探测仍报「运行中」，不该覆盖用户刚触发的「停止中」过渡态。原方案靠「方向匹配」做症状层补丁（启动中只接受运行中收尾），现在用 epoch 过滤更干净——旧探测一律丢，直到命令完成回执解封按钮，下一轮探测自然落到终态。
+**普通探测结果不带 epoch（视为 0），仍按 `$transitionExpect` 方向匹配收尾**：过渡态期间，启动中只接受「运行中」收尾、停止中只接受「已停止」收尾，反向探测丢弃。这是有意保留的行为，不是「症状层补丁」——它让服务真正进入终态时过渡态退出。两处各管一段：epoch 管回执的新旧，方向匹配管探测的收尾。
+
+竞态背景：用户点「停止」，服务慢停止期间旧探测仍报「运行中」，不该覆盖用户刚触发的「停止中」过渡态。方向匹配挡住反向探测；命令完成回执（epoch 匹配）解封按钮。若回执彻底丢失（后台异常退出），由 `Test-TransitionTimedOut` 超时逃生兜底（见「已知限制」与 `test-transition-failure.ps1`）。
 
 ## 设计决策
 
@@ -123,13 +127,60 @@ NSSM remove 是 stop → Wait-Stopped ≤6s → nssm remove confirm，同步执�
 
 `Find-SensitiveEnvKeys` 检测 `*_API_KEY` / `*_TOKEN` 等键名，提示用户改用 `*_FILE` 路径让服务本体从密钥文件读。不阻断注册——用户可能确有需要。`*_FILE` 后缀仅在值看起来像路径时才跳过提示，否则照样警告（键名后缀不等于值就是路径）。
 
+### 8. 超时是「全局默认 + 单服务覆盖」
+
+`config.json` 里的 `ToggleTimeoutMs` / `HttpTimeoutMs` / `TcpTimeoutMs` 是全局默认值，假定服务都秒起。重服务（AI 服务、冷启动 JVM，一分钟才 listen）在 `services.json` 的对应条目里加 `toggleTimeoutMs` / `httpTimeoutMs` / `tcpTimeoutMs` 覆盖，缺省回落全局。
+
+两条实现细节值得记：
+
+- **`Read-SvcFile` 必须显式带走这三个字段**。`Save-Svc` 写的是整份 `$script:svc`，读的时候只挑 `port`/`url`，用户手写的覆盖就会在下一次 GUI 增删服务时被静默抹掉——这类「配了但没生效」比报错难查得多。
+- **这三个字段写错时不能抛**。抛了会落进 `Load-Svc` 的 catch，整份清单退回 `services.example.json`；GUI 里显示的是示例服务，用户点一次增删，`Save-Svc` 就把示例写回真实文件，**真实清单连同已注册服务一起丢**。现在的处理是：忽略该字段（回落全局）+ 记一条 `configNotices`，启动后单独弹一个「配置提示」框。`configNotices` 与 `configWarning` 分开，因为后者配套的弹框写着「当前使用恢复配置」，而这条路径并没有用恢复配置。
+- **HTTP 探测的超时从实例级改成了每请求 CTS**。共享 `HttpClient` 的 `Timeout` 是实例级上限，单次请求改不动它，per-service 想设得**比全局更大**就做不到。现在实例级放开成 `Timeout.InfiniteTimeSpan`（注意是 `System.Threading.Timeout` 上的那个；`TimeSpan.InfiniteTimeSpan` 在旧运行时上取到 `$null`），每请求一个 `CancellationTokenSource`。
+
+另外，卡片过渡态在**探测到服务仍处于同一过渡态**（`StartPending`/`StopPending`）时会刷新计时：服务确实还在动，不该按「回执丢了」处理。这让慢启动不必靠调大阈值也能正常收敛。
+
+刷新必须有上限，否则「命令发出去了但回执没来」的卡片会被自己的刷新一直续命。`TransitionStartedAt` 只在**进入**过渡态时记一次（`TransitionAt` 会被刷新、它不会），累计超过 `ToggleTimeoutMs × TransitionHardCapFactor`（默认 10 倍）就强制判超时。
+
+**适用范围只有命令驱动的过渡态**：探测驱动的中间态（外部工具启动，或逃生之后探测又报同一中间态）`TransitionAt` 是 `MinValue`，不判超时——这是 H1 的有意设计，探测驱动的值必须能被后续探测覆盖。所以服务真卡在 SCM 的 `StopPending` 时，逃生只生效一个探测周期，之后卡片仍停在「停止中」且无重试入口，详见「已知限制」。
+
+### 9. 运行账户只给内置账户
+
+添加服务对话框的「运行账户」只列 `LocalSystem` / `LocalService` / `NetworkService`。三者都是 nssm 认得的 well-known SID（`account.cpp` 的 `well_known_username` → 密码强制空串），所以 `nssm set <服务> ObjectName <账户名>` 一条 argv 就够，工具全程不碰凭据。
+
+自定义用户账户需要一个密码，而 nssm 只收 `nssm set <服务> ObjectName <用户名> <密码>`——用户名走 additional、密码走 value，两者都是命令行参数，同机管理员在进程列表里可见（nssm 自己能做的只是用完 `SecureZeroMemory`）。这个暴露面不值得为一个一次性操作引入，故本工具不做；需要时用 `nssm edit` 或服务管理器改。
+
+单 token 的形状（`ObjectName <账户>`，不带密码位）**已真机验证**（2026-10-28，管理员）：
+
+```
+nssm install SmokeTestObjectName cmd.exe        → exit 0
+nssm set SmokeTestObjectName ObjectName "NT AUTHORITY\LocalService"  → exit 0
+sc.exe qc SmokeTestObjectName    → SERVICE_START_NAME : NT Authority\LocalService
+nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
+```
+
+即 `ChangeServiceConfig` 确实被调用并生效，账户真的是 LocalService。验证用的临时服务建完即删，无残留。
+
+这条早先只有源码推断（`service.cpp:959` 的 ObjectName 分支只挪参数不校验；密码检查在 `native_set_objectname` 里，well-known 账户强制空串）——源码与实测现在一致。
+
+`Get-NssmSetSpec` 对 `LocalSystem` 和空值**不产生** `ObjectName`——那本来就是 `nssm install` 的默认值，写进去只是多一条无意义的 set，还会让「没选账户」和「选了 LocalSystem」两条路径分叉。
+
+「是不是 GPU/桌面程序」由用户在对话框里勾选声明，不做自动判断：按 exe 名字猜不准，误报比不报更烦。勾了且账户仍是 LocalSystem 时弹一条提示，**不阻断注册**。
+
 ## 已知限制
 
 - 真实 UAC、系统 Mica 效果与 NSSM 服务生命周期需在本机交互验证（单测用替身）
 - `launch.vbs` 必须保持纯 ASCII（Windows Script Host 按系统 ANSI 代码页读取，UTF-8 中文注释在部分系统触发 `800A0400`）
+- **`ToggleTimeoutMs` 的全局默认值是推出来的、不是量出来的**：启动失败回落 `sc.exe start` 走 SCM 同步管道，上限 `ServicesPipeTimeout`（本机未设 = 默认 30000ms）。该路径真实耗时未真机实测（需建服务，`tests/probe-1053-timing.ps1` 管理员跑），当前值 45000 是按「管道上限 + 6s 删除路径余量」推的。跑过探针才能确认够不够。
+- **探测驱动的中间态没有重试入口**：卡片过渡态超时逃生只覆盖**命令驱动**的过渡态（用户点了启停/删除）。服务若真的卡在 SCM 的 `StartPending`/`StopPending`（停止回调挂死这类），探测会一直报同一中间态，卡片停在「停止中」且按钮禁用。这是 H1 修复的有意取舍（探测驱动的值必须能被后续探测覆盖，不能按方向丢弃），且此时 SCM 本身已不可用，重试也不会成功——卡片显示的是实况。**出路是右键「删除」**：那条路径不经过卡片的按钮门闩，`Invoke-ServiceRemove` 会照常执行 stop → 等 Stopped → `nssm remove`。
+- **密钥扫描有两层，都有前提**：`.githooks/pre-commit` 要求每个 clone 先 `git config core.hooksPath .githooks`，否则本地那层根本不存在；`gitleaks` 没装时钩子只打警告并放行。CI 侧新增的 `secrets` 任务（`gitleaks-action`）只在**推送 main 或开 PR** 时触发，功能分支推送不跑；该任务尚未在真实 runner 上跑过。
+- **CLI `-Add` 与 GUI 不能并行**：两者都全量写回 `services.json`（`Save-Svc` 无合并语义），GUI 常驻时 CLI 新增会被 GUI 下一次保存覆盖。故 `-Add` 前检测单实例 mutex（`Test-GuiInstanceRunning`），GUI 在跑则拒绝并提示先关 GUI。
+- **CLI `-Add` 拒绝在清单损坏时写入**：`Load-Svc` 解析失败会回落到 `services.example.json`，若继续 `-Add`，末尾的 `Save-Svc` 会把「示例清单 + 新服务」写回真实文件，用户条目整份消失且退出码 0。故 `-Add` 前检查 `Load-Svc` 的专用标志 `$script:svcLoadFailed`（**不能**用 `$script:configWarning`——那个也可能是 config.json 坏了写的，而 config.json 坏了按设计不阻断）。非致命提示（per-service 字段写错）打印后继续。
+- **`Show-SecurityCheck` 的 ACL 判定是启发式**：只认 `Users`/`Everyone`/`Authenticated Users`/AppContainer SID 这几类宽泛主体 + `Write|Modify|FullControl`。目录若被改写为其它宽松形态（如某个具体用户账户 FullControl），判定为「否」。不是权威审计。
+- **`NSSM_PATH` 只校验「存在 + 文件名为 nssm.exe」**：不校验签名/路径。该值随后以管理员身份被调用，故文件名校验只为挡住「指向任意 exe」；仍无法防御能改管理员进程环境变量的攻击者（那种场景已超出本工具的信任边界）。**2026-10-28 评估过加 `Get-AuthenticodeSignature`**：实测本机官方 scoop 包的 `nssm.exe` 是 `NotSigned`，加了会对所有正常安装误报，故不加。
+- **`Open-PanelUrl` 直接 `Start-Process` `services.json` 里的 URL**：`services.json` 是用户自己的配置（非特权输入），但若其中含 `file:///` 或自定义协议，提权 GUI 下会以管理员打开。本地单用户工具的设计取舍。
 
 ## 测试
 
-`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 20 项回归测试。详见 README「测试与截图」节。
+`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 25 项回归测试。详见 README「测试与截图」节。
 
 CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）。
