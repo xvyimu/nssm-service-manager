@@ -19,6 +19,8 @@
 $ErrorActionPreference='Stop'
 
 $isAdmin = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+# 与服务端同一套 sc.exe 解析：本机 System32 可能不在 PATH 里，裸调会拿不到命令
+. (Join-Path (Split-Path $PSScriptRoot -Parent) 'lib/svc-common.ps1')
 if (-not $isAdmin) { throw '需要管理员权限（注册/删除服务）。请以管理员身份运行本脚本。' }
 
 $SVC = '__sm_1053_probe__'
@@ -46,7 +48,7 @@ try {
   Write-Output '== 注册 =='
   New-Service -Name $SVC -BinaryPathName $BAD -StartupType Manual | Out-Null
   Start-Sleep -Milliseconds 300
-  & sc.exe query $SVC 2>&1 | Out-Null
+  & (Get-ScExe) query $SVC 2>&1 | Out-Null
   Write-Output "  注册后 sc query 返回 $LASTEXITCODE（0 = 服务存在）"
   Write-Output ''
 
@@ -56,7 +58,7 @@ try {
     try { $s.Start() } finally { $s.Dispose() }
   }
   $msSc = Measure-Step 'sc.exe start（回落路径，走 SCM 同步管道）' {
-    sc.exe start $SVC 2>&1 | Out-Null
+    & (Get-ScExe) start $SVC 2>&1 | Out-Null
   }
   Write-Output ''
 
@@ -81,6 +83,6 @@ try {
     Write-Output "  $SVC 不存在，无需清理"
   }
   Start-Sleep -Milliseconds 300
-  & sc.exe query $SVC 2>&1 | Out-Null
+  & (Get-ScExe) query $SVC 2>&1 | Out-Null
   Write-Output "  复核 sc query 返回 $LASTEXITCODE（1060 = 已删除）"
 }

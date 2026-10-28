@@ -8,6 +8,26 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $RepoRoot 'lib/svc-common.ps1')
 function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
 
+# ---- Get-ScExe：sc.exe 必须解析出可执行路径，不能裸调 ----
+# 本机实测 System32 不在 PATH 里，裸调 `sc.exe` 会 CommandNotFoundException，而
+# $LASTEXITCODE 保留上一条命令的码——删除/安装的实证复核会据此误判。
+# 这里断言解析规则本身（注入优先级 + 兜底），不依赖当前机器的 PATH 状态。
+$injected = Get-ScExe
+Assert ($injected -eq 'sc.exe' -or (Test-Path -LiteralPath $injected)) "Get-ScExe 解析出的路径必须可执行或退回裸名，got [$injected]"
+# 没有注入时若盘上有 System32\sc.exe，必须优先用它（本机就是这种情况）
+if (-not $script:ScExe -and -not $sync) {
+  $sys = Join-Path $env:SystemRoot 'System32\sc.exe'
+  if (Test-Path -LiteralPath $sys) { Assert ($injected -eq $sys) "应解析到 System32 全路径，got [$injected]" }
+}
+# 注入优先级：$sync.scExe 压过 $script:ScExe（runspace 用它注入替身名）
+$script:ScExe = 'from-script'
+Assert ((Get-ScExe) -eq 'from-script') '应优先使用 $script:ScExe'
+$sync = @{ scExe = 'from-sync' }
+Assert ((Get-ScExe) -eq 'from-sync') '应优先使用 $sync.scExe'
+$sync = $null
+Remove-Variable scExe -Scope Script -ErrorAction SilentlyContinue
+Write-Output 'PASS: Get-ScExe resolves an executable path and honors $sync.scExe / $script:ScExe injection.'
+
 # sc.exe / NSSM 退出码 → 中文（README「功能」节与 svc-common.ps1 注释声明的映射）
 $exitCases = @{
   0    = ''

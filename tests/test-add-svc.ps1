@@ -9,7 +9,7 @@ $before = if ($cfgExisted) { (Get-FileHash -LiteralPath $cfg).Hash } else { $nul
 . (Join-Path $RepoRoot 'lib/util.ps1')
 . (Join-Path $RepoRoot 'lib/add-svc.ps1')
 $script:svc=Load-Svc
-$script:sync=@{gate=[object]::new()}
+$script:sync=@{gate=[object]::new(); scExe='sc.exe'}
 $logDir=Join-Path $RepoRoot 'logs'
 $script:calls=[Collections.Generic.List[object]]::new()
 $script:saved=$false
@@ -131,7 +131,7 @@ $ErrorActionPreference = "Stop"
 . (Join-Path $args[0] "lib/util.ps1")
 . (Join-Path $args[0] "lib/add-svc.ps1")
 $script:svc = [ordered]@{}
-$script:sync = @{gate = [object]::new()}
+$script:sync = @{gate = [object]::new(); scExe = 'sc.exe'}
 $logDir = Join-Path $args[0] "logs"
 $script:nssm = "Invoke-Ok"
 $script:startArgs = $null
@@ -165,7 +165,7 @@ $ErrorActionPreference = "Stop"
 . (Join-Path $args[0] "lib/util.ps1")
 . (Join-Path $args[0] "lib/add-svc.ps1")
 $script:svc = [ordered]@{}
-$script:sync = @{gate = [object]::new()}
+$script:sync = @{gate = [object]::new(); scExe = 'sc.exe'}
 $logDir = Join-Path $args[0] "logs"
 $script:nssm = "Invoke-Ok"
 $script:startArgs = $null
@@ -187,5 +187,33 @@ if ($cfgExisted) {
 } elseif (Test-Path -LiteralPath $cfg) {
   throw 'Test created services.json where none existed.'
 }
+
+# sc.exe 必须经 Get-ScExe 解析后调用，不能裸调。
+# 夹具平时注入的是替身名 'sc.exe'，所以「调用点退回裸 sc.exe」照样能命中那个替身——
+# 测不出来。这里换成一个**不同的**注入名：只有真的走了解析才会调到它。
+# 本机实测 System32 不在 PATH，裸调会 CommandNotFoundException 且 $LASTEXITCODE 保留旧值。
+$script:scMarker = @()
+function Invoke-ScMarker {
+  param([Parameter(ValueFromRemainingArguments = $true)]$a)
+  $script:scMarker += ($a -join ' ')
+  $global:LASTEXITCODE = 1060
+}
+$script:sync = @{ gate = [object]::new(); scExe = 'Invoke-ScMarker' }
+$script:svc = [ordered]@{}
+$qcode = Get-ServiceQueryCode 'NoSuchSvc'
+if ($script:scMarker.Count -ne 1 -or $script:scMarker[0] -ne 'query NoSuchSvc') {
+  throw "Get-ServiceQueryCode 没有走 Get-ScExe 解析出的命令（实际调用：$($script:scMarker -join ' | ')）"
+}
+if ($qcode -ne 1060) { throw "Get-ServiceQueryCode 未透传退出码（got $qcode）" }
+$script:scMarker = @()
+function Invoke-NoopNssm { $global:LASTEXITCODE = 0 }
+$r = Invoke-ServiceRemove 'NoSuchSvc' 'Invoke-NoopNssm'
+# 这条会先 stop 再查一次（Test-ServiceGone），故断言「包含」而不是「等于一条」
+if ($script:scMarker -notcontains 'stop NoSuchSvc') {
+  throw "Invoke-ServiceRemove 的 stop 没有走 Get-ScExe（实际调用：$($script:scMarker -join ' | ')）"
+}
+if (-not $r.ok) { throw "Invoke-ServiceRemove 在 sc=1060 + nssm=0 时应判成功：$($r.why)" }
+Write-Output 'PASS: sc.exe call sites go through Get-ScExe (injected command name actually invoked), not bare sc.exe.'
+
 Write-Output 'PASS: CLI registration, NSSM multi-value arguments, rollback on partial set failure, remove flow (stop→wait→remove), persistence/start boundaries (mocked); config unchanged.'
 } finally { Remove-Item -LiteralPath $fakeExe -Force -EA SilentlyContinue }

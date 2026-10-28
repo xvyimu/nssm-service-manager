@@ -166,6 +166,14 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 
 「是不是 GPU/桌面程序」由用户在对话框里勾选声明，不做自动判断：按 exe 名字猜不准，误报比不报更烦。勾了且账户仍是 LocalSystem 时弹一条提示，**不阻断注册**。
 
+### 10. 外部命令按全路径解析，不裸调
+
+`nssm.exe` 走三档解析（`$env:NSSM_PATH` → `Get-Command` → scoop 默认路径），`sc.exe` 由 `Get-ScExe` 解析（`$sync.scExe` / `$script:ScExe` 注入 → `%SystemRoot%\System32\sc.exe` → 裸名兜底）。
+
+起因（2026-10-28 实测）：本机 `C:\Windows\System32` **既不在机器 PATH 也不在用户 PATH**，`Get-Command` 对 `sc.exe` / `cmd.exe` / `where.exe` 全部返回空。而裸调一个不存在的命令时，PowerShell 抛 CommandNotFoundException 的同时 **`$LASTEXITCODE` 保留的是上一条命令的码**——`Test-ServiceGone` / `Test-ServicePresent` / `Invoke-Sc` 全靠退出码下结论，假码会把「删失败」判成成功。实测：裸调后 `$LASTEXITCODE` 停在伪造的 42，经 `Get-ScExe` 解析后才是真实的 1060。
+
+判据：**任何「靠退出码下结论」的外部命令都不能裸调**。测试通过 `$sync.scExe` / `$script:ScExe` 注入替身名，不用改调用点。
+
 ## 已知限制
 
 - 真实 UAC、系统 Mica 效果与 NSSM 服务生命周期需在本机交互验证（单测用替身）

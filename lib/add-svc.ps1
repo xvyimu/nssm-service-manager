@@ -53,7 +53,7 @@ function Add-SvcFromCli([string]$spec){
     Write-Host "$n 已在 NSSM 注册，请手动将其加入 services.json 或用 -Add 重新注册后删除旧服务。"
     exit 1
   }
-  sc.exe start $n 2>&1 | Out-Null
+  & (Get-ScExe) start $n 2>&1 | Out-Null
   if ($LASTEXITCODE -ne 0) {
     # sc.exe start 失败返回非零（实测：5 拒绝访问 / 1051 被禁用 / 1053 进程起不来）。
     # 注册本身是成功的，故不回滚、也不 exit 1——但绝不能报「已启动」：这个 CLI 是给

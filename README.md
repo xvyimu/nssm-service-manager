@@ -272,6 +272,8 @@ ffmpeg -y -framerate 3 -i .demo-tmp/frame-%02d.png -vf "scale=640:-1:flags=lancz
 
 `run-all.ps1` 先解析全部 PowerShell 文件，再执行 VBS 编译与 UAC 守卫断言、3×2 布局与缩放、卡片启停门闩、翻页冷却、卡片缓存清理与重建、过渡态竞态保护、后台命令唤醒、菜单和 CLI 注册参数测试。NSSM、服务启停、配置保存及菜单的外部操作采用替身，不会注册测试服务或改动 `services.json`。真实 UAC、系统 Mica 效果与 NSSM 服务生命周期需在本机交互验证。
 
+`sc.exe` 一律经 `Get-ScExe` 解析后调用（本机实测 System32 可能不在 PATH，裸调会拿不到命令而让 `$LASTEXITCODE` 停留在上一条的码）。`test-add-svc.ps1` / `test-exitcode-map.ps1` 专门守这条：注入一个**不同名**的替身命令，只有真的走了解析才会调到它——注入名若和裸调同名（`sc.exe`），调用点退回裸调也照样命中，测不出来。
+
 `test-svc-input.ps1` 覆盖纯函数负例：`Test-SvcInput` 的四类拒绝（名称字符集 / exe 不存在 / 端口越界 / 重名）与校验顺序，`ConvertTo-EnvPairs` 的分隔符/去空白/丢空项与「值内分隔符不拆分」（`NO_PROXY=127.0.0.1,localhost`、`PATH=C:\a;C:\b`），`Test-EnvPairs` 的格式与 APPDATA 交互路径拒绝，`Get-NssmSetSpec` 的 `AppExit` 双 token、`AppEnvironmentExtra` 多 token、`ObjectName` 单 token（LocalSystem/空值不产生该键）、可选键省略与值必须为数组，以及 `Test-SvcAccount` 的白名单（三个内置账户大小写不敏感通过，自定义用户账户拒绝）。`test-security-parse.ps1` 额外覆盖 `Resolve-ServiceExeDir` 的 UNC、引号不闭合、正斜杠、无扩展名等边界（均不应抛错）。
 
 `test-config-params.ps1` 验证 `config.json` 覆盖与坏 JSON 回落：临时写一份非默认值的 `config.json`，确认超时/轮转/冷却随之改变；恢复默认模拟测试夹具（不注入超时键）时 runspace 回落 200/3000/6000；mock `restart` 用注入的短 `waitMs` 快速收尾（若误用默认 6s 会在 1.2s 内只看到 stop）。

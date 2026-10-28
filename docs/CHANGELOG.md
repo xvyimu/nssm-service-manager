@@ -5,6 +5,31 @@
 
 ## [未发布]
 
+### 2026-10-28：`sc.exe` 不再裸调（本机 System32 不在 PATH）
+
+做 `ObjectName` 真机验证时，提权脚本报 `sc.exe` 无法识别。追下去不是权限问题：
+
+```
+注册表机器 PATH 含 system32 : False
+用户 PATH 含 system32       : False
+Get-Command sc.exe / cmd.exe / where.exe : 全空
+```
+
+工具里 4 处裸调 `sc.exe`（`Get-ServiceQueryCode` / `Invoke-ServiceRemove` / `Invoke-Sc` /
+`Add-SvcFromCli` 的启动）。裸调一个不存在的命令时，PowerShell 抛 CommandNotFoundException
+的同时 **`$LASTEXITCODE` 保留上一条命令的码**——而这几处正是靠退出码判「服务删没删掉、
+起没起来」的实证复核，假码会把「删失败」判成成功。实测对照：
+
+```
+伪造 $LASTEXITCODE = 42 → 裸调 sc.exe → 仍为 42（假码）
+                         经 Get-ScExe  → 1060（真码）
+```
+
+修法：`svc-common.ps1` 加 `Get-ScExe`，按 `$sync.scExe` / `$script:ScExe` 注入 →
+`%SystemRoot%\System32\sc.exe` → 裸名兜底 三档解析；4 处调用点全改成 `& (Get-ScExe)`。
+测试夹具统一注入 `scExe='sc.exe'`（替身名），runspace 夹具经 `$sync.scExe` 注入。
+手工探针 `probe-1053-timing.ps1` 一并改用同一套解析——它在同一台机器上会踩同样的坑。
+
 ### 2026-10-28：收掉两条剩余风险
 
 - **CI 补上密钥扫描**：`.github/workflows/test.yml` 新增 `secrets` 任务（`gitleaks-action`，

@@ -12,7 +12,7 @@ foreach ($module in 'theme','util','svc-input','nssm','card','xaml','dialogs') {
 function Assert($condition,[string]$message) { if (-not $condition) { throw $message } }
 
 # ---- 1. del_Click 入队 remove，不立即改 svc/cards ----
-$script:sync=@{gate=[object]::new(); wake=[Threading.AutoResetEvent]::new($false); nssm='Invoke-TestNssm'}
+$script:sync=@{gate=[object]::new(); wake=[Threading.AutoResetEvent]::new($false); nssm='Invoke-TestNssm'; scExe='sc.exe'}
 $script:svc=[ordered]@{RmSvc=@{port=9000;url='http://127.0.0.1:9000'}}
 $script:cmdQueue=[Collections.Concurrent.ConcurrentQueue[object]]::new()
 $script:queue=[Collections.Concurrent.ConcurrentQueue[object]]::new()
