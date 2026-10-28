@@ -35,7 +35,7 @@ function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$d
     nssm = 'Invoke-TestNssm'
     # sc.exe 的解析优先读 $sync.scExe（见 svc-common.ps1 的 Get-ScExe）——夹具必须注入
     # 替身名，否则 runspace 会拿全路径去调真 sc.exe，测试就碰到了真服务数据库。
-    scExe = 'sc.exe'
+    scExe = 'Invoke-TestSc'
     scExitCode = $scExitCode
     # serviceGone 由调用方在 BeginInvoke 后按需置位：$true = query 返回 1060（服务已消失）,
     # 用于让 Remove 路径的实证复核（Test-ServiceGone）认为删除生效。默认未设 = 服务存在。
@@ -52,7 +52,7 @@ function Get-Service {
   if (`$sync.delayMs) { Start-Sleep -Milliseconds `$sync.delayMs }
   foreach (`$n in `$Name) { [pscustomobject]@{ Name=`$n; Status='$serviceStatus' } }
 }
-function sc.exe {
+function Invoke-TestSc {
   `$sync.executed.Enqueue([pscustomobject]@{action=`$args[0];name=`$args[1];probes=`$sync.probeCount})
   [void]`$sync.executedReady.Set()
   if (`$args[0] -eq 'query') {
@@ -63,6 +63,10 @@ function sc.exe {
   }
   `$global:LASTEXITCODE = if (`$sync.scExitCode) { `$sync.scExitCode } else { 0 }
 }
+# 故意不再定义 sc.exe 的替身：生产代码必须经 Get-ScExe 解析（本机 System32 不在 PATH，
+# 裸调会拿不到命令、$LASTEXITCODE 残留旧值）。留一个**会抛**的占位，让「退回裸调」
+# 立刻炸而不是悄悄命中替身——注入名若和裸调同名，这条回归就测不出来。
+function sc.exe { throw 'bare sc.exe call — 生产代码必须经 Get-ScExe 解析' }
 function Invoke-TestNssm {
   # remove confirm 等——记一次 nssm 调用，退出码由 $sync.nssmExitCode 控制
   # （0 = nssm 谎报成功但服务其实还在；非零 = 常规失败；未设 = 0）。
