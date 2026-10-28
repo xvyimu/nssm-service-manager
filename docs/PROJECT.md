@@ -139,7 +139,7 @@ NSSM remove 是 stop → Wait-Stopped ≤6s → nssm remove confirm，同步执�
 
 另外，卡片过渡态在**探测到服务仍处于同一过渡态**（`StartPending`/`StopPending`）时会刷新计时：服务确实还在动，不该按「回执丢了」处理。这让慢启动不必靠调大阈值也能正常收敛。
 
-刷新必须有上限，否则逃生口会被自己顶掉：`TransitionStartedAt` 只在**进入**过渡态时记一次（`TransitionAt` 会被刷新、它不会），累计超过阈值 **10 倍**就强制判超时。没有这条，一个永久卡在 `StopPending` 的服务会让卡片永久显示「停止中」、按钮永久禁用——而逃生正是为这种情况存在的。这也避免了依赖「SCM 一定会把 `StartPending` 收敛掉」这个未实测的假设。
+刷新必须有上限，否则逃生口会被自己顶掉：`TransitionStartedAt` 只在**进入**过渡态时记一次（`TransitionAt` 会被刷新、它不会），累计超过 `ToggleTimeoutMs × TransitionHardCapFactor`（默认 10 倍）就强制判超时。没有这条，一个永久卡在 `StopPending` 的服务会让卡片永久显示「停止中」、按钮永久禁用——而逃生正是为这种情况存在的。这也避免了依赖「SCM 一定会把 `StartPending` 收敛掉」这个未实测的假设。
 
 ### 9. 运行账户只给内置账户
 
