@@ -155,15 +155,8 @@ if (-not (Test-Path -LiteralPath $script:nssm)) {
   Write-CrashLog "UnhandledException(terminating=$($e.IsTerminating)): $($x.GetType().FullName): $($x.Message)`n$($x.StackTrace)"
 })
 
-# ---- Dispatcher 级兜底：UI 线程异常（如 Click handler 抛错）默认会冒到 AppDomain ----
-# UnhandledException 并终止进程。Handled=$true 记完继续跑，否则单次点击异常=整窗消失。
-# 仍会被上面的 AppDomain handler 兜底（那是进程级最后一道），但 Dispatcher 这层能就地接住，
-# 不让窗口消失——Open-PanelUrl 的 catch 已就地处理常见失败，这里是给「其它 UI 回调抛错」兜底。
-# Show-Log / Show-SecurityCheck / Show-Remove / Show-Add 的异常都落到这一层：原来只记日志，
-# 用户那边看到的是「点了没反应」。故补一句状态栏提示。
-# 函数体抽到 lib/util.ps1 的 Invoke-DispatcherErrorFallback——单测要真触发一次
-# DispatcherUnhandledException 才能验「窗口不消失」，而事件参数是私有构造、只能真抛真接。
-# 这里只留注册；handler 内若再抛会直接走进程终止路径，故 Get-Command 守卫兜模块加载失败。
+# ---- Dispatcher 级兜底：UI 线程异常默认会冒到 AppDomain 并终止进程，Handled=$true 才不消失 ----
+# 函数体在 lib/util.ps1 的 Invoke-DispatcherErrorFallback（要真抛一次才能测）。
 [System.Windows.Threading.Dispatcher]::CurrentDispatcher.add_UnhandledException({ param($s,$e)
   if (Get-Command Invoke-DispatcherErrorFallback -EA SilentlyContinue) {
     Invoke-DispatcherErrorFallback $e
@@ -175,13 +168,8 @@ if (-not (Test-Path -LiteralPath $script:nssm)) {
 })
 
 # ---- 加载模块 ----
-# 顺序即依赖：util（Save-Svc/Open-PanelUrl/Remove-RotatedLogs）→ svc-input（纯函数族）→
-# nssm（Install/Remove，依赖 svc-input 的 Get-NssmSetSpec）→ add-svc（CLI 入口，自加载依赖）→
-# logview（Show-Log/Get-LogFiles，依赖 util 的 $logDir 约定）→ dialogs（Show-Add/Show-Remove，
-# 依赖 svc-input/nssm/util）+ card（Set-CardTransition / New-Card / Render-Page / 右键菜单）。
-# dialogs 与 card **双向依赖**（card 右键菜单调 Show-Remove，Show-Remove 调 Set-CardTransition），
-# 故二者顺序不分先后——函数体内符号是调用时解析，只要全部加载完再调用即可。
-# card 与 xaml 自加载 config，tray 惰性。
+# 顺序即依赖：util → svc-input → nssm → add-svc → logview → dialogs + card。
+# dialogs 与 card 是双向依赖，顺序不分先后（函数体符号调用时解析）。
 . "$root\lib\theme.ps1"
 . "$root\lib\util.ps1"
 . "$root\lib\svc-input.ps1"
@@ -216,6 +204,7 @@ $script:sync = [hashtable]::Synchronized(@{
   probeThrottleLimit   = [int]$script:config.ProbeThrottleLimit
   probeIntervalMs      = [int]$script:config.ProbeIntervalMs
   probeIdleMs          = [int]$script:config.ProbeIdleMs
+  probePendingMs       = [int]$script:config.ProbePendingMs
   waitStoppedPollMs    = [int]$script:config.WaitStoppedPollMs
 })
 $bgRS = [runspacefactory]::CreateRunspace()

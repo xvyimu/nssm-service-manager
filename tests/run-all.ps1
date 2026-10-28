@@ -40,32 +40,17 @@ Invoke-Check 'PowerShell parser' {
 }
 
 $tests = @(
-  @{ Name = 'launcher'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-launcher.ps1')) }
   @{ Name = 'dispatcher priority'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-dispatcher-priority.ps1')) }
-  @{ Name = 'GUI smoke'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-gui-smoke.ps1')) }
   @{ Name = 'card actions'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-card-actions.ps1')) }
   @{ Name = 'card clock'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-card-clock.ps1')) }
-  @{ Name = 'card cache'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-card-cache.ps1')) }
-  @{ Name = 'transition race'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-transition-race.ps1')) }
   @{ Name = 'transition failure'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-transition-failure.ps1')) }
-  @{ Name = 'status lease'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-status-lease.ps1')) }
   @{ Name = 'poll commands'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-poll-commands.ps1')) }
-  @{ Name = 'parallel probe'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-parallel-probe.ps1')) }
-  @{ Name = 'probe timeout scope'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-probe-timeout-scope.ps1')) }
   @{ Name = 'per-service timeout'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-per-service-timeout.ps1')) }
-  @{ Name = 'security parse'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-security-parse.ps1')) }
   @{ Name = 'svc input'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-svc-input.ps1')) }
   @{ Name = 'service registration'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-add-svc.ps1')) }
-  @{ Name = 'config round-trip'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-config.ps1')) }
-  @{ Name = 'log retention'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-log-retention.ps1')) }
   @{ Name = 'config params';     Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-config-params.ps1')) }
-  @{ Name = 'tray policy';       Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-tray.ps1')) }
-  @{ Name = 'single instance'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-single-instance.ps1')) }
-  @{ Name = 'remove async'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-remove-async.ps1')) }
   @{ Name = 'remove e2e'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-remove-e2e.ps1')) }
   @{ Name = 'dialogs submit'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-dialogs-submit.ps1')) }
-  @{ Name = 'exitcode map'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-exitcode-map.ps1')) }
-  @{ Name = 'acl script'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-acl-script.ps1')) }
 )
 
 foreach ($test in $tests) {

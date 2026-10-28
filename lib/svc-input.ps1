@@ -1,11 +1,7 @@
 # lib/svc-input.ps1 — 添加服务的纯函数族：输入校验 · env 解析 · NSSM set 规格
 #
-# 从 lib/add-svc.ps1 抽出，使纯函数可被单测直接点源（不加载 WPF / NSSM / 对话框）。
-# 无副作用：不碰文件系统（除 Test-Path 校验）、不调 sc.exe/nssm、不弹 UI。
-#
-# 【作用域约定】Get-NssmSetSpec 读调用方作用域的 $logDir（dot-source 时由
-# service-manager-gui.ps1 / 各测试赋值），不是模块级变量。调用方必须在
-# dot-source 之后赋值，否则 $logDir 为 $null，AppStdout/Stderr 路径拼出空段。
+# 纯函数族，可被单测直接点源（不加载 WPF / NSSM / 对话框），无副作用。
+# 【作用域】Get-NssmSetSpec 读调用方作用域的 $logDir，调用方须在 dot-source 后赋值。
 
 # CLI 与 GUI 共用的输入校验。通过返回 $null，否则返回 @{code; msg}。
 # code ∈ name|exe|port|dup。GUI 的端口文案与 CLI 不同，调用方按 code 自行覆盖 msg。

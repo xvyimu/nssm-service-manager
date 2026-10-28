@@ -223,3 +223,19 @@ try {
   $listener.Stop()
   Assert ($errs.Count -eq 0) "后台探测有错误：$($errs -join '; ')"
 }
+
+# ---- 6. 并行块的超时变量必须经 $using: 传入（静态扫描，等价于被删的 test-probe-timeout-scope）----
+# ForEach-Object -Parallel 开新 runspace，不继承父作用域变量：裸用 $tcpMs / $httpMs 会取到
+# $null，WaitOne(0) 立刻返回，运行中的服务被误判「无响应」变红。行为段造不出这个场景
+#（端口真监听时 0ms 也可能握手成功），只能静态扫；只扫并行块内部，主作用域的用法是合法的。
+$pollCode = ($script:poll -split "`n" | ForEach-Object { $_ -replace '(^|\s)#.*$','$1' }) -join "`n"
+$i = $pollCode.IndexOf('-Parallel {')
+$j = if ($i -ge 0) { $pollCode.IndexOf('-ThrottleLimit', $i) } else { -1 }
+Assert ($i -gt 0 -and $j -gt $i) '没找到并行块（选择器已失效，静态扫描形同虚设）'
+$block = $pollCode.Substring($i, $j - $i)
+foreach ($v in 'tcpMs','httpMs') {
+  $bare = [regex]::Matches($block, ('\$' + $v + '\b')).Count
+  Assert ($bare -eq 0) ('并行块里裸用 $' + $v + ' ' + $bare + ' 处：必须经 $using: 传入，否则子 runspace 取到 $null。')
+  Assert ($block -match ('\$using:' + $v)) ('并行块里找不到 $using:' + $v + '。')
+}
+Write-Output 'PASS: parallel probe block references both timeouts only via $using: (static scan).'

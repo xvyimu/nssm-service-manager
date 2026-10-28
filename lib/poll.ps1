@@ -1,12 +1,8 @@
 # lib/poll.ps1 — 后台探测与命令执行；命令可唤醒空闲等待，在每次服务探测之间优先处理
 # UI 线程绝不碰 I/O；结果经 ConcurrentQueue 回 UI 侧 DispatcherTimer 取
 #
-# 内存优化（vs 初版）：
-# - 端口探测用 System.Net.Sockets.TcpClient（200ms 超时），不用 Get-NetTCPConnection
-#   （后者拉 NetTCPIP CIM provider，常驻 +10MB）
-# - HTTP 探测用单个共享 HttpClient，不用 Invoke-WebRequest（IWR 每次 new+dispose 一个
-#   HttpClient，且加载整个 Microsoft.PowerShell.Commands.Utility HTTP cmdlet 机器）
-# - 结果仍是字符串，runsapce 不持有 UI 对象
+# 内存取舍：端口探测用 TcpClient（Get-NetTCPConnection 会常驻 +10MB CIM provider）；
+# HTTP 用共享 HttpClient（IWR 每次新建并加载整套 cmdlet）。结果仍是字符串，不持有 UI 对象。
 
 # 后台探测脚本块（字符串，在 runspace 里执行）
 # Wait-Stopped 抽到 lib/svc-common.ps1，与 add-svc.ps1（UI 线程）引用同一份实现。
@@ -15,14 +11,14 @@
 $script:poll = (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'svc-common.ps1')) + @'
 # runspace 内构造一次、复用到退出——HttpClient 本身线程安全
 $http = [System.Net.Http.HttpClient]::new()
-# 超时从 $sync 读（由 UI 线程从 config.ps1 注入）；测试夹具未设时回落默认（200/3000/6000）。
-# 生效值写回 $sync 同一键：UI 侧/测试可见 runspace 实际用的是什么（写回即覆盖原注入值）。
+# 超时从 $sync 读（UI 线程从 config 注入），未设时回落默认；生效值写回同一键供测试断言。
 $tcpMs  = if ($sync.tcpTimeoutMs)        { [int]$sync.tcpTimeoutMs }        else { 200 }
 $httpMs = if ($sync.httpTimeoutMs)       { [int]$sync.httpTimeoutMs }       else { 3000 }
 $waitMs = if ($sync.waitStoppedTimeoutMs){ [int]$sync.waitStoppedTimeoutMs } else { 6000 }
 # 节奏与并行度也从 $sync 读（UI 线程从 config 注入），测试夹具未设时回落原硬编码值。
 $probeIntervalMs = if ($sync.probeIntervalMs) { [int]$sync.probeIntervalMs } else { 4000 }
 $probeIdleMs     = if ($sync.probeIdleMs)     { [int]$sync.probeIdleMs }     else { 15000 }
+$probePendingMs  = if ($sync.probePendingMs)  { [int]$sync.probePendingMs }  else { 1000 }
 $probeThrottle   = if ($sync.probeThrottleLimit) { [int]$sync.probeThrottleLimit } else { 8 }
 # 超时改由**每次请求**的 CancellationTokenSource 控制（services.json 里 per-service 的
 # httpTimeoutMs 可能比全局值更长，而 HttpClient.Timeout 是实例级上限，单次请求改不动）。
@@ -32,6 +28,7 @@ $probeThrottle   = if ($sync.probeThrottleLimit) { [int]$sync.probeThrottleLimit
 $http.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan
 $sync.tcpTimeoutMs = $tcpMs; $sync.httpTimeoutMs = $httpMs; $sync.waitStoppedTimeoutMs = $waitMs
 $sync.probeIntervalMs = $probeIntervalMs; $sync.probeIdleMs = $probeIdleMs
+$sync.probePendingMs = $probePendingMs
 $sync.probeThrottleLimit = $probeThrottle
 
 # sc.exe 不抛异常，只靠 $LASTEXITCODE；包装成 helper，失败时反馈到 UI 状态栏
@@ -49,17 +46,12 @@ function Invoke-Sc([string]$verb,[string]$n,[string]$fail){
   $true
 }
 
-# **2026-10-28 订正**：原先这里写「ServiceController.Start() 是异步的（不等 RUNNING）」——不对。
-# 实测它对慢启动服务会等满 ServicesPipeTimeout（30s）再抛异常（probe-1053-timing.ps1：
-# 30032ms）。好处是仍然比 sc.exe 子进程好（不弹控制台窗口、不额外起进程），所以继续用它；
-# 但 catch 里必须先看真实状态（StartPending/Running 就算启动成功），否则会误回落 sc.exe。
-# 两个不能照搬报告原片的坑（已验，见 docs/HANDOFF.md P0-2）：
-# 1. ServiceController.Status 对不存在的服务返回空串（不抛异常）——先判空走 sc.exe 取「未安装」错码，
-#    否则空串会落到 Start() 抛 'Cannot open ... service'，文案退化。
-# 2. Start() 对已运行/无权限抛 MethodInvocationException，内层是英文包壳——直接吐不如落回 sc.exe
-#    取退出码经 Convert-ScExitCode 出中文文案友好。
-# 失败路径仍付一次 sc.exe（~90ms），但只在异常时触发；正常慢启动走 Start() 立即返回。
-# ServiceController 是 IDisposable（持有 SCM 句柄）；用 try/finally 保证释放，不靠 GC。
+# Start() 对慢启动服务会等满 ServicesPipeTimeout（30s）再抛异常（实测 30032ms）——
+# 所以 catch 里先看真实状态：StartPending/Running 就算启动成功，别回落 sc.exe（会弹控制台窗）。
+# 两个坑（见 docs/HANDOFF.md P0-2）：① Status 对不存在的服务返回空串而非抛异常，
+# 需先判空回落 sc.exe 取「未安装」错码；② 已运行/无权限时抛英文包壳异常，
+# 回落到 sc.exe 取退出码经 Convert-ScExitCode 出中文更友好。
+# ServiceController 持有 SCM 句柄，用 try/finally 释放，不靠 GC。
 function Invoke-ServiceStart([string]$n,[string]$fail='启动失败'){
   $svc = $null
   try {
@@ -139,6 +131,11 @@ function Invoke-PendingCommands {
 }
 
 try {
+# 上一次全量健康探测（TCP+HTTP）的时刻（TickCount64，毫秒、单调）：
+# 中间态快轮询只加快状态查询，不该把探测也提速。0 = 启动后还没探测过。
+$lastProbeAt = [long]0
+# 每个服务最近一次健康值：探测被限流跳过时用它把状态送到 UI，不让圆点闪红
+$lastHealth = @{}
 while(-not $sync.stop){
   $executedCmd = (Invoke-PendingCommands) -gt 0  # 本轮是否执行过命令：影响轮询间隔，见循环尾
   # 拷快照（加锁，避免枚举期间 UI 侧增删）
@@ -166,7 +163,7 @@ while(-not $sync.stop){
   # 改并行后最坏 ~3.2s（HTTP 超时上限）。命令在收集间隙仍优先处理，
   # 但并行探测期间不插 Invoke-PendingCommands——最长等一次并行轮。
   $toProbe = [System.Collections.Generic.List[pscustomobject]]::new()
-  # 有服务停在 StartPending/StopPending 时也算「活跃」：否则慢启动期间整轮没有可探测项，
+  # 有服务停在 StartPending/StopPending/暂停中/继续中时也算「活跃」：否则过渡期间整轮没有可探测项，
   # 轮询退到 ProbeIdleMs(15s)，卡片上的「启动中」十几秒才收到一次状态，过渡计时也迟迟不刷新。
   $pendingSeen = $false
   foreach($n in $snap){
@@ -191,14 +188,32 @@ while(-not $sync.stop){
         tcpMs=[int]$info.tcpTimeoutMs; httpMs=[int]$info.httpTimeoutMs
       })
     } else {
-      if ($st -in @('启动中','停止中')) { $pendingSeen = $true }
+      if ($st -in @('启动中','停止中','暂停中','继续中')) { $pendingSeen = $true }
       $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$st;h=''})
     }
   }
 
   # 并行探测运行中服务：每个服务一个并行块，内部 TCP→HTTP 串行，服务间并行。
   # $using:http 传 HttpClient 引用（线程安全）；结果按输入顺序返回，统一入队。
-  if ($toProbe.Count -and -not $sync.stop) {
+  # 中间态快轮询期间（$pendingSeen）按 ProbeIntervalMs 限流 TCP+HTTP：1s 一轮会把
+  # 运行中服务的探测负载放大 4 倍，而服务卡在 StopPending 可能持续很久。
+  # **但状态不能跟着慢**：被限流跳过的那一轮，仍把 $toProbe 各服务按「运行中 + 上次
+  # 健康值」入队——批量 Get-Service 已经拿到新状态，这里只是把它送到 UI。
+  # 用 TickCount64 而不是墙钟：NTP 校正/休眠恢复让时钟回拨时，墙钟差为负会让探测
+  # 一直被判定「还没到点」。
+  $probeDue = -not $pendingSeen -or
+              ([Environment]::TickCount64 - $lastProbeAt -ge $probeIntervalMs)
+  if ($toProbe.Count -and -not $sync.stop -and -not $probeDue) {
+    foreach($p in $toProbe){
+      # 还没有过任何探测结果时不入队：h='' 会让运行中的圆点闪红
+      if ($lastHealth.ContainsKey($p.n)) {
+        $sync.queue.Enqueue([pscustomobject]@{n=$p.n;st='运行中';h=$lastHealth[$p.n]})
+      }
+    }
+  }
+  # 到点（或不在中间态）：真探一轮 TCP+HTTP，结果同时刷新 $lastHealth
+  if ($toProbe.Count -and -not $sync.stop -and $probeDue) {
+    $lastProbeAt = [Environment]::TickCount64
     $results = $toProbe | ForEach-Object -Parallel {
       $n=$_.n; $p=$_.port; $url=$_.url
       # 每项的生效超时：per-service 覆盖优先，缺省回落经 $using: 传入的全局值
@@ -233,7 +248,7 @@ while(-not $sync.stop){
       } finally { $cts.Dispose() }
       [pscustomobject]@{n=$n;h=$h}
     } -ThrottleLimit $probeThrottle
-    foreach($r in $results){ $sync.queue.Enqueue([pscustomobject]@{n=$r.n;st='运行中';h=$r.h}) }
+    foreach($r in $results){ $lastHealth[$r.n]=$r.h; $sync.queue.Enqueue([pscustomobject]@{n=$r.n;st='运行中';h=$r.h}) }
   }
 
   if ((Invoke-PendingCommands) -gt 0) { $executedCmd = $true }
@@ -242,10 +257,14 @@ while(-not $sync.stop){
   # 除「有运行中服务」外，「本轮执行过命令」也算活跃：刚下发的启动命令那一轮里服务通常还
   # 是 Stopped/StartPending（$toProbe 为空），若按空闲走 15s 长睡眠，卡片会停在「启动中」
   # 最长约 15 秒才收到第一份探测结果。有在途命令时用短间隔，让回执与状态尽快收敛。
-  # 第三种活跃情形：有服务停在 StartPending/StopPending（$pendingSeen）——慢启动期间整轮
+  # 第三种活跃情形：有服务停在过渡态（$pendingSeen）——慢启动期间整轮
   # 没有可探测项，若不特殊处理，卡片上的「启动中」要 15 秒才更新一次，过渡计时也迟迟不刷新。
   if (-not $sync.stop) {
-    $sleepMs = if ($toProbe.Count -or $executedCmd -or $pendingSeen) { $probeIntervalMs } else { $probeIdleMs }
+    # 有服务停在中间态 → 用更短的间隔，让「启动中 → 运行中」这类翻转在 1 秒内可见；
+    # 否则退到常规节奏。中间态时也照常探测运行中的服务（代价是本地回环 TCP/HTTP，可忽略）。
+    $sleepMs = if ($pendingSeen) { $probePendingMs }
+               elseif ($toProbe.Count -or $executedCmd) { $probeIntervalMs }
+               else { $probeIdleMs }
     [void]$sync.wake.WaitOne($sleepMs)
   }
 }

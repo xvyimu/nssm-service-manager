@@ -114,4 +114,55 @@ try {
   Write-Output "PASS: an executed command keeps the next sleep at ProbeIntervalMs (next cycle after ${elapsed}ms)."
 } finally { Close-FakePoll $worker }
 
+# ---- 中间态快轮询：有服务停在 StartPending/StopPending 时睡眠换成 ProbePendingMs ----
+# 没有这条，卡片上的「启动中」最多 4 秒才翻成「运行中」（用户要的是实时）。
+# probePendingMs=300 / 其余间隔 60s：量相邻两个探测周期的间隔，走错分支就要等 60s，5s 即红。
+$worker=Start-FakePoll 1 'StartPending' 0 @{ probePendingMs = 300; probeIntervalMs = 60000; probeIdleMs = 60000 }
+try {
+  Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Worker did not start.'
+  $p0=$worker.Sync.probeCount; $t0=[datetime]::UtcNow
+  $deadline=[datetime]::UtcNow.AddSeconds(5)
+  while ($worker.Sync.probeCount -le $p0 -and [datetime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 20 }
+  $elapsed=([datetime]::UtcNow-$t0).TotalMilliseconds
+  Assert ($worker.Sync.probeCount -gt $p0) 'No second cycle within 5s — pending state slept ProbeIntervalMs/ProbeIdleMs.'
+  Assert ($elapsed -lt 2500) "Pending-state sleep was ${elapsed}ms; expected ~ProbePendingMs=300ms."
+  Write-Output "PASS: StartPending keeps the next cycle at ProbePendingMs (${elapsed}ms)."
+} finally { Close-FakePoll $worker }
+
+# ---- 兄弟服务卡在中间态时，运行中服务的状态仍按 ProbePendingMs 送达 ----
+# 限流只该推迟 TCP+HTTP，不该推迟「运行中」这件事本身：批量 Get-Service 便宜得很，
+# 卡片若跟着探测一起慢 4 秒，就会停在旧状态、两个按钮都不可用。
+$worker=Start-FakePoll 2 'Stopped' 0 @{ probePendingMs = 200; probeIntervalMs = 60000; probeIdleMs = 60000 } 0 '' @{ Fake0 = 'Running'; Fake1 = 'StartPending' }
+try {
+  Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Worker did not start.'
+  Start-Sleep -Milliseconds 1500
+  $hits=0; $item=$null
+  while ($worker.Sync.queue.TryDequeue([ref]$item)) { if ($item.n -eq 'Fake0' -and $item.st -eq '运行中') { $hits++ } }
+  Assert ($hits -ge 3) "运行中状态 1.5s 内只送达 $hits 次——被健康探测限流连累了（应为 ProbePendingMs 级）。"
+  Write-Output "PASS: running state still delivered ${hits}x/1.5s while a sibling sits in transition (health probe throttled)."
+} finally { Close-FakePoll $worker }
+
+# ---- SCM 状态映射：全取值都有中文，未知值才回落「未知」----
+. (Join-Path $RepoRoot 'lib/svc-common.ps1')
+$statusMap=@{
+  Stopped='已停止'; StartPending='启动中'; Running='运行中'; StopPending='停止中'
+  Paused='已暂停'; PausePending='暂停中'; ContinuePending='继续中'
+}
+foreach ($k in $statusMap.Keys) {
+  $got=Convert-ServiceStatus $k
+  Assert ($got -eq $statusMap[$k]) "Convert-ServiceStatus '$k' -> '$got', expected '$($statusMap[$k])'."
+}
+Assert ((Convert-ServiceStatus 'Bogus') -eq '未知') 'Unknown SCM status must fall back to 未知.'
+
+# 退出码映射是用户可见文案（sc.exe 失败时状态栏就显示这个），单列一张真值表守住
+$codeMap=@{ 0=''; 1056='已在运行'; 1062='未启动'; 1060='服务未安装'; 1051='禁止启动（禁用或只读）'
+            1053='服务进程无法启动'; 1058='服务被禁用'; 1067='进程意外退出'; 1072='服务已被标记为删除'
+            5='拒绝访问（可能非管理员）' }
+foreach ($k in $codeMap.Keys) {
+  $got=Convert-ScExitCode $k
+  Assert ($got -eq $codeMap[$k]) "Convert-ScExitCode $k -> '$got', expected '$($codeMap[$k])'."
+}
+Assert ((Convert-ScExitCode 9999) -eq '错误码 9999') 'Unknown exit code must echo the number.'
+Write-Output 'PASS: Convert-ServiceStatus + Convert-ScExitCode full mapping tables; unknown values fall back.'
+
 Write-Output 'PASS: wakeup, priority between probes, FIFO, and idle shutdown; no real services or network used.'

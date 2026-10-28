@@ -12,6 +12,7 @@
   "LogDir":               "",
   "ProbeThrottleLimit":   8,
   "ProbeIntervalMs":      4000,
+  "ProbePendingMs":       1000,
   "ProbeIdleMs":          15000,
   "WaitStoppedPollMs":    300,
   "AppRotateBytes":       5242880,

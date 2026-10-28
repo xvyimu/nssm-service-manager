@@ -14,14 +14,16 @@
 
 # NSSM set 包装：失败抛错
 function nssm-set([string]$n,[string]$k,[Parameter(ValueFromRemainingArguments=$true)][object[]]$v){
-  $o=& $script:nssm set $n $k @v 2>&1
-  if($LASTEXITCODE -ne 0){ throw "NSSM set $k 失败($LASTEXITCODE): $($o -join ' ')" }
+  # 经 Invoke-ExternalQuiet：nssm.exe 也是控制台程序，GUI 进程直接 `& nssm` 会弹黑框
+  $r = Invoke-ExternalQuiet $script:nssm (@('set', $n, $k) + @($v))
+  if($r.exit -ne 0){ throw "NSSM set $k 失败($($r.exit)): $($r.out)" }
 }
 
 # GUI/CLI 共用 NSSM 注册与配置；输入校验、错误显示、保存和启动仍由调用方处理。
 function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$envPairs,[string]$account=''){
-  $nssmOut=& $script:nssm install $n $exe 2>&1
-  if($LASTEXITCODE -ne 0){ throw "NSSM install 失败($LASTEXITCODE): $($nssmOut -join ' ')" }
+  $inst = Invoke-ExternalQuiet $script:nssm @('install', $n, $exe)
+  $nssmOut = $inst.out
+  if($inst.exit -ne 0){ throw "NSSM install 失败($($inst.exit)): $nssmOut" }
   # install 的退出码同样不可信（实测：提权不足时打印 "Administrator access is needed"
   # 却返回 0）。若真没装上，后续 set 会全挂，报出的却是 set 的错——误导排查方向。
   # 以「服务是否真出现」复核一次，失败即抛，错误信息直指根因。
@@ -43,7 +45,7 @@ function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$
     # 回滚失败不该盖掉原始错误（$s 未配全才是根因）；但也不能静默——回滚没成功意味着
     # 残骸服务还留在服务数据库里，用户需要知道。
     try {
-      & $script:nssm remove $n confirm 2>&1 | Out-Null
+      [void](Invoke-ExternalQuiet $script:nssm @('remove', $n, 'confirm'))
       if(-not (Test-ServiceGone $n)){
         Write-Warning "回滚未生效：$n 可能仍残留在服务数据库，请手动 nssm remove $n confirm"
       }
@@ -52,17 +54,9 @@ function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$
   }
 }
 
-# 删除 NSSM 服务（stop → 等 Stopped → nssm remove confirm → 实证复核）。
-# 序列本体在 svc-common.ps1 的 Invoke-ServiceRemove——那里与 poll.ps1 的 runspace 共享
-# 同一份文本，避免「两处各写一份、只改一边」的漂移。本函数只负责把失败**抛成异常**，
-# 供 UI/CLI 侧调用方（它们用 try/catch）。
-#
-# 【当前无生产调用方，保留是有意的】GUI 删除走 Show-Remove → 命令队列 → runspace 的
-# Invoke-ServiceRemove（异步，不阻塞 UI）；CLI 只有 -Add，没有 -Remove。本函数是
-# Install-NssmService 的对称出口，也是「同步删除、失败抛异常」这条契约的唯一实现——
-# CLI 将来加 -Remove 时要用它。留着的另一个作用：它是 Invoke-ServiceRemove 的直接
-# 单测入口（tests/test-add-svc.ps1）。**下次死代码扫描请勿再删**，除非同时撤掉
-# README / docs/PROJECT.md 的模块 API 登记。
+# 删除 NSSM 服务（同步、失败抛异常）。序列本体在 svc-common.ps1 的 Invoke-ServiceRemove，
+# 与 runspace 共用一份文本。**无生产调用方是有意保留**：它是那条序列的单测入口
+# （tests/test-add-svc.ps1），也是将来 CLI 加 -Remove 的出口——死代码扫描请勿删。
 function Remove-NssmService([string]$n){
   $r = Invoke-ServiceRemove $n $script:nssm
   if(-not $r.ok){

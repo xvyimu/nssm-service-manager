@@ -1,25 +1,12 @@
 # lib/util.ps1 — 配置持久化（services.json）· UI 工具 · 日志轮转保留 · 安全检查
 #
-# 【本模块的作用域约定】本文件的函数体直接读调用方作用域里的 $cfg 与 $logDir
-# （dot-source 时由 service-manager-gui.ps1 / 各测试脚本赋值），不是模块级变量。
-# 因此：(1) 调用方必须在 dot-source 之后赋值，否则函数读到 $null；
-#       (2) 本模块的函数**不得**把参数命名为 $cfg / $logDir 等约定变量——PowerShell
-#           变量名大小写不敏感，参数会遮蔽同名外层变量，回落逻辑会静默失效。
-#           历史事故：Get-LogFiles 曾把参数叫 $LogDir，遮蔽了外层 $logDir，
-#           GUI 日志下拉框自上线起一直为空（d442fcf 修复）。
-#
-# 2026-10-05 拆分：Get-LogFiles / Show-Log 移去 lib/logview.ps1，nssm-set 移去
-# lib/nssm.ps1。util.ps1 现在只有——配置持久化（Read/Load/Save）、命令纪元与入队
-# （Send-ServiceCommand）、打开面板（Open-PanelUrl）、日志轮转保留（Remove-RotatedLogs）、
-# 安全检查（Resolve-ServiceExeDir / Show-SecurityCheck）。
+# 【作用域约定】函数体直接读调用方作用域里的 $cfg / $logDir（dot-source 后由调用方赋值），
+# 不是模块级变量。故：参数**不得**叫 $cfg / $logDir——变量名大小写不敏感，参数会遮蔽外层
+# 变量、回落逻辑静默失效（Get-LogFiles 曾因此让日志下拉框长期为空）。
 
 # ---- 配置层（services.json 是 SSOT，services.example.json 是兜底）----
 # 兜底直接读仓里的示例清单，不在源码里再抄一份服务名（避免双源漂移）。
-# 【不要在此初始化 $script:configWarning】本文件在 config.ps1 **之后**加载（主脚本第 34 行
-# vs 模块加载区），config.json 损坏时 config.ps1 已把原因写进该变量；这里再赋 $null 会把它
-# 清空，主脚本末尾那句坏配置弹框（搜 configWarning 即可定位）就永远不触发。
-# 该赋值此前存在并造成过这个静默失效，2026-10-08 删除。Load-Svc 的 catch 是赋值不是读取，
-# 且用 `if (-not $script:configWarning)` 守卫，无需预设。
+# 【不要在此初始化 $script:configWarning】config.ps1 可能已写入原因，这里赋 $null 会清掉它。
 
 function Read-SvcFile([string]$path){
   # 可选字段写错的收集箱（Load-Svc 读完并入 configNotices 弹给用户）。
@@ -167,12 +154,8 @@ function Set-UiErrorStatus([string]$message){
   Set-StatusMessage "操作出错：$m"
 }
 
-# Dispatcher 未处理异常的**兜底体**（注册在 service-manager-gui.ps1 的 handler 里）。
-# 抽成函数是为让单测能真触发一次 DispatcherUnhandledException 验证「窗口不消失」——
-# DispatcherUnhandledExceptionEventArgs 是私有构造，没法直接 new，只能注册到真 dispatcher
-# 上真抛真接；而注册行留在主脚本里，测试够不着，故把函数体抽到这儿（同 Update-StatusTick）。
-# 每步各自包住：本函数内若再抛，会直接走进程终止路径（那时已无兜底）。
-# 提示优先于日志：日志写入依赖 $logDir/配置，早期或异常场景下自身可能失败，不该连累它。
+# Dispatcher 未处理异常的兜底体（注册行在主脚本）。抽成函数是为了能单测——
+# 事件参数是私有构造，只能真抛真接。每步各自包住：本函数内再抛会直接终止进程。
 function Invoke-DispatcherErrorFallback($e){
   try { Set-UiErrorStatus ([string]$e.Exception.Message) } catch {}
   try { Write-CrashLog "DispatcherUnhandled: $($e.Exception.GetType().FullName): $($e.Exception.Message)" } catch {}
@@ -182,7 +165,7 @@ function Invoke-DispatcherErrorFallback($e){
 
 # DispatcherTimer 每帧：排空结果队列（探测结果 / 命令回执）→ 排空消息队列写状态栏
 # → 空闲 4 秒后自动刷新。抽成函数而不内联在 Add_Tick 里，是为了能直接单测：
-# 原实现让 test-remove-async 只能「复刻」这段逻辑，改这里而漏改测试就是静默漂移。
+# 内联在 Add_Tick 里时测试只能「复刻」这段逻辑，改这里而漏改测试就是静默漂移。
 function Update-StatusTick {
   $item = $null
   while ($script:queue.TryDequeue([ref]$item)) {
@@ -257,15 +240,9 @@ function Test-GuiInstanceRunning([string]$mutexName){
   } finally { $m.Dispose() }
 }
 
-# 某个服务的日志目录：读注册表里 nssm 写的 AppStdout，取它的父目录。
-# 为什么不能直接用 $logDir：服务未必是本工具注册的。手工 `nssm install` 的服务
-# AppStdout 指向别处（本机 ComfyUI 就指向 D:\AI\...\logs），那些日志既不会出现在
-# 日志窗口里，也永远进不了下面的保留策略——一天就堆了 37 个轮转档。
-# 读不到（服务未注册 / 无 AppStdout / 无权限 / 名字不合法）时回落 $logDir。
-# **名字必须校验**：服务名来自 services.json，而 Read-SvcFile 只校验端口、不校验名字；
-# 注册表 provider 又会归一化 `.`/`..` ——实测 `Get-SvcLogDir '..\..\CurrentControlSet\Services\ComfyUI'`
-# 真的读到了 ComfyUI 的目录。不校验的话，一个手改出来的坏名字能让保留策略去清
-# 别的服务的日志目录。字符集与 Test-SvcInput 保持一致。
+# 某服务的日志目录：读注册表 AppStdout 的父目录，读不到回落 $logDir。
+# 手工 nssm 注册的服务（如 ComfyUI）日志在别处，用 $logDir 会看不到也清不到。
+# **名字必须校验**：注册表 provider 会归一化 `..`，坏名字能读到别的服务的目录。
 function Get-SvcLogDir([string]$n){
   if (-not $n -or $n -notmatch '^[A-Za-z0-9_.-]+$' -or $n -eq '.' -or $n -eq '..') { return $logDir }
   try {
@@ -276,19 +253,10 @@ function Get-SvcLogDir([string]$n){
   $logDir
 }
 
-# ---- 日志轮转档保留策略：NSSM 只改名不删档，日志目录会无界增长 ----
-# 只碰轮转档（BaseName 匹配 \.(out|err)-\d{8}，NSSM 实际命名带 T 与毫秒，如
-# NewAPI.err-20261001T154751.222.log），永不动当前档（NewAPI.out.log / .err.log）。
-# 策略：**按目录各算各的**——调用方对「$logDir + 每个服务实际的 AppStdout 目录」
-# 逐个调用本函数，每个目录保留自己最近 KeepCount 份，其余若早于 KeepDays 天则删除。
-# （2026-10-28 改：此前只有 $logDir 一个目录，是「跨服务全局前 N 份」；引入
-# Get-SvcLogDir 后各服务可能有自己的目录，全局口径不再成立。共用 $logDir 的服务行为不变。）
-# 两个条件是「且」——删除须同时满足「不在该目录前 KeepCount 份」且「早于 KeepDays 天」。
-# 故 KeepDays 窗口内的轮转档一份都不会删（高频轮转的服务在这段时间仍会堆积），
-# 保留份数上限只在该时间之后才起作用。实测（2026-10-05，两个服务各 6 份、均 1 天前）：
-# 删除 0 份；再加 5 份 20 天前的，删掉的是那 5 份。
-# 返回被删文件路径列表。
-# 注：参数名不能用 $LogDir（PS 变量名大小写不敏感，会遮蔽外层 $logDir，与 Get-LogFiles 同坑）。
+# ---- 轮转档保留：NSSM 只改名不删档，只碰轮转档，永不动当前档 ----
+# 按目录各算各的（调用方对 $logDir 与每个服务的 AppStdout 目录逐个调用）。
+# 删除须同时满足「不在该目录前 KeepCount 份」且「早于 KeepDays 天」——
+# 故天数窗口内的档一份不删。参数名不能用 $LogDir（大小写不敏感，会遮蔽外层变量）。
 function Remove-RotatedLogs([string]$LogPath,[int]$KeepCount=10,[int]$KeepDays=14){
   if (-not $LogPath) { $LogPath = $logDir }
   if (-not $LogPath -or -not (Test-Path -LiteralPath $LogPath)) { return @() }

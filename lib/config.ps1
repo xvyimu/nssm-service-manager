@@ -8,30 +8,13 @@ $script:config = [ordered]@{
   HttpTimeoutMs       = 3000     # HTTP 探测超时（poll.ps1 共享 HttpClient.Timeout，本地面板冷启动宽限）
   CrashLogMaxBytes    = 524288   # gui-crash.log 轮转阈值（512 KiB，超则挪成 .1）
   ToggleCooldownMs    = 8000     # 双击启停冷却（card.ps1 Invoke-CardToggle）
-  ToggleTimeoutMs     = 45000    # 卡片过渡态超时逃生（card.ps1 Test-TransitionTimedOut）——
-                                 # 命令回执丢失（后台异常退出/命令未入队）时，过渡态不能永久卡住：
-                                 # 超时后按到达的探测值收敛并解封按钮。取值须大于正常路径的最长耗时，
-                                 # 否则会在正常失败流程里抢先触发。
-                                 # 已实测：删除路径 stop + Wait-Stopped ≤ 6s（WaitStoppedTimeoutMs）。
-                                 # 已实测：SCM 的 ServicesPipeTimeout 本机注册表未设 = 内置默认 **30000ms**
-                                 # （HKLM\SYSTEM\CurrentControlSet\Control）。原默认值 30000 与它恰好
-                                 # 相等——启动失败回落 sc.exe start 走 SCM 同步管道时，管道压满 30s
-                                 # 与逃生阈值同一时刻触发，卡片会先被探测值收敛、再被迟到回执改一次，
-                                 # 表现为状态抖动。故抬到 45000（+15s 余量），让回执先到。
-                                 # **2026-10-28 已真机实测**（tests/probe-1053-timing.ps1，管理员）：
-                                 # 注册一个 BinaryPathName 指向「存在但非服务程序」的 exe，SCM 会拉起进程、
-                                 # 等它连 SCP，ServicesPipeTimeout 到点返回 1053——
-                                 #   ServiceController.Start()  30032 ms（抛异常）
-                                 #   sc.exe start              30034 ms（exit 1053）
-                                 # 即该路径确实是 ~30s。45000 留 15s 余量，够用，不需要再调。
-                                 # 注意：**不能用「exe 路径不存在」造这个场景**——那条路 SCM 立刻返回 2
-                                 # （文件找不到），15~18ms 就结束，压根走不到管道等待（本探针 2026-10-28 前
-                                 # 就是那么写的，所以一直没产出过有意义的数字）。
-  TransitionHardCapFactor = 10   # 过渡计时刷新的硬上限倍数（card.ps1 Test-TransitionTimedOut）——
-                                 # 探测报同一过渡态时 TransitionAt 会刷新（慢启动不误判），但累计时长
-                                 # 超过 ToggleTimeoutMs × 本倍数就强制逃生。没有它，永久卡在
-                                 # StartPending/StopPending 的服务会把逃生口自己刷掉。
-                                 # 默认 45s × 10 = 7.5 分钟；调大只会让「卡死」被放出来得更晚。
+  ToggleTimeoutMs     = 45000    # 卡片过渡态超时逃生（card.ps1 Test-TransitionTimedOut）：回执丢失时
+                                 # 按到达的探测值收敛并解封按钮，防永久卡住。启动失败回落路径已实测
+                                 # 30.0s（ServicesPipeTimeout），故 45000 留 15s 余量。
+                                 # 测法见 tests/probe-1053-timing.ps1；不能用「exe 路径不存在」造场景
+                                 # （那条路 SCM 立刻返回 2，15ms 就结束，走不到管道等待）。
+  TransitionHardCapFactor = 10   # 过渡计时刷新的硬上限倍数：慢启动时计时会刷新，但累计超过
+                                 # ToggleTimeoutMs × 本值就强制逃生，防止服务卡死时逃生口被刷掉。
   WaitStoppedTimeoutMs = 6000    # 重启/删除前轮询 Stopped 的上限（add-svc.ps1 / poll.ps1 Wait-Stopped）
   LogKeepCount        = 10       # 轮转日志保留份数（util.ps1 Remove-RotatedLogs）——
                                  # 口径是**按日志目录**各留前 N 份：共用 $logDir 的服务算一个目录，
@@ -43,6 +26,9 @@ $script:config = [ordered]@{
   # ---- 轮询与探测节奏（原硬编码在 poll.ps1 / svc-common.ps1）----
   ProbeThrottleLimit  = 8        # 并行探测的 ThrottleLimit（poll.ps1 ForEach-Object -Parallel）
   ProbeIntervalMs     = 4000     # 有运行中服务时的轮询间隔（poll.ps1 循环尾 WaitOne）
+  ProbePendingMs      = 1000     # 有服务处于 StartPending/StopPending 时的轮询间隔——
+                                 # 查状态是廉价查询，没必要跟着 4s 的健康探测节奏，
+                                 # 否则「启动中」最多要 4 秒才翻成「运行中」
   ProbeIdleMs         = 15000    # 全停止时的轮询间隔——省下空转的唤醒与整轮扫描
   WaitStoppedPollMs   = 300      # Wait-Stopped 轮询步长（svc-common.ps1）
   # ---- NSSM 注册参数（原硬编码在 Get-NssmSetSpec）----
