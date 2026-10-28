@@ -194,6 +194,6 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 
 ## 测试
 
-`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 25 项回归测试。详见 README「测试与截图」节。
+`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 26 项回归测试。详见 README「测试与截图」节。
 
 CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）。
