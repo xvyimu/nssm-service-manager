@@ -53,16 +53,16 @@ function Add-SvcFromCli([string]$spec){
     Write-Host "$n 已在 NSSM 注册，请手动将其加入 services.json 或用 -Add 重新注册后删除旧服务。"
     exit 1
   }
-  & (Get-ScExe) start $n 2>&1 | Out-Null
-  if ($LASTEXITCODE -ne 0) {
+  $startCode = Invoke-ScQuiet @('start', $n)
+  if ($startCode -ne 0) {
     # sc.exe start 失败返回非零（实测：5 拒绝访问 / 1051 被禁用 / 1053 进程起不来）。
     # 注册本身是成功的，故不回滚、也不 exit 1——但绝不能报「已启动」：这个 CLI 是给
     # agent 用的，谎报成功会让调用方以为服务在跑。如实说清，并指出去哪儿看真实状态。
     # 文案经 Convert-ScExitCode 映射（与 GUI 同一份，定义在 svc-common.ps1，本文件末尾
     # 点源；函数体内符号是调用时解析，故此处可用）——裸退出码要让 agent 自己查表才知道
     # 能不能重试。
-    $reason = Convert-ScExitCode $LASTEXITCODE
-    Write-Host "$n 已添加，但启动失败（$LASTEXITCODE $reason）——服务已注册，可在 GUI 右键「启动」查看原因。"
+    $reason = Convert-ScExitCode $startCode
+    Write-Host "$n 已添加，但启动失败（$startCode $reason）——服务已注册，可在 GUI 右键「启动」查看原因。"
   } else {
     Write-Host "$n 已添加并启动 (port=$p url=$url)"
   }

@@ -20,6 +20,32 @@ function Get-ScExe {
   'sc.exe'
 }
 
+# 跑 sc.exe 但**不弹控制台窗口**，返回退出码（stdout/stderr 丢弃，调用方只看退出码）。
+# 为什么需要：本工具是 GUI 进程，`& sc.exe` 会让 Windows 给这个控制台子进程开一个窗口——
+# 实测「点启动约 30 秒后冒出黑框」就是 Start() 超时回落 sc.exe start 的那一刻。
+# 测试夹具把命令注入成**函数名**（$sync.scExe / $script:ScExe）：那种情况直接调用，
+# 既保留测试缝，也不会真去启动进程。
+function Invoke-ScQuiet([string[]]$argv){
+  $exe = Get-ScExe
+  if (Get-Command -Name $exe -CommandType Function -EA SilentlyContinue) {
+    & $exe @argv 2>&1 | Out-Null
+    return $LASTEXITCODE
+  }
+  $psi = [Diagnostics.ProcessStartInfo]::new()
+  $psi.FileName = $exe
+  foreach ($a in $argv) { $psi.ArgumentList.Add([string]$a) }
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $p = [Diagnostics.Process]::Start($psi)
+  # 先读完再等退出：sc.exe 输出很小，不会把管道填满（大输出才需要异步读）
+  [void]$p.StandardOutput.ReadToEnd()
+  [void]$p.StandardError.ReadToEnd()
+  $p.WaitForExit()
+  $p.ExitCode
+}
+
 # 轮询服务到 Stopped，用于重启/删除前等端口释放。
 # 超时取值优先级：显式 -timeoutMs > $sync 注入值（UI 线程即 $script:sync.waitStoppedTimeoutMs，
 # runspace 由 poll.ps1 从同一键读出并写回）> $script:config.WaitStoppedTimeoutMs > 6000。
@@ -88,7 +114,7 @@ function Convert-ServiceStatus([string]$s){
 # runspace 要入 msg 队列，故返回结果对象由调用方决定怎么报。
 # $nssmExe 必须传参——runspace 里 $script:nssm 不可见（NSSM 路径经 $sync.nssm 从 UI 传入）。
 function Invoke-ServiceRemove([string]$n,[string]$nssmExe){
-  & (Get-ScExe) stop $n 2>&1 | Out-Null
+  [void](Invoke-ScQuiet @('stop', $n))
   # stop 失败不阻断（服务可能已停），等 Stopped 再删，避免删一个还在跑的服务
   [void](Wait-Stopped $n)
   $o = & $nssmExe remove $n confirm 2>&1
@@ -113,8 +139,7 @@ function Invoke-ServiceRemove([string]$n,[string]$nssmExe){
 # 0 = 服务存在；1060 = 不存在；1072 = 已标记删除（句柄未全关，内核里已在消失路径上）。
 # 非管理员也能 query（实测）。
 function Get-ServiceQueryCode([string]$n){
-  & (Get-ScExe) query $n 2>&1 | Out-Null
-  $LASTEXITCODE
+  Invoke-ScQuiet @('query', $n)
 }
 
 # 服务是否已从 SCM 消失——删除操作的**最终判据**，不能只信 nssm remove 的退出码。
