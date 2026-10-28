@@ -8,7 +8,10 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
 . (Join-Path $RepoRoot 'tests/test-helpers.ps1')
 function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
 
-$mutexName = 'Local\service-manager-gui'
+# 用**探针名**而不是真实的 'Local\service-manager-gui'：本测试验的是「同名 mutex 被占时
+# 第二个实例静默退出」这套逻辑，名字本身不参与判定。用真实名的话，只要用户开着 GUI
+# （日常状态），这里的「全新 mutex 应可获取」就必然失败——测试变成「GUI 没开时才绿」。
+$mutexName = "Local\service-manager-test-$PID-$([guid]::NewGuid().ToString('N'))"
 
 # 在独立 runspace（独立线程）里跑一段脚本，返回其输出。
 function Invoke-InRunspace([scriptblock]$sb, [hashtable]$vars = @{}) {
@@ -28,8 +31,8 @@ try {
   Assert ($holder.SafeWaitHandle.DangerousGetHandle() -ne [IntPtr]::Zero) 'Holder mutex not created.'
 
   # 第二个实例在独立线程里尝试获取
-  $result = Invoke-InRunspace {
-    $second = [Threading.Mutex]::OpenExisting('Local\service-manager-gui')
+  $result = Invoke-InRunspace -vars @{ mutexName = $mutexName } -sb {
+    $second = [Threading.Mutex]::OpenExisting($mutexName)
     try { $got = $second.WaitOne(0) } finally { $second.Dispose() }
     $got
   }
@@ -45,8 +48,8 @@ try {
 }
 
 # ---- 2. 持有者释放后，第二个线程应能获取（夹具自检）----
-$result = Invoke-InRunspace {
-  $m = [Threading.Mutex]::OpenExisting('Local\service-manager-gui')
+$result = Invoke-InRunspace -vars @{ mutexName = $mutexName } -sb {
+  $m = [Threading.Mutex]::OpenExisting($mutexName)
   try { $got = $m.WaitOne(0) } finally { $m.Dispose() }
   $got
 }
@@ -72,9 +75,9 @@ $ghost = [Threading.Mutex]::new($true, $mutexName)
 $ghost.Dispose()  # 不 ReleaseMutex，模拟进程被杀
 Start-Sleep -Milliseconds 100  # 给 OS 时间回收
 try {
-  $result = Invoke-InRunspace {
+  $result = Invoke-InRunspace -vars @{ mutexName = $mutexName } -sb {
     try {
-      $next = [Threading.Mutex]::OpenExisting('Local\service-manager-gui')
+      $next = [Threading.Mutex]::OpenExisting($mutexName)
     } catch { return 'gone' }
       try {
         $owned = $false
