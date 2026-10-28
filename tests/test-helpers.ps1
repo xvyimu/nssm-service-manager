@@ -33,6 +33,9 @@ function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$d
     executed     = [Collections.Concurrent.ConcurrentQueue[object]]::new()
     executedReady = [Threading.AutoResetEvent]::new($false)
     nssm = 'Invoke-TestNssm'
+    # sc.exe 的解析优先读 $sync.scExe（见 svc-common.ps1 的 Get-ScExe）——夹具必须注入
+    # 替身名，否则 runspace 会拿全路径去调真 sc.exe，测试就碰到了真服务数据库。
+    scExe = 'sc.exe'
     scExitCode = $scExitCode
     # serviceGone 由调用方在 BeginInvoke 后按需置位：$true = query 返回 1060（服务已消失）,
     # 用于让 Remove 路径的实证复核（Test-ServiceGone）认为删除生效。默认未设 = 服务存在。

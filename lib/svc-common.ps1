@@ -4,6 +4,22 @@
 # 靠「SYNC: 两处同改」注释人工同步）。poll.ps1 在构造 runspace 脚本时把本文件内容前置进
 # 脚本字符串，add-svc.ps1 直接点源本文件——两边引用的是同一份文本。
 
+# sc.exe 的可执行路径：**必须解析，不能裸调**。
+# 起因（2026-10-28 实测）：本机 `C:\Windows\System32` 不在机器/用户 PATH 里，
+# `Get-Command sc.exe` 为空。裸调会抛 CommandNotFoundException，而 `$LASTEXITCODE`
+# 保留的是**上一条**命令的码——下面几个判据（Test-ServiceGone / Test-ServicePresent /
+# Invoke-ServiceRemove / Invoke-Sc）都是从退出码读结论的，拿到假码就会把「删失败」
+# 判成成功，正是这些复核注释反复要防的事。
+# 每次调用时才解析，便于注入：runspace 用 $sync.scExe、UI 侧用 $script:ScExe。
+# 盘上找不到就退回裸名——让「找不到」如实报错，而不是悄悄用一个不存在的路径。
+function Get-ScExe {
+  if ($sync -and $sync.scExe) { return [string]$sync.scExe }
+  if ($script:ScExe) { return [string]$script:ScExe }
+  $p = Join-Path $env:SystemRoot 'System32\sc.exe'
+  if (Test-Path -LiteralPath $p) { return $p }
+  'sc.exe'
+}
+
 # 轮询服务到 Stopped，用于重启/删除前等端口释放。
 # 超时取值优先级：显式 -timeoutMs > $sync 注入值（UI 线程即 $script:sync.waitStoppedTimeoutMs，
 # runspace 由 poll.ps1 从同一键读出并写回）> $script:config.WaitStoppedTimeoutMs > 6000。
@@ -72,7 +88,7 @@ function Convert-ServiceStatus([string]$s){
 # runspace 要入 msg 队列，故返回结果对象由调用方决定怎么报。
 # $nssmExe 必须传参——runspace 里 $script:nssm 不可见（NSSM 路径经 $sync.nssm 从 UI 传入）。
 function Invoke-ServiceRemove([string]$n,[string]$nssmExe){
-  sc.exe stop $n 2>&1 | Out-Null
+  & (Get-ScExe) stop $n 2>&1 | Out-Null
   # stop 失败不阻断（服务可能已停），等 Stopped 再删，避免删一个还在跑的服务
   [void](Wait-Stopped $n)
   $o = & $nssmExe remove $n confirm 2>&1
@@ -97,7 +113,7 @@ function Invoke-ServiceRemove([string]$n,[string]$nssmExe){
 # 0 = 服务存在；1060 = 不存在；1072 = 已标记删除（句柄未全关，内核里已在消失路径上）。
 # 非管理员也能 query（实测）。
 function Get-ServiceQueryCode([string]$n){
-  sc.exe query $n 2>&1 | Out-Null
+  & (Get-ScExe) query $n 2>&1 | Out-Null
   $LASTEXITCODE
 }
 

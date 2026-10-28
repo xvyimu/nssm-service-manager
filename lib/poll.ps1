@@ -39,7 +39,7 @@ $sync.probeThrottleLimit = $probeThrottle
 # 故此处仍可用）；移出去是因为 UI 线程与 CLI 也要同一份映射，而 here-string 里的函数
 # 不进 UI 作用域。
 function Invoke-Sc([string]$verb,[string]$n,[string]$fail){
-  sc.exe $verb $n 2>&1 | Out-Null
+  & (Get-ScExe) $verb $n 2>&1 | Out-Null
   if($LASTEXITCODE -ne 0){
     $reason = Convert-ScExitCode $LASTEXITCODE
     $sync.msg.Enqueue("$n $fail($LASTEXITCODE $reason)")

@@ -7,7 +7,7 @@ $ErrorActionPreference='Stop'
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Xaml
 foreach ($module in 'theme','util','card','xaml') { . (Join-Path $RepoRoot "lib/$module.ps1") }
 . (Join-Path $RepoRoot 'tests/test-helpers.ps1')
-$script:sync=@{wake=[Threading.AutoResetEvent]::new($false)}
+$script:sync=@{wake=[Threading.AutoResetEvent]::new($false); scExe='sc.exe'}
 $script:svc=[ordered]@{}
 function Stop-Background {}
 function Assert($condition,[string]$message) { if (-not $condition) { throw $message } }
