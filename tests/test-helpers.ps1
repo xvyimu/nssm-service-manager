@@ -18,7 +18,9 @@ function Get-VisualNodes($node) {
 #   返回该状态（如 StartPending）。真实 ServiceController 构造在 runspace 里无法替身化，
 #   中间态只能从这里进；未设时 poll 走真实 ServiceController。
 # 返回 @{Sync;Runspace;PowerShell;Handle}。Close-FakePoll 清理。
-function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$delayMs = 0, [hashtable]$extraSyncKeys = $null, [int]$scExitCode = 0, [string]$controllerStatus = '') {
+# $statusMap=按服务名指定状态（如 @{Fake0='Running';Fake1='StartPending'}），未列出的用 $serviceStatus。
+#   混合状态用来验「有服务卡在中间态时，其它运行中服务的状态仍要按时送达」。
+function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$delayMs = 0, [hashtable]$extraSyncKeys = $null, [int]$scExitCode = 0, [string]$controllerStatus = '', [hashtable]$statusMap = $null) {
   $services = [ordered]@{}
   for ($i = 0; $i -lt $count; $i++) { $services["Fake$i"] = @{ port = 10000 + $i; url = "http://127.0.0.1:10000/fake$i" } }
   $shared = [hashtable]::Synchronized(@{
@@ -41,6 +43,10 @@ function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$d
   })
   if ($controllerStatus) { $shared.newSc = 'New-TestSc' }
   if ($extraSyncKeys) { foreach ($k in $extraSyncKeys.Keys) { $shared[$k] = $extraSyncKeys[$k] } }
+  # 状态表字面量：注入 mock 的哈希表文本（键名与 Start-FakePoll 生成的服务名一致）
+  $statusLiteral = if ($statusMap) {
+    ($statusMap.GetEnumerator() | ForEach-Object { "'$($_.Key)' = '$($_.Value)'" }) -join '; '
+  } else { '' }
   $rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState = 'STA'; $rs.Open()
   $rs.SessionStateProxy.SetVariable('sync', $shared)
   $mocks = @"
@@ -49,7 +55,11 @@ function Get-Service {
   `$sync.probeCount++
   [void]`$sync.probeStarted.Set()
   if (`$sync.delayMs) { Start-Sleep -Milliseconds `$sync.delayMs }
-  foreach (`$n in `$Name) { [pscustomobject]@{ Name=`$n; Status='$serviceStatus' } }
+  `$map = @{ $statusLiteral }
+  foreach (`$n in `$Name) {
+    `$st = if (`$map.ContainsKey(`$n)) { `$map[`$n] } else { '$serviceStatus' }
+    [pscustomobject]@{ Name=`$n; Status=`$st }
+  }
 }
 function Invoke-TestSc {
   `$sync.executed.Enqueue([pscustomobject]@{action=`$args[0];name=`$args[1];probes=`$sync.probeCount})
