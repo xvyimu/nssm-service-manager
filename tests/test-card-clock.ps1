@@ -33,14 +33,16 @@ try {
   $c.StateSince = [datetime]::Now.AddSeconds(-90)
   Update-CardClock $c ([datetime]::Now)
   Assert ($c.LblUp.Text -like '*已运行 1分30秒*') "运行中应显示已运行时长，got [$($c.LblUp.Text)]"
-  Assert ($c.LblUp.Text -like '服务响应正常*') '健康正文不能被时钟吃掉'
+  # 精确比对而不是 -like '服务响应正常*'：后者抓不到「正文被重复拼接」
+  Assert ($c.LblUp.Text -eq '服务响应正常 · 已运行 1分30秒') "健康正文应原样保留且只出现一次，got [$($c.LblUp.Text)]"
 
   # 启动中：显示已用时（用 TransitionAt 起算）。先落到「已停止」——运行中时点按钮是「停止」。
   Update-CardData 'SvcClock' '已停止' ''
   $c.LastToggle = [datetime]::MinValue
   Invoke-CardToggle $c
   Assert ($c.ST -eq '启动中') "应进入启动过渡态，got $($c.ST)"
-  $c.TransitionAt = [datetime]::Now.AddSeconds(-12)
+  # 显示用的是 StateSince（不是 TransitionAt——后者会被探测刷新）
+  $c.StateSince = [datetime]::Now.AddSeconds(-12)
   Update-CardClock $c ([datetime]::Now)
   Assert ($c.LblUp.Text -like '*已 12s*') "启动中应显示已用时长，got [$($c.LblUp.Text)]"
 
@@ -52,7 +54,22 @@ try {
   Update-CardClock $c ([datetime]::Now)
   Assert ($c.LblUp.Text -like '*已停 30s*') "已停止应显示已停时长，got [$($c.LblUp.Text)]"
 
+  # 探测驱动的过渡态：**必须走 Update-CardData 的真实路径**。手工设 TransitionAt 的写法
+  # 会绕开「探测刷新 TransitionAt」这一步，而慢启动正是每 4 秒被刷新一次的场景——
+  # 拿 TransitionAt 当时长起算点的话，这里会永远显示「已 0s」。
+  Update-CardData 'SvcClock' '启动中' ''
+  Assert ($c.ST -eq '启动中') "应进入探测驱动的启动中，got $($c.ST)"
+  $c.StateSince = [datetime]::Now.AddSeconds(-20)
+  Update-CardData 'SvcClock' '启动中' ''      # 同一状态再来一轮（真实探测每 4 秒一次）
+  Update-CardClock $c ([datetime]::Now)
+  $m = [regex]::Match($c.LblUp.Text, '已 (\d+)s')
+  Assert ($m.Success) "慢启动时该显示已用时长，got [$($c.LblUp.Text)]"
+  Assert ([int]$m.Groups[1].Value -ge 19) "同态探测后时长不该被清零，got [$($c.LblUp.Text)]"
+
   # 时长只在状态**变化**时重记：同一状态连续到达不该把计时清零
+  # （先真的落到「已停止」——上一步卡片还停在启动中，直接喂已停止属于状态变化，重记是对的）
+  Update-CardData 'SvcClock' '已停止' ''
+  Assert ($c.ST -eq '已停止') "应已落到已停止，got $($c.ST)"
   $c.StateSince = [datetime]::Now.AddSeconds(-45)
   Update-CardData 'SvcClock' '已停止' ''
   Assert ($c.StateSince -lt [datetime]::Now.AddSeconds(-40)) '同一状态重复到达时 StateSince 不该被重置'
