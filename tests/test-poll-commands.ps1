@@ -71,6 +71,23 @@ try {
   Write-Output 'PASS: StartPending treated as already-starting (no sc.exe, no failure message, ok=true).'
 } finally { Close-FakePoll $worker }
 
+# ---- 慢启动：Start() 抛异常但服务其实在 StartPending → 按成功处理，不回落 sc.exe ----
+# 起因（实测）：ComfyUI 冷启动 90s，ServiceController.Start() 会等满 ServicesPipeTimeout(30s)
+# 再抛异常，工具回落到 `sc.exe start` —— GUI 进程拉控制台子进程会弹一个黑框，
+# 用户看到的就是「点启动约 30 秒后冒出一个黑窗口」。
+$worker=Start-FakePoll 1 'StartPending' 0 $null 0 'Stopped'   # 状态报 StartPending，控制器会抛
+try {
+  Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Worker did not start.'
+  $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='start';e=21})
+  [void]$worker.Sync.wake.Set()
+  $ack = Wait-FakePollAck $worker
+  Assert ($null -ne $ack) '慢启动的 start 命令没有回执。'
+  Assert ($ack.ok -eq $true) "服务在 StartPending 时应按启动成功处理，got ok=$($ack.ok)"
+  $calls=@($worker.Sync.executed | ForEach-Object { $_.action })
+  Assert ($calls -notcontains 'start') "慢启动不该回落 sc.exe start（那会弹控制台窗口）：$($calls -join ',')"
+  Write-Output 'PASS: slow start (StartPending after Start() throws) treated as started, no sc.exe fallback.'
+} finally { Close-FakePoll $worker }
+
 # ---- 全停止但刚下发命令：那一轮之后的睡眠必须用短间隔，不能走空闲长睡眠 ----
 # 修前：$sleepMs 只按「本轮有无运行中服务」判，1 个 Stopped 服务时 $toProbe 为空，
 # 走 ProbeIdleMs——卡片停在「启动中」最长约 15 秒才收到第一份探测结果。

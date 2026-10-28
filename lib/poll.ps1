@@ -39,18 +39,20 @@ $sync.probeThrottleLimit = $probeThrottle
 # 故此处仍可用）；移出去是因为 UI 线程与 CLI 也要同一份映射，而 here-string 里的函数
 # 不进 UI 作用域。
 function Invoke-Sc([string]$verb,[string]$n,[string]$fail){
-  & (Get-ScExe) $verb $n 2>&1 | Out-Null
-  if($LASTEXITCODE -ne 0){
-    $reason = Convert-ScExitCode $LASTEXITCODE
-    $sync.msg.Enqueue("$n $fail($LASTEXITCODE $reason)")
+  # 经 Invoke-ScQuiet：GUI 进程里直接 `& sc.exe` 会给子进程开一个控制台窗口
+  $code = Invoke-ScQuiet @($verb, $n)
+  if($code -ne 0){
+    $reason = Convert-ScExitCode $code
+    $sync.msg.Enqueue("$n $fail($code $reason)")
     return $false
   }
   $true
 }
 
-# ServiceController.Start() 是异步的（不等 RUNNING）；sc.exe start 走 SCM 同步管道（默认 30s 超时），
-# 慢启动服务会占死后台命令队列与卡片按钮（按钮要等 ack 才解封）。改用 ServiceController 让启动
-# 立即返回，状态由下一轮探测自然落到运行中。
+# **2026-10-28 订正**：原先这里写「ServiceController.Start() 是异步的（不等 RUNNING）」——不对。
+# 实测它对慢启动服务会等满 ServicesPipeTimeout（30s）再抛异常（probe-1053-timing.ps1：
+# 30032ms）。好处是仍然比 sc.exe 子进程好（不弹控制台窗口、不额外起进程），所以继续用它；
+# 但 catch 里必须先看真实状态（StartPending/Running 就算启动成功），否则会误回落 sc.exe。
 # 两个不能照搬报告原片的坑（已验，见 docs/HANDOFF.md P0-2）：
 # 1. ServiceController.Status 对不存在的服务返回空串（不抛异常）——先判空走 sc.exe 取「未安装」错码，
 #    否则空串会落到 Start() 抛 'Cannot open ... service'，文案退化。
@@ -76,6 +78,14 @@ function Invoke-ServiceStart([string]$n,[string]$fail='启动失败'){
     $svc.Start()                                  # 立即返回，不等 RUNNING
     return $true
   } catch {
+    # Start() 对**慢启动**服务会等满 ServicesPipeTimeout（实测 30s）再抛异常，而服务
+    # 其实已经在起。先看真实状态：StartPending/Running 就按启动成功返回，别回落 sc.exe。
+    # 回落那条路既会误报「启动失败」，又会给 GUI 进程弹出一个控制台窗口（实测：点启动约
+    # 30 秒后冒黑框，正是这一刻）。
+    try {
+      $real = [string](Get-Service -Name $n -EA Stop).Status
+      if ($real -in @('StartPending','Running')) { return $true }
+    } catch {}
     return (Invoke-Sc 'start' $n $fail)           # 取退出码文案，比内层英文异常友好
   } finally {
     if ($svc) { try { $svc.Dispose() } catch {} }

@@ -24,6 +24,29 @@
 - 已注册的 ComfyUI：管理员下 `nssm set ComfyUI AppRotateBytes 5242880` /
   `AppRotateSeconds 86400`，已生效并复核。
 
+### 2026-10-28：点启动约 30 秒后冒出的黑窗口
+
+现象（用户实测）：用本工具启动 ComfyUI，约 **30 秒后**弹出一个黑色控制台窗口。
+
+根因是两条叠在一起：
+
+1. `ServiceController.Start()` 对慢启动服务**不是**异步的——它会等满
+   `ServicesPipeTimeout`（30s）再抛异常（`probe-1053-timing.ps1` 实测 30032ms；
+   `poll.ps1` 里原先「异步，不等 RUNNING」的注释是错的，已订正）。
+2. 抛异常后 `Invoke-ServiceStart` 无条件回落到 `sc.exe start`。而本工具是 GUI 进程，
+   `& sc.exe` 会让 Windows 给这个控制台子进程开一个窗口——那就是用户看到的黑框。
+
+修法：
+
+- catch 里**先看真实状态**：`StartPending`/`Running` 就按启动成功返回，不回落 `sc.exe`。
+  慢启动但最终成功的服务从此不再走那条路（也正是用户要的「启动成功才拉起窗口」）。
+- 兜底再加一层：新增 `Invoke-ScQuiet`，`Get-ServiceQueryCode` / `Invoke-ServiceRemove` /
+  `Invoke-Sc` / `Add-SvcFromCli` 四处改走它——真进程路径用 `CreateNoWindow`，
+  测试注入的函数名照旧直接调用（保留测试缝）。
+
+回归：`test-poll-commands.ps1` 新增「慢启动（Start() 抛但服务在 StartPending）按成功处理、
+不回落 sc.exe」的用例；回退该判断立刻失败。
+
 ### 2026-10-28：上面那批改动的复核修正
 
 独立复核抓到的，逐条修：
