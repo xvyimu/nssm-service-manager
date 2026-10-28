@@ -13,8 +13,6 @@ function Assert($condition, [string]$message) { if (-not $condition) { throw $me
 
 # ---- 夹具：队列/卡片缓存/svc，替身掉弹框与副作用 ----
 $script:cmdQueue = [Collections.Concurrent.ConcurrentQueue[object]]::new()
-$script:queue = [Collections.Concurrent.ConcurrentQueue[object]]::new()
-$script:msgQueue = [Collections.Concurrent.ConcurrentQueue[string]]::new()
 $script:sync = @{ gate = [object]::new(); wake = [Threading.AutoResetEvent]::new($false) }
 $script:cmdEpoch = 0
 $script:svc = [ordered]@{}

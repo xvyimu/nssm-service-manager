@@ -36,14 +36,11 @@ function Add-SvcFromCli([string]$spec){
     Write-Host "提示: 以下环境变量将明文写入注册表（BUILTIN\Users 可读）：$($sensitive -join ', ')"
     Write-Host "      推荐改用 *_FILE 路径让服务本体从密钥文件读，文件权限收口到 Administrators+SYSTEM。"
   }
-  [Threading.Monitor]::Enter($sync.gate)
-  try { $script:svc[$n]=@{port=$p;url=$url} } finally { [Threading.Monitor]::Exit($sync.gate) }
-  try {
-    Save-Svc $script:svc
-  } catch {
+  $saveErr = Add-SvcEntry $n $p $url
+  if ($saveErr) {
     # Save-Svc 失败：NSSM 服务已注册且可用，但 services.json 未落盘。
     # 回滚 NSSM 会丢掉一个实际可用的服务，故不自动 remove——提示用户手动迁移。
-    Write-Host "警告: 服务已注册但配置保存失败：$($_.Exception.Message)"
+    Write-Host "警告: 服务已注册但配置保存失败：$saveErr"
     Write-Host "$n 已在 NSSM 注册，请手动将其加入 services.json 或用 -Add 重新注册后删除旧服务。"
     exit 1
   }

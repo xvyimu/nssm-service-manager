@@ -10,8 +10,6 @@ $before = if ($cfgExisted) { (Get-FileHash -LiteralPath $cfg).Hash } else { $nul
 $script:svc = Load-Svc
 $script:sync = @{gate=[object]::new()}
 $logDir = Join-Path $RepoRoot 'logs'
-$script:nssm = 'Invoke-TestNssm'
-function Invoke-TestNssm { $global:LASTEXITCODE = 0 }
 function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
 
 $fakeExe = Join-Path ([IO.Path]::GetTempPath()) "sm-neg-$([guid]::NewGuid().ToString('N')).exe"

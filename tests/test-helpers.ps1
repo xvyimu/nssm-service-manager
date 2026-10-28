@@ -1,14 +1,5 @@
-# tests/test-helpers.ps1 — 跨测试共享的 WPF 可视树遍历与 runspace 夹具
-# 抽出以消除多个测试里 Get-VisualNodes / Start-FakePoll 的重复实现。
+# tests/test-helpers.ps1 — 跨测试共享的 runspace 夹具
 # 被 dot-source，不需 #requires（避免被 run-all.ps1 当独立脚本解析）。
-
-# WPF 可视树递归遍历
-function Get-VisualNodes($node) {
-  $node
-  for ($i = 0; $i -lt [Windows.Media.VisualTreeHelper]::GetChildrenCount($node); $i++) {
-    Get-VisualNodes ([Windows.Media.VisualTreeHelper]::GetChild($node, $i))
-  }
-}
 
 # 起 runspace 跑 poll 脚本块，mock Get-Service 返回指定 Status。
 # $count=服务数，$serviceStatus=mock 返回状态（'Stopped'/'Running'），$delayMs=每次 Get-Service 延迟。
@@ -77,11 +68,10 @@ function Invoke-TestSc {
 # 立刻炸而不是悄悄命中替身——注入名若和裸调同名，这条回归就测不出来。
 function sc.exe { throw 'bare sc.exe call — 生产代码必须经 Get-ScExe 解析' }
 function Invoke-TestNssm {
-  # remove confirm 等——记一次 nssm 调用，退出码由 $sync.nssmExitCode 控制
-  # （0 = nssm 谎报成功但服务其实还在；非零 = 常规失败；未设 = 0）。
+  # remove confirm 等——记一次 nssm 调用。固定返回 0（nssm 谎报成功），
+  # 删除成败由 $sync.serviceGone 控制，正是要验的那条路径。
   `$sync.executed.Enqueue([pscustomobject]@{action='nssm';name=`$args[1];probes=`$sync.probeCount})
-  `$code = `$sync.nssmExitCode
-  `$global:LASTEXITCODE = if (`$null -eq `$code) { 0 } else { [int]`$code }
+  `$global:LASTEXITCODE = 0
 }
 function New-TestSc {
   # 替身 ServiceController：只实现 Invoke-ServiceStart 用到的 Status 与 finally 里的 Dispose。

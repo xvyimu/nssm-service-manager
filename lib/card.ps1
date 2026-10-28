@@ -48,10 +48,6 @@ function Set-CardTransition($card, [string]$state, [int]$epoch, [datetime]$at){
   $card.PendingEpoch=$epoch
 }
 
-# 过渡态是否已超时：回执迟迟不到时，不能无限期把卡片钉在过渡态上。
-# 超时后调用方（Update-CardData）按到达的探测值收敛并解封按钮；这是丢失回执的最后逃生口。
-# TransitionAt 未记录（MinValue：手工置态的旧夹具、或状态被直接赋值绕过 Set-CardTransition）
-# 时不判超时——没有起算点就无法断言「超时了」，宁可维持原守卫行为。
 # 把时长格式化成「12s / 3分12秒 / 2小时05分」。负值（时钟回拨）返回空串。
 function Format-Elapsed([datetime]$since, [datetime]$now) {
   $s = [int](($now - $since).TotalSeconds)
@@ -68,25 +64,18 @@ function Format-Elapsed([datetime]$since, [datetime]$now) {
 # 否则健康文案会被时钟逻辑复制一份、两边迟早不一致。
 function Update-CardClock($card, [datetime]$now) {
   if (-not $card -or -not $card.LblUp) { return }
+  # **必须用 StateSince，不能用 TransitionAt**：后者会在每次探测报同一中间态时被刷新
+  # （那是超时逃生判据的一部分），拿它算时长的话，慢启动服务会永远显示「已 0s」。
+  $label = switch ($card.ST) {
+    { $_ -in @('启动中','停止中','删除中','暂停中','继续中') } { '已' }
+    '运行中' { '已运行' }
+    '已停止' { '已停' }
+    default   { $null }
+  }
   $suffix = ''
-  if ($card.ST -in @('启动中','停止中','删除中','暂停中','继续中')) {
-    # **必须用 StateSince，不能用 TransitionAt**：后者会在每次探测报同一中间态时被刷新
-    # （那是超时逃生判据的一部分），拿它算时长的话，慢启动服务会永远显示「已 0s」——
-    # 正是这个功能要解决的场景。StateSince 只在进入状态时记一次。
-    if ($card.StateSince -and $card.StateSince -ne [datetime]::MinValue) {
-      $e = Format-Elapsed $card.StateSince $now
-      if ($e) { $suffix = " · 已 $e" }
-    }
-  } elseif ($card.ST -eq '运行中') {
-    if ($card.StateSince -and $card.StateSince -ne [datetime]::MinValue) {
-      $e = Format-Elapsed $card.StateSince $now
-      if ($e) { $suffix = " · 已运行 $e" }
-    }
-  } elseif ($card.ST -eq '已停止') {
-    if ($card.StateSince -and $card.StateSince -ne [datetime]::MinValue) {
-      $e = Format-Elapsed $card.StateSince $now
-      if ($e) { $suffix = " · 已停 $e" }
-    }
+  if ($label -and $card.StateSince -and $card.StateSince -ne [datetime]::MinValue) {
+    $e = Format-Elapsed $card.StateSince $now
+    if ($e) { $suffix = " · $label $e" }
   }
   $base = if ($null -ne $card.LblUpBase) { [string]$card.LblUpBase } else { '' }
   $card.LblUp.Text = $base + $suffix
@@ -268,7 +257,7 @@ function New-Card([string]$name, $info){
 
   # 防抖状态（挂在 Border 上）
   $border | Add-Member -NotePropertyMembers @{
-    SvcName=$name; Port=$info.port; Url=$info.url
+    SvcName=$name
     ST='查询中'; LastToggle=[datetime]::MinValue; ReadyToToggle=$false
     PendingEpoch=0
     # PrevST/PrevH 留档进入过渡态前的终态（失败时原样放回）；TransitionAt 是超时起算点。
@@ -329,7 +318,6 @@ function New-Card([string]$name, $info){
 function Update-CardInfo([string]$name, $info){
   if (-not $script:cards.ContainsKey($name)) { return }
   $c = $script:cards[$name]
-  $c.Port = $info.port; $c.Url = $info.url
   # 配置改了超时覆盖时，命中缓存的旧卡片要跟着换阈值
   $c.ToggleTimeoutMs = Resolve-ToggleTimeoutMs $info
   $c.PortText.Text = ":$($info.port)"

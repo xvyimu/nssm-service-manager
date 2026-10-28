@@ -15,7 +15,7 @@ $script:config = [ordered]@{
                                  # （那条路 SCM 立刻返回 2，15ms 就结束，走不到管道等待）。
   TransitionHardCapFactor = 10   # 过渡计时刷新的硬上限倍数：慢启动时计时会刷新，但累计超过
                                  # ToggleTimeoutMs × 本值就强制逃生，防止服务卡死时逃生口被刷掉。
-  WaitStoppedTimeoutMs = 6000    # 重启/删除前轮询 Stopped 的上限（add-svc.ps1 / poll.ps1 Wait-Stopped）
+  WaitStoppedTimeoutMs = 6000    # 重启/删除前轮询 Stopped 的上限（svc-common.ps1 Wait-Stopped）
   LogKeepCount        = 10       # 轮转日志保留份数（util.ps1 Remove-RotatedLogs）——
                                  # 口径是**按日志目录**各留前 N 份：共用 $logDir 的服务算一个目录，
                                  # 有独立 AppStdout 目录的服务（如 ComfyUI）各算一份配额
@@ -57,19 +57,13 @@ if (Test-Path -LiteralPath $script:configPath) {
     }
   } catch {
     # 配置解析失败不阻断启动——用默认值。错误记进 configWarning，由 GUI 加载完成后弹框。
-    # 下面那句 statusBar 直写在正常启动路径下**不会执行**：本文件在主脚本第 34 行加载，
-    # 而 $script:statusBar 要到 New-MainWindow（223 行）才建。保留它是给「调用方先建窗口
-    # 再加载 config」的将来顺序变动兜底；那时也不该带租约（Set-StatusMessage 定义在 util.ps1，
-    # 本文件之前，此刻尚不可用）。
-    # 消息格式与 Load-Svc 的 `"services.json 无效：…"` 统一为 `<文件名> 无效：<原因>`，
-    # 因为 configWarning 可能来自本文件（config.json）或 Load-Svc（services.json），
-    # 弹框判断不了来源，故文件名只能由写入方带。
-    # 本变量本身不带处置语：弹框会在其后补「当前使用恢复配置…」；statusBar 那条没有
-    # 弹框的第二行，所以自己补「，用默认配置」。
-    # 注：Load-Svc 的 services.json 分支是无条件覆盖本变量（util.ps1:39），只有读示例
-    # 清单的兜底分支带守卫——两份都坏时，用户看到的是 services.json 那条。
+    # 消息格式与 Load-Svc 的 `"services.json 无效：…"` 统一为 `<文件名> 无效：<原因>`：
+    # 弹框判断不了来源，文件名只能由写入方带。本变量不带处置语（弹框自己补）。
+    # 注：Load-Svc 的 services.json 分支无条件覆盖本变量，只有读示例清单的兜底分支带守卫。
     $msg = "config.json 无效：$($_.Exception.Message)"
     if (-not $script:configWarning) { $script:configWarning = $msg }
+    # 正常启动顺序下 statusBar 还没建（config 先于窗口加载）；留这句是给「先建窗口再加载
+    # config」的顺序兜底，那时也不该带租约——Set-StatusMessage 此刻尚不可用。
     if ($script:statusBar) { $script:statusBar.Text = "$msg，用默认配置" }
   }
 }

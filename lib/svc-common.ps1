@@ -3,11 +3,10 @@
 
 # sc.exe 的路径必须解析后调用：裸调一个不存在的命令时 $LASTEXITCODE 保留上一条的码，
 # 而下面几个判据都从退出码读结论（本机 System32 一度不在 PATH，实测会误判）。
-# 每次调用时才解析，便于注入：runspace 用 $sync.scExe、UI 侧用 $script:ScExe。
+# 每次调用时才解析，便于注入：测试夹具经 $sync.scExe 给替身名。
 # 盘上找不到就退回裸名——让「找不到」如实报错，而不是悄悄用一个不存在的路径。
 function Get-ScExe {
   if ($sync -and $sync.scExe) { return [string]$sync.scExe }
-  if ($script:ScExe) { return [string]$script:ScExe }
   $p = Join-Path $env:SystemRoot 'System32\sc.exe'
   if (Test-Path -LiteralPath $p) { return $p }
   'sc.exe'
@@ -41,16 +40,13 @@ function Invoke-ScQuiet([string[]]$argv){
 }
 
 # 轮询服务到 Stopped，用于重启/删除前等端口释放。
-# 超时取值优先级：显式 -timeoutMs > $sync 注入值（UI 线程即 $script:sync.waitStoppedTimeoutMs，
-# runspace 由 poll.ps1 从同一键读出并写回）> $script:config.WaitStoppedTimeoutMs > 6000。
+# 超时取值：$sync 注入值（UI 线程与 runspace 同键）> $script:config.WaitStoppedTimeoutMs > 6000。
 # 前两级在两条路径上都可见，故 UI 线程与 runspace 走同一份配置，不再各读各的。
 # 服务已不存在（ObjectNotFound）= 等同已停止；其他错误（权限等）不掩盖，继续等待。
-function Wait-Stopped([string]$n,[int]$timeoutMs=0){
-  if(-not $timeoutMs){
-    if     ($sync -and $sync.waitStoppedTimeoutMs)                    { $timeoutMs = [int]$sync.waitStoppedTimeoutMs }
-    elseif ($script:config -and $script:config.WaitStoppedTimeoutMs)  { $timeoutMs = [int]$script:config.WaitStoppedTimeoutMs }
-    else                                                              { $timeoutMs = 6000 }
-  }
+function Wait-Stopped([string]$n){
+  $timeoutMs = if     ($sync -and $sync.waitStoppedTimeoutMs)                   { [int]$sync.waitStoppedTimeoutMs }
+               elseif ($script:config -and $script:config.WaitStoppedTimeoutMs) { [int]$script:config.WaitStoppedTimeoutMs }
+               else                                                             { 6000 }
   $w=0
   # 步长从 config 收口（WaitStoppedPollMs，默认 300）；测试夹具经 $sync 注入
   $stepMs = if ($sync -and $sync.waitStoppedPollMs) { [int]$sync.waitStoppedPollMs } else { 300 }

@@ -122,26 +122,29 @@ function New-MainWindow {
   $btnAdd.Add_Click({ Show-Add $script:window; Render-Page })
   $btnPrev.Add_Click({ if ($script:curPage -gt 0) { $script:curPage--; Render-Page } })
   $btnNext.Add_Click({
-    # 读 $script:svc.Count 加 gate，与 Render-Page 的读路径对称（当前 UI 线程是唯一写者，
-    # 但锁不对称后续加后台写入即踩——同 Render-Page 的注释）。
-    $gate = if ($script:sync -and $script:sync.gate) { $script:sync.gate } else { $null }
-    if ($gate) { [Threading.Monitor]::Enter($gate) }
-    try { $count = $script:svc.Count } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }
-    $pages=[math]::Max(1,[math]::Ceiling($count / $script:PER_PAGE))
+    $names = @(Get-SvcNames)
+    $pages = Get-PageCount $names.Count
     if ($script:curPage -lt $pages-1) { $script:curPage++; Render-Page }
   })
   $win
 }
 
-function Render-Page {
-  $script:cardPanel.Children.Clear()
-  # 读 $script:svc 加 gate（发现 15）：与后台 runspace 的读路径对称。
-  # 当前 UI 线程是唯一写者，无实际并发写，但锁不对称后续加后台写入即踩。
-  # 测试夹具可能没初始化 $sync（CLI 路径与部分单测），退化成不加锁直接读。
+# 加锁读服务名：与后台 runspace 的读路径对称（当前 UI 线程是唯一写者，但锁不对称
+# 后续加后台写入即踩）。测试夹具可能没初始化 $sync（CLI 路径与部分单测），退化成不加锁。
+function Get-SvcNames {
   $gate = if ($script:sync -and $script:sync.gate) { $script:sync.gate } else { $null }
   if ($gate) { [Threading.Monitor]::Enter($gate) }
-  try { $names=@($script:svc.Keys) } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }
-  $pages=[math]::Max(1,[math]::Ceiling($names.Count / $script:PER_PAGE))
+  # 返回值会被调用方用 @() 包住：只有一个服务时函数输出会退化成单个字符串
+  try { @($script:svc.Keys) } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }
+}
+
+function Get-PageCount([int]$count) { [math]::Max(1,[math]::Ceiling($count / $script:PER_PAGE)) }
+
+function Render-Page {
+  $script:cardPanel.Children.Clear()
+  $gate = if ($script:sync -and $script:sync.gate) { $script:sync.gate } else { $null }
+  $names = @(Get-SvcNames)
+  $pages = Get-PageCount $names.Count
   $script:curPage=[math]::Max(0,[math]::Min($script:curPage,$pages-1))
   $start=$script:curPage*$script:PER_PAGE
   $end=[math]::Min($start+$script:PER_PAGE,$names.Count)-1

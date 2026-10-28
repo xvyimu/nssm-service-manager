@@ -97,9 +97,18 @@ function Save-Svc($s) {
   }
 }
 
+# 把新服务写进内存清单并落盘——CLI（-Add）与 GUI 对话框共用一份。
+# 返回 $null 表示成功；否则返回错误信息，由调用方决定怎么提示、是否关窗/退出。
+function Add-SvcEntry([string]$n,[int]$p,[string]$url){
+  [Threading.Monitor]::Enter($sync.gate)
+  try { $script:svc[$n]=@{port=$p;url=$url} } finally { [Threading.Monitor]::Exit($sync.gate) }
+  try { Save-Svc $script:svc } catch { return $_.Exception.Message }
+  $null
+}
+
 # 命令纪元：每次 Send-ServiceCommand 递增，随命令对象入队；后台执行完把同一 epoch 跟着
-# 结果回 UI。Update-CardData 据此过滤在途旧探测——过渡态期间只接受 epoch ≥ 卡片
-# PendingEpoch 的回执，旧探测（无 epoch）直接丢弃，不再靠「方向匹配」做症状层补丁。
+# 结果回 UI。Update-CardData 据此只认 epoch ≥ 卡片 PendingEpoch 的回执——旧命令的回执
+# 不该解除新命令的过渡态。普通探测不带 epoch，仍按方向匹配收尾（见 card.ps1）。
 $script:cmdEpoch = 0
 
 # 所有 GUI 命令统一入队并唤醒后台；队列保留 FIFO，事件只负责结束空闲等待。
@@ -110,8 +119,6 @@ function Send-ServiceCommand([string]$name,[string]$action) {
   [void]$script:sync.wake.Set()
   $e
 }
-
-# NSSM set 包装已移去 lib/nssm.ps1（同文件合并 Install/Remove-NssmService）。
 
 # 打开面板 URL 的统一入口：包住 Start-Process，URL 非法/无默认浏览器/注册表关联损坏时
 # 只提示不崩 GUI。card.ps1 两处（按钮 Click、右键菜单 open）都走这里——否则 Start-Process
@@ -154,8 +161,8 @@ function Set-UiErrorStatus([string]$message){
   Set-StatusMessage "操作出错：$m"
 }
 
-# Dispatcher 未处理异常的兜底体（注册行在主脚本）。抽成函数是为了能单测——
-# 事件参数是私有构造，只能真抛真接。每步各自包住：本函数内再抛会直接终止进程。
+# Dispatcher 未处理异常的兜底体（注册行在主脚本）。事件参数是私有构造，只能真抛真接验证。
+# 每步各自包住：本函数内再抛会直接终止进程。
 function Invoke-DispatcherErrorFallback($e){
   try { Set-UiErrorStatus ([string]$e.Exception.Message) } catch {}
   try { Write-CrashLog "DispatcherUnhandled: $($e.Exception.GetType().FullName): $($e.Exception.Message)" } catch {}
@@ -222,8 +229,8 @@ function Update-StatusTick {
   }
 }
 
-# 探测单实例 mutex 是否已被 GUI 持有。抽成函数以便直测（CLI -Add 分支与 GUI 都靠它，
-# 但内联在主脚本里测试够不着）。$mutexName 形如 'Local\service-manager-gui'。
+# 探测单实例 mutex 是否已被 GUI 持有（CLI -Add 分支与 GUI 都靠它）。
+# $mutexName 形如 'Local\service-manager-gui'。
 # OpenExisting 在 mutex 不存在时抛（无 GUI 常驻）→ 返回 $false，是正常路径。
 # 抢到（WaitOne(0)=true）要立即释放，否则会把所有权留在本线程、影响后续判断。
 function Test-GuiInstanceRunning([string]$mutexName){
@@ -290,8 +297,8 @@ function Resolve-ServiceExeDir([string]$path){
   @{ dir = $dir; quoted = $quoted }
 }
 
-# 判定目录 ACL 是否「过宽」——本机任意标准用户可写。抽成纯函数以便直测（Show-SecurityCheck
-# 直接弹 MessageBox，够不着）。判据：主体是 Users/Everyone 之一，且权限含 Write/Modify/FullControl。
+# 判定目录 ACL 是否「过宽」——本机任意标准用户可写。纯函数，不碰 UI（Show-SecurityCheck 会弹框）。
+# 判据：主体是 Users/Everyone 之一，且权限含 Write/Modify/FullControl。
 # 传入已读到的 ACL 对象（不在此处 Get-Acl），返回 '是' / '否' / '未知（无法读取 ACL）'。
 function Test-DirAclPermissive($acl){
   if (-not $acl) { return '未知（无法读取 ACL）' }

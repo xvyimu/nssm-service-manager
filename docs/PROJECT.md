@@ -170,13 +170,13 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 
 ### 10. 外部命令按全路径解析，不裸调
 
-`nssm.exe` 走三档解析（`$env:NSSM_PATH` → `Get-Command` → scoop 默认路径），`sc.exe` 由 `Get-ScExe` 解析（`$sync.scExe` / `$script:ScExe` 注入 → `%SystemRoot%\System32\sc.exe` → 裸名兜底）。
+`nssm.exe` 走三档解析（`$env:NSSM_PATH` → `Get-Command` → scoop 默认路径），`sc.exe` 由 `Get-ScExe` 解析（`$sync.scExe` 注入 → `%SystemRoot%\System32\sc.exe` → 裸名兜底）。
 
 起因（2026-10-28 实测）：本机 `C:\Windows\System32` **既不在机器 PATH 也不在用户 PATH**，`Get-Command` 对 `sc.exe` / `cmd.exe` / `where.exe` 全部返回空。而裸调一个不存在的命令时，PowerShell 抛 CommandNotFoundException 的同时 **`$LASTEXITCODE` 保留的是上一条命令的码**——`Test-ServiceGone` / `Test-ServicePresent` / `Invoke-Sc` 全靠退出码下结论，假码会把「删失败」判成成功。实测：裸调后 `$LASTEXITCODE` 停在伪造的 42，经 `Get-ScExe` 解析后才是真实的 1060。
 
 > 2026-10-28 已把 `C:\Windows\System32` 补回机器 PATH（原本只有 9 个工具目录，一个 Windows 标准目录都没有）。**代码里的解析保留为兜底**：这只修了本机，别的机器/别的环境同样可能没有——别因为本机修好了就把 `Get-ScExe` 拆掉。
 
-判据：**任何「靠退出码下结论」的外部命令都不能裸调**。测试通过 `$sync.scExe` / `$script:ScExe` 注入替身名，不用改调用点。
+判据：**任何「靠退出码下结论」的外部命令都不能裸调**。测试通过 `$sync.scExe` 注入替身名，不用改调用点。
 
 ## 已知限制
 

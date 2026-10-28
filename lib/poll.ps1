@@ -5,7 +5,7 @@
 # HTTP 用共享 HttpClient（IWR 每次新建并加载整套 cmdlet）。结果仍是字符串，不持有 UI 对象。
 
 # 后台探测脚本块（字符串，在 runspace 里执行）
-# Wait-Stopped 抽到 lib/svc-common.ps1，与 add-svc.ps1（UI 线程）引用同一份实现。
+# Wait-Stopped 在 lib/svc-common.ps1，与里面的 Invoke-ServiceRemove 引用同一份实现。
 # runspace 不能 dot-source 外部文件（脚本块字符串里没有 $PSScriptRoot），构造时把 svc-common.ps1
 # 的文本前置进 $script:poll——UI 线程与后台引用的是同一份源码，原「SYNC: 两处同改」注释消除。
 $script:poll = (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'svc-common.ps1')) + @'

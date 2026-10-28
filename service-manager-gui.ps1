@@ -168,8 +168,8 @@ if (-not (Test-Path -LiteralPath $script:nssm)) {
 })
 
 # ---- 加载模块 ----
-# 顺序即依赖：util → svc-input → nssm → add-svc → logview → dialogs + card。
-# dialogs 与 card 是双向依赖，顺序不分先后（函数体符号调用时解析）。
+# 顺序即依赖：theme → util → svc-input → nssm → add-svc → logview → dialogs → tray →
+# poll → card → xaml。dialogs 与 card 双向依赖，顺序不分先后（函数体符号调用时解析）。
 . "$root\lib\theme.ps1"
 . "$root\lib\util.ps1"
 . "$root\lib\svc-input.ps1"

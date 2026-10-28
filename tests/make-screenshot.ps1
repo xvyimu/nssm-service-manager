@@ -15,7 +15,6 @@ $script:svc = [ordered]@{
   'BuddyAPI' = @{ port = 7863;  url = 'http://127.0.0.1:7863/panel/' }
   'ServiceF' = @{ port = 9000;  url = 'http://127.0.0.1:9000/health' }
 }
-$script:cmdQueue = [Collections.Concurrent.ConcurrentQueue[object]]::new()
 $script:sync = @{ wake = [Threading.AutoResetEvent]::new($false) }
 function Stop-Background {}
 

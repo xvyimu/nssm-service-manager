@@ -115,15 +115,11 @@ function Submit-AddService($owner,[hashtable]$fields){
   } catch {
     Show-DialogError $owner $_.Exception.Message; return $false
   }
-  [Threading.Monitor]::Enter($sync.gate)
-  try { $script:svc[$n]=@{port=$p;url=$url} } finally { [Threading.Monitor]::Exit($sync.gate) }
-  try {
-    Save-Svc $script:svc
-  } catch {
-    # Save-Svc 失败：NSSM 服务已注册且可用，但 services.json 未落盘。
-    # 回滚 NSSM 会丢掉一个实际可用的服务，故不自动 remove——提示用户手动迁移。
-    Show-DialogWarning $owner "服务已注册但配置保存失败：$($_.Exception.Message)`n$n 已在 NSSM 注册，请手动将其加入 services.json。" '保存失败'
-    return $true   # 服务已注册，关弹窗（与成功一致）
+  $saveErr = Add-SvcEntry $n $p $url
+  if ($saveErr) {
+    # 服务已注册但没落盘：不 remove（那会丢掉一个实际可用的服务），提示手动迁移并关窗。
+    Show-DialogWarning $owner "服务已注册但配置保存失败：$saveErr`n$n 已在 NSSM 注册，请手动将其加入 services.json。" '保存失败'
+    return $true
   }
   Send-ServiceCommand $n 'start'
   $true
