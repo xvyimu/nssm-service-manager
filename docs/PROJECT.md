@@ -149,7 +149,13 @@ NSSM remove 是 stop → Wait-Stopped ≤6s → nssm remove confirm，同步执�
 
 自定义用户账户需要一个密码，而 nssm 只收 `nssm set <服务> ObjectName <用户名> <密码>`——用户名走 additional、密码走 value，两者都是命令行参数，同机管理员在进程列表里可见（nssm 自己能做的只是用完 `SecureZeroMemory`）。这个暴露面不值得为一个一次性操作引入，故本工具不做；需要时用 `nssm edit` 或服务管理器改。
 
-单 token 的形状（`ObjectName <账户>`，不带密码位）验到哪一步了：nssm **先解析参数、后打开服务**，所以 `nssm set <不存在的服务> ObjectName "NT AUTHORITY\LocalService"` 返回 `exit 3 / Can't open service!` 即证明参数解析已通过（参数不对会在更早的分支返回 usage）；账户名本身用 `LookupAccountName` 在真机确认能解析到 `S-1-5-19`。**剩下没验的只有 `ChangeServiceConfig` 那一步——它要管理员**。
+单 token 的形状（`ObjectName <账户>`，不带密码位）验到哪一步了，说准确：
+
+- **源码**：`service.cpp:959` 的 ObjectName 分支把 `argv[3]` 当用户名、`remainder` 后移，本身不做校验；「要不要密码」在 `native_set_objectname` 里判，而**那个函数在打开服务之后才执行**。well-known 账户（LocalSystem/LocalService/NetworkService）走的分支会强制 `password=""`，所以不需要密码位。
+- **真机能测到的**：`nssm set <不存在的服务> ObjectName "NT AUTHORITY\LocalService"` 返回 `exit 3 / Can't open service!`——这只证明「4 个参数的 `set` 能走到打开服务」这一步（任何 4 参数的 `set` 都到得了），**证明不了** ObjectName 接受单 token。账户名本身用 `LookupAccountName` 确认解析到 `S-1-5-19`。
+- **测不到的**：`native_set_objectname` 与 `ChangeServiceConfig`——都在打开服务之后，要管理员。
+
+所以这条的把握来自源码，不是实测。
 
 `Get-NssmSetSpec` 对 `LocalSystem` 和空值**不产生** `ObjectName`——那本来就是 `nssm install` 的默认值，写进去只是多一条无意义的 set，还会让「没选账户」和「选了 LocalSystem」两条路径分叉。
 

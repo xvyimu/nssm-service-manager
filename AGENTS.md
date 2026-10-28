@@ -5,7 +5,7 @@
 ## 命令速查（先看这里）
 
 ```powershell
-# 回归测试（不需要管理员；CI 就跑这个）
+# 回归测试（不需要管理员；CI 的 regression 任务跑这个）
 pwsh -NoProfile -File tests/run-all.ps1
 
 # 启动 GUI（会弹 UAC；NSSM/sc.exe 需要管理员）
@@ -47,5 +47,6 @@ services.example.json     # 服务清单示例（实配 services.json 已 gitign
 ## 环境注意
 
 - 测试需 **Windows**（WPF/STA + Windows runner）；CI 在 Windows runner 上跑 `pwsh 7`。
+  CI 另有一个 `secrets` 任务（ubuntu + `gitleaks-action`）扫密钥，只在推 main / 开 PR 时触发。
 - `config.json` 可缺省（不复制就用内嵌默认值）；`services.json` 决定管哪些服务。
 - 实配 `config.json` / `services.json` **每台机器自定、已 gitignore**；示例进仓保证克隆即跑。
