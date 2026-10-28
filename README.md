@@ -254,6 +254,14 @@ pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/scree
 pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-tmp/，已 git 忽略）
 ```
 
+**提交前密钥扫描（每个 clone 做一次）**：
+
+```powershell
+git config core.hooksPath .githooks   # 不设这一行，.githooks/pre-commit 不会执行
+```
+
+装 `gitleaks` 后（`scoop install gitleaks`）钩子才会真的扫；没装时它只打一行警告然后放行。找不到 `PATH` 里的 `gitleaks` 时钩子会再探 `~/scoop/shims/gitleaks.exe`。CI 目前不跑密钥扫描，只跑回归测试。
+
 演示 GIF 由 `make-demo.ps1` 离屏渲染 12 帧 PNG 后，用 ffmpeg 合成：
 
 ```bash
