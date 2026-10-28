@@ -36,7 +36,8 @@ service-manager-gui.ps1（主入口：CLI 分支 + 提权 + 模块加载 + 窗�
 ├─ lib/logview.ps1    日志查看器：Get-LogFiles（当前+轮转枚举）+ Show-Log（WPF 窗口）
 ├─ lib/dialogs.ps1    GUI 对话框：Show-Add / New-AddDialog（添加服务；后者只搭控件，
 │                     留给无头测试）+ Show-Remove（删除确认）
-├─ lib/svc-common.ps1 UI 与 runspace 共用的服务操作原语：Wait-Stopped、退出码/状态中文映射
+├─ lib/svc-common.ps1 UI 与 runspace 共用的服务操作原语：Wait-Stopped、退出码/状态中文映射、
+│                     sc.exe 路径解析（Get-ScExe，见设计决策 10）
 │                     （Convert-ScExitCode / Convert-ServiceStatus）、删除序列（Invoke-ServiceRemove）、
 │                     删除/注册的实证复核（Test-ServiceGone / Test-ServicePresent）——均只此一份
 ├─ lib/poll.ps1       后台 runspace 脚本块：Get-Service 批量 + TcpClient + HttpClient 并行探测
