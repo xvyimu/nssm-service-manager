@@ -433,7 +433,7 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
   } elseif ($st -eq '已暂停') {
     # 暂停态两个按钮都不可用（启动对已运行的服务无效，关闭要求健康正常）；
     # 恢复得走右键菜单的「重启」——它先 stop 再 start，SCM 接受。
-    '服务已暂停，右键「重启」恢复'
+    '服务已暂停，可用右键「重启」尝试恢复'
   } elseif ($h) {
     $h
   } else {
