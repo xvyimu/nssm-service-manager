@@ -1,8 +1,6 @@
 # lib/logview.ps1 — 日志查看器：枚举轮转档 + WPF 查看窗口
 #
-# 从 lib/util.ps1 抽出，使 util.ps1 只剩配置持久化与纯工具。
-# 依赖：调用方作用域的 $logDir（Get-LogFiles 回落读取）与 $script:cjkFont / $script:fontMono
-# （Show-Log 用于字体）。WPF 程序集须由调用方先 Add-Type 加载。
+# 依赖调用方作用域的 $logDir 与字体变量；WPF 程序集须由调用方先 Add-Type 加载。
 
 # 枚举当前 + 轮转日志：out/err 是当前，out-YYYYMMDDHHMMSS.log / err-*.log 是轮转
 # 服务名允许含 . 与 -（Test-SvcInput 的 [A-Za-z0-9_.-]），正则里这些是元字符——

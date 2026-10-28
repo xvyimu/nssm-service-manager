@@ -1,7 +1,5 @@
 # lib/theme.ps1 — 系统字体 · 桌面工具配色 · Mica P/Invoke
-# 图标是静态文件 assets/icon.ico（已进仓），不再运行时生成 → 不加载 System.Drawing
-
-# 使用 Windows 自带字体，不枚举或依赖额外安装的字体。
+# 图标是仓内静态文件，不运行时生成；字体用 Windows 自带，不枚举额外字体。
 $script:cjkFont = 'Microsoft YaHei UI'
 $script:fontMono = 'Consolas'
 

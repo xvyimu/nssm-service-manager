@@ -73,8 +73,9 @@ try {
   # 失败回执（ok=$false）：修前只解封按钮、文字仍是「停止中」（红）
   Update-CardData 'TestService' $null $null -e $card.PendingEpoch -ack -ok $false
   Assert ($card.ST -eq '运行中') "Failed stop did not roll back to 运行中: ST=$($card.ST)."
-  Assert ($card.Btn.IsEnabled) 'Failed stop left button disabled.'
-  Assert ($card.Btn.Content -eq '停止') "Failed stop button label wrong: $($card.Btn.Content)."
+  # 回滚到「运行中+健康正常」→ 可用的是**关闭**按钮（启动键此刻应当禁用）
+  Assert ($card.BtnStop.IsEnabled) 'Failed stop left the close button disabled.'
+  Assert (-not $card.Btn.IsEnabled) 'Failed stop wrongly enabled the start button.'
   Assert ($card.ReadyToToggle) 'Failed stop did not restore toggle readiness.'
   Assert ($card.PendingEpoch -eq 0) 'Failed stop left PendingEpoch set.'
 
@@ -131,14 +132,14 @@ try {
   Assert ($card.ST -eq '已停止') "Probe-driven transition never converged (H1): ST=$($card.ST)."
   Assert ($card.Btn.IsEnabled) 'Probe-driven transition left the button disabled (H1 永久卡死).'
 
-  # ---- 5a. Test-CardToggleReady 真值表（门闩单一来源）----
-  Assert (Test-CardToggleReady '已停止' '') '已停止应可切换。'
-  Assert (Test-CardToggleReady '运行中' '正常') '运行中+正常应可切换。'
-  Assert (-not (Test-CardToggleReady '运行中' '无响应')) '运行中+无响应不可切换（健康门闩）。'
-  Assert (-not (Test-CardToggleReady '运行中' '超时')) '运行中+超时不可切换。'
-  Assert (-not (Test-CardToggleReady '运行中' '')) '运行中+空健康不可切换。'
-  Assert (-not (Test-CardToggleReady '未知' '')) '未知态不可切换。'
-  Assert (-not (Test-CardToggleReady '未安装' '')) '未安装不可切换。'
+  # ---- 5a. 两个方向的门闩真值表 ----
+  Assert (Test-CardCanStart '已停止') '已停止应可启动。'
+  Assert (-not (Test-CardCanStart '运行中')) '运行中不可再启动。'
+  Assert (Test-CardCanStop '运行中' '正常') '运行中+正常应可关闭。'
+  Assert (-not (Test-CardCanStop '运行中' '无响应')) '运行中+无响应不可关闭（健康门闩）。'
+  Assert (-not (Test-CardCanStop '运行中' '超时')) '运行中+超时不可关闭。'
+  Assert (-not (Test-CardCanStop '运行中' '')) '运行中+空健康不可关闭。'
+  Assert (-not (Test-CardCanStop '已停止' '正常')) '已停止不可关闭。'
 
   # ---- 5. ack 门闩按当前状态/健康重算，不无条件点亮 ----
   # 右键菜单的启停直接 Send-ServiceCommand、不置过渡态，回执到达时卡片可能仍是
@@ -149,7 +150,7 @@ try {
   Assert (-not $card.ReadyToToggle) 'Unhealthy running card should not be toggle-ready.'
   Update-CardData 'TestService' $null $null -e 0 -ack -ok $true
   Assert (-not $card.ReadyToToggle) "Success ack bypassed the health gate: ReadyToToggle=$($card.ReadyToToggle)."
-  Assert (-not $card.Btn.IsEnabled) 'Success ack enabled the stop button on an unhealthy service.'
+  Assert (-not $card.BtnStop.IsEnabled) 'Success ack enabled the close button on an unhealthy service.'
 
   # ---- 6. 非过渡态的失败回执不得回滚（右键启停路径）----
   # 右键启停不置过渡态（TransitionAt 仍 MinValue），PrevST/PrevH 还是 New-Card 初值。
@@ -160,7 +161,7 @@ try {
   Update-CardData 'TestService' $null $null -e 0 -ack -ok $false
   Assert ($card.ST -eq $stBefore -and $card.H -eq $hBefore) "Non-transition failure rolled back a live card: ST=$($card.ST) H=$($card.H)."
   Assert ($card.ReadyToToggle) 'Non-transition failure should re-arm a healthy running card.'
-  Assert ($card.Btn.IsEnabled) 'Non-transition failure left the button disabled.'
+  Assert ($card.BtnStop.IsEnabled) 'Non-transition failure left the close button disabled.'
 
   Write-Output 'PASS: transition states have a failure exit (rollback on ok=false, timeout escape, queue-independent sweep); no permanent card lock.'
 } finally { $win.Close(); $script:sync.wake.Dispose() }

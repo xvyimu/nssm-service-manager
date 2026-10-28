@@ -1,6 +1,5 @@
 # tests/test-helpers.ps1 — 跨测试共享的 WPF 可视树遍历与 runspace 夹具
-# 抽出以消除 test-card-cache / test-gui-smoke 的 Get-VisualNodes 重复（Reuse-1）
-# 与 test-parallel-probe / test-poll-commands 的 Start-FakePoll 重复（Reuse-2）。
+# 抽出以消除多个测试里 Get-VisualNodes / Start-FakePoll 的重复实现。
 # 被 dot-source，不需 #requires（避免被 run-all.ps1 当独立脚本解析）。
 
 # WPF 可视树递归遍历（与 test-gui-smoke 原实现一致）

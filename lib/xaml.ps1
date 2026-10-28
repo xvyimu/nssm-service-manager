@@ -1,7 +1,5 @@
-# lib/xaml.ps1 — 六卡片主视图：3 列 × 2 行，窗口缩放时同步伸展
-# 每页数量从 lib/config.ps1 取（默认 6）；UniformGrid 列数随之计算。
-# 自加载 config / tray：测试 dot-source 本模块时未必先加载，此处自洽。
-# tray.ps1 只定义纯函数与惰性 Initialize-Tray，dot-source 本身不加载 WinForms。
+# lib/xaml.ps1 — 卡片主视图：列数由 PerPage 计算，窗口缩放时同步伸展。
+# 自加载 config / tray（测试 dot-source 时未必先加载）。
 if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
 if (-not (Get-Command Get-CloseAction -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot 'tray.ps1') }
 $script:PER_PAGE = [int]$script:config.PerPage

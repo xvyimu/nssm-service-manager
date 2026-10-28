@@ -364,7 +364,7 @@ backup-guard 只碰 `~/.claude`。故**不做默认迁移**。
 - `lib/svc-common.ps1` —— 退出码/状态中文映射（`Convert-ScExitCode` / `Convert-ServiceStatus`）、删除序列（`Invoke-ServiceRemove`）、实证复核谓词（`Test-ServiceGone` / `Test-ServicePresent`）。**原先散在 `poll.ps1` 的 here-string 与 `nssm.ps1` 里，2026-10-08 起统一到本文件**——here-string 里的定义只进 runspace，UI 线程与 CLI 取不到。
 - `lib/util.ps1` —— `Open-PanelUrl` / `Remove-RotatedLogs` / `Update-StatusTick` / `Test-GuiInstanceRunning`；`Get-LogFiles` 已移 `lib/logview.ps1`。
 - `lib/config.ps1` —— 可调常量收口。
-- `tests/run-all.ps1` —— 回归入口，改完必跑。**三个量纲别混**（D4）：PASS 输出行 55、解析文件 46、测试条目 26（2026-10-28 实测，加 `test-per-service-timeout.ps1` 与 `test-card-clock.ps1` 后）。
+- `tests/run-all.ps1` —— 回归入口，改完必跑。**三个量纲别混**（D4）：PASS 输出行 25、解析文件 31、测试条目 11（2026-10-28 精简测试后实测；三项都由脚本打印，别手数）。
 - `docs/PROJECT.md` —— 架构与设计决策 SSOT，动结构时同步。
 
 ## 决策与坑（本次新增）

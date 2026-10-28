@@ -1,9 +1,7 @@
 # lib/tray.ps1 — 可选托盘图标（config.json 的 TrayEnabled 打开才加载 WinForms）
 #
-# 设计：决策与副作用分离。
-#   Get-CloseAction / Get-MinimizeAction 是纯函数，只读 config，可被单测直接调用；
-#   Initialize-Tray 才真正创建 NotifyIcon（按需 Add-Type WinForms，禁用时不付这份成本）。
-# 默认 TrayEnabled=false，行为与历史一致：最小化进任务栏、关闭即退出。
+# 决策（纯函数，只读 config）与副作用（Initialize-Tray 才 Add-Type WinForms）分离。
+# 默认 TrayEnabled=false：最小化进任务栏、关闭即退出。
 
 # 关闭窗口时该做什么：'tray'=收进托盘，'exit'=真正退出（默认）。
 # 两个开关都要开才进托盘——只开 CloseToTray 而不开 TrayEnabled 没有托盘可收，按退出处理。

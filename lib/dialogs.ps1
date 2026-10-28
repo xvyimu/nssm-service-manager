@@ -1,17 +1,7 @@
 # lib/dialogs.ps1 — GUI 对话框：添加服务、删除服务
 #
-# 从 lib/add-svc.ps1 抽出，使 add-svc.ps1 只剩 CLI 逻辑（Add-SvcFromCli），
-# 对话框与 CLI 的共享注册逻辑（Install-NssmService）在 lib/nssm.ps1。
-#
-# 依赖（均为「调用时解析」，PowerShell 函数体内符号延迟绑定——点源顺序不影响正确性，
-# 只要调用发生在全部模块加载之后，即 GUI 运行时）：
-#   New-AddDialog / Show-Add → 只搭控件；提交走 Submit-AddService →
-#                 Test-SvcInput / Test-SvcAccount（svc-input.ps1）、Install-NssmService（nssm.ps1）、
-#                 Send-ServiceCommand / Save-Svc（util.ps1）
-#   Show-Remove → Set-CardTransition（card.ps1）、Send-ServiceCommand（util.ps1）
-# 注意本文件与 card.ps1 是**双向**依赖（card.ps1 右键菜单调 Show-Remove），
-# 故二者在加载顺序上不分先后。$script:svc / $script:cards / $script:nssm / $logDir /
-# $sync.gate / $script:statusBar 从调用方作用域读。WPF 程序集须由调用方先 Add-Type 加载。
+# 依赖均为调用时解析，点源顺序不影响正确性。与 card.ps1 双向依赖（右键菜单调 Show-Remove）。
+# $script:svc / $script:cards / $sync.gate / $script:statusBar 等从调用方作用域读。
 
 # 删除提交体（Show-Remove 的 del_Click 真正执行的部分）。抽出来是为了可直测：
 # 弹模态框的 Click 在测试里够不着，但「入队 remove 命令 + 置卡片过渡态」这段才是会写错的
@@ -87,11 +77,9 @@ function Show-DialogWarning($owner,[string]$msg,[string]$title){
   [System.Windows.MessageBox]::Show($owner,$msg,$title,'OK','Warning') | Out-Null
 }
 
-# 添加提交体（Show-Add 的 ok_Click 真正执行的部分）。$fields 各值是调用方 trim 过的字符串。
-# 返回 $true 表示流程走到「关闭弹窗」（注册成功，或注册成功但保存失败——两种情况都关）；
-# $false 表示被校验/确认拦下，弹窗应保持打开让用户改。
-# 抽出来是为了可直测：校验顺序、Test-EnvPairs、敏感键 OKCancel 分支、Save 失败分支
-# 原本全内联在 Click 里，没有测试缝。
+# 添加提交体（Show-Add 的 ok_Click 执行的部分），$fields 各值已 trim。
+# 返回 $true = 关弹窗（注册成功，或成功但保存失败）；$false = 被拦下，弹窗保持打开。
+# 抽出来是为了可直测（原先全内联在 Click 里，没有测试缝）。
 function Submit-AddService($owner,[hashtable]$fields){
   $n=[string]$fields.n; $p=[int]$fields.p; $exe=[string]$fields.exe
   $url=[string]$fields.url; $dir=[string]$fields.dir; $par=[string]$fields.par; $envRaw=[string]$fields.env
@@ -103,8 +91,7 @@ function Submit-AddService($owner,[hashtable]$fields){
     $msg = if($bad.code -eq 'port'){ '端口必须是 1-65535' } else { $bad.msg }
     Show-DialogError $owner $msg; return $false
   }
-  # 运行账户白名单（只收三个内置账户）：纯函数校验放在 svc-input.ps1，与 Test-SvcInput 同族。
-  # 未知值直接拒——静默回落到 LocalSystem 会让用户以为「按最小权限跑了」，实际没有。
+  # 未知账户直接拒——静默回落到 LocalSystem 会让用户以为「按最小权限跑了」。
   $badAcct = Test-SvcAccount $account
   if($badAcct){ Show-DialogError $owner $badAcct.msg; return $false }
   if(-not $url){ $url="http://127.0.0.1:$p" }
@@ -119,8 +106,7 @@ function Submit-AddService($owner,[hashtable]$fields){
     $tip = "以下环境变量将明文写入注册表（BUILTIN\Users 可读）：`n$($sensitive -join ', ')`n`n推荐改用 *_FILE 路径让服务本体从密钥文件读，文件权限收口到 Administrators+SYSTEM。`n仍要继续注册吗？"
     if(-not (Confirm-SensitiveEnvKeys $owner $tip)){ return $false }
   }
-  # GPU/桌面程序 + LocalSystem：只提示不阻断（与敏感 env 同级，不是确认框）。
-  # 不追求自动判断「是不是 GPU 程序」——那不可能准，由用户勾选声明。
+  # GPU/桌面程序 + LocalSystem：只提示不阻断（由用户勾选声明，不做自动判断）。
   if($gpu -and (-not $account -or $account -ieq 'LocalSystem')){
     Show-DialogWarning $owner "「$n」将以 LocalSystem 运行。`nGPU/桌面交互程序在 LocalSystem 下未必拿得到显卡或桌面（取决于驱动与会话形态）。`n若启动后异常，改成本机用户账户运行——那需要该账户密码，本工具不代管，请用 nssm edit 或服务管理器修改。" '运行账户提示'
   }

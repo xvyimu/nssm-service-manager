@@ -78,7 +78,7 @@ UI DispatcherTimer 400ms tick → TryDequeue → Update-CardData
 ### 命令流（UI → 后台）
 
 ```
-UI 点击 → Invoke-CardToggle → Send-ServiceCommand
+UI 点击（按钮带死方向 / 双击按状态取反）→ Invoke-CardAction → Send-ServiceCommand
   → cmdEpoch++ → 入 $sync.cmd 队列 → wake.Set() 唤醒后台
                                         ↓
 后台 Invoke-PendingCommands → TryDequeue → 执行 → 入 queue 带 done=true
@@ -194,6 +194,6 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 
 ## 测试
 
-`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 26 项回归测试。详见 README「测试与截图」节。
+`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 11 项回归测试。详见 README「测试与截图」节。
 
 CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）。

@@ -6,9 +6,11 @@ foreach ($module in 'theme','util','card','xaml') { . (Join-Path $RepoRoot "lib/
 $script:sync=@{wake=[Threading.AutoResetEvent]::new($false)}
 $script:svc=[ordered]@{TestService=@{port=8080;url='http://127.0.0.1:8080'}}
 function Stop-Background {}
-function Invoke-CardInput($card,[string]$source,[int]$clicks=2) {
+function Invoke-CardInput($card,[string]$source,[string]$action,[int]$clicks=2) {
   if ($source -eq 'Button') {
-    $card.Btn.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+    # 两个按钮各管一个方向：点哪个按 $action 决定（启动键只启动、关闭键只关闭）
+    $b = if ($action -eq 'stop') { $card.BtnStop } else { $card.Btn }
+    $b.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
   } else {
     $eventArgs=[Windows.Input.MouseButtonEventArgs]::new([Windows.Input.Mouse]::PrimaryDevice,0,[Windows.Input.MouseButton]::Left)
     $eventArgs.RoutedEvent=[Windows.UIElement]::MouseLeftButtonDownEvent
@@ -39,15 +41,19 @@ try {
       if ($case.Error -eq 'cooldown') { $card.LastToggle=[datetime]::Now.AddSeconds(-4) }
       $lastToggle=$card.LastToggle
       [void]$script:sync.wake.Reset()
-      Invoke-CardInput $card $source
+      # 按钮路径按用例期望的动作点对应按钮；错误用例没有 Action，就按状态推导
+      #（与双击一致：运行中点关闭，其余点启动），保证测到的仍是原来那条门闩
+      $act = if ($case.Action) { $case.Action } elseif ($card.ST -eq '运行中') { 'stop' } else { 'start' }
+      Invoke-CardInput $card $source $act
       if ($case.Action) {
         Assert ($script:sync.wake.WaitOne(0)) 'Accepted command did not wake worker.'
         $command=$null
         Assert ($script:cmdQueue.TryDequeue([ref]$command)) "$source did not queue $($case.Action)."
         Assert ($command.n -eq 'TestService' -and $command.act -eq $case.Action) 'Wrong queue payload.'
         $expectedState=if ($case.Action -eq 'start') {'启动中'} else {'停止中'}
-        Assert ($card.ST -eq $expectedState -and $card.Btn.Content -eq $expectedState) 'Transition display changed.'
-        Assert (-not $card.Btn.IsEnabled -and -not $card.ReadyToToggle) 'Transition must disable toggle.'
+        # 过渡态文字在状态标签上；两个按钮（启动/关闭）都不该可用
+        Assert ($card.ST -eq $expectedState -and $card.LblSt.Text -eq $expectedState) 'Transition display changed.'
+        Assert (-not $card.Btn.IsEnabled -and -not $card.BtnStop.IsEnabled -and -not $card.ReadyToToggle) 'Transition must disable both buttons.'
         Assert ($card.LastToggle -gt $lastToggle -and $card.Dot.Fill.Color -eq [Windows.Media.Colors]::Orange) 'Transition feedback changed.'
       } else {
         Assert (-not $script:sync.wake.WaitOne(0)) 'Rejected command woke worker.'
@@ -69,7 +75,7 @@ try {
   $script:cmdQueue.Clear()
   $card=New-Card 'TestService' $script:svc.TestService
   Update-CardData $card.SvcName '已停止' ''
-  Invoke-CardInput $card 'DoubleClick' 1
+  Invoke-CardInput $card 'DoubleClick' 'start' 1
   Assert ($script:cmdQueue.IsEmpty) 'Single card click must not start a service.'
   Write-Output 'PASS: both input paths preserve 20 state/guard cases and feedback; single-click ignored.'
 } finally { $win.Close(); $script:sync.wake.Dispose() }

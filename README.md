@@ -12,7 +12,7 @@
 NSSM 本身是命令行工具。服务一多，日常启停、查状态、看日志全靠背命令——这个工具把你的 NSSM 服务收敛成一个窗口：
 
 - **一眼看全**——每张卡显示服务名、端口、健康圆点（绿=正常 / 橙=响应慢 / 红=无响应），六个服务一屏扫完，不用逐个 `sc query` 或开任务管理器
-- **点两下启停**——双击卡片切换启停，右键管重启/日志/删除；8 秒冷却 + 健康门闩挡住「刚停下来又点启动」这类误操作
+- **一个键一个方向**——卡片右上角是「关闭」「启动」两个按钮，各自只管一个方向；习惯双击的也照旧能双击切换。右键管重启/日志/删除；8 秒冷却 + 健康门闩挡住「刚停下来又点启动」这类误操作
 - **配置是清单不是代码**——`services.json` 一份 JSON 列出所有服务，换机器复制即用；CLI 也有增删入口（`-Add`），脚本和 agent 可以直接调用
 - **健康探测不靠猜**——端口 TCP + HTTP 两档并行探测：服务在但响应慢标「超时」，端口没监听标「无响应」
 - **安全默认**——删除服务要输入完整名称确认；新增服务时环境变量会做敏感键检测（`*_API_KEY` / `*_TOKEN` / `*SECRET` / `*PASSWORD` 命中会提示明文进注册表的风险）
@@ -92,10 +92,10 @@ NSSM 路径按三档探测：`$env:NSSM_PATH` → `Get-Command nssm.exe` → sco
 - 卡片以网格填满主区域（默认 3 列 × 2 行六张，`PerPage` 可调），窗口缩放时同步伸展；单页隐藏分页按钮
 - Microsoft YaHei UI + Consolas 系统字体，无需安装字体或启动时枚举
 - 浅色高对比卡片，原生非 layered 窗口支持系统 Mica 背景；主题色统一收口到 `lib/theme.ps1` 的 `$script:T`，改色只动一份
-- 每张卡：服务名、端口、URL、状态圆点、健康说明、打开面板、启停按钮
+- 每张卡：服务名、端口、URL、状态圆点、健康说明、运行时长、打开面板、「关闭」「启动」两个按钮（关闭在左）
 - 标题栏：最小化 / 最大化（按钮 + 双击标题栏切换）/ 关闭
 - 健康三档：`正常`（绿）/ `超时`（橙，服务在但响应慢）/ `无响应`（红，端口未监听或连接被拒）；HTTP 超时 3 秒
-- 双击卡片 = 启停切换，8 秒冷却 + 健康门闩（只有运行中+健康=正常才允许双击关闭）
+- 启停按钮各管一个方向：「启动」只在未运行时可用，「关闭」只在运行中可用，过渡态两个都禁用。双击卡片仍是启停切换（8 秒冷却 + 健康门闩：只有运行中+健康=正常才允许关闭）
 - 过渡态保护：卡片处于启动中/停止中时，在途的旧探测结果不覆盖用户刚触发的过渡态，直到同方向的终态探测到达才收尾
 - 右键卡片 = 启动/停止/重启/面板/日志/安全检查/删除（删除需输入完整服务名确认，红字标注；删除走后台命令队列，UI 不冻结）
 - 单实例互斥：重复双击启动器只保留第一个窗口，第二个静默退出（Mutex 进程级，崩溃后自动释放）
@@ -212,6 +212,7 @@ Copy-Item config.example.json config.json
 | `LogDir` | `''` | 日志根覆盖；空 = 仓内 `logs/`。只影响新注册的服务——已注册服务的 AppStdout/AppStderr 写死在注册表，须逐个重新注册。**日志窗口与保留策略按每个服务实际的 AppStdout 目录走**（读注册表），`LogDir` 只在读不到时兜底——手工 `nssm install` 的服务日志在别处，也能被看到和清理 |
 | `ProbeThrottleLimit` | 8 | 并行探测的 ThrottleLimit（`poll.ps1` ForEach-Object -Parallel） |
 | `ProbeIntervalMs` | 4000 | 有运行中服务、本轮执行过命令、或有服务停在 StartPending/StopPending 时的轮询间隔（`poll.ps1` 循环尾 WaitOne） |
+| `ProbePendingMs` | 1000 | 有服务处于 `StartPending`/`StopPending` 时的轮询间隔。查状态是廉价查询，不必跟着 4 秒的健康探测节奏——否则「启动中」最多要 4 秒才翻成「运行中」 |
 | `ProbeIdleMs` | 15000 | 全停止、无在途命令、且没有服务处于中间态时的轮询间隔——省下空转的唤醒与整轮扫描 |
 | `WaitStoppedPollMs` | 300 | `Wait-Stopped` 轮询步长（`svc-common.ps1`） |
 | `AppRotateBytes` | 5242880 | 单日志档轮转阈值（5 MiB，NSSM `AppRotateBytes`） |
@@ -250,7 +251,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 ## 测试与截图
 
 ```powershell
-pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 26 项 PowerShell 回归
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 11 项 PowerShell 回归
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-tmp/，已 git 忽略）
 ```
@@ -271,33 +272,33 @@ CI 另有一个独立任务跑 `gitleaks-action`（覆盖网页提交与 fork �
 ffmpeg -y -framerate 3 -i .demo-tmp/frame-%02d.png -vf "scale=640:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=4" assets/demo.gif
 ```
 
-`run-all.ps1` 先解析全部 PowerShell 文件，再执行 VBS 编译与 UAC 守卫断言、3×2 布局与缩放、卡片启停门闩、翻页冷却、卡片缓存清理与重建、过渡态竞态保护、后台命令唤醒、菜单和 CLI 注册参数测试。NSSM、服务启停、配置保存及菜单的外部操作采用替身，不会注册测试服务或改动 `services.json`。真实 UAC、系统 Mica 效果与 NSSM 服务生命周期需在本机交互验证。
+`run-all.ps1` 先解析全部 PowerShell 文件，再依次跑 11 项回归：调度优先级、卡片按钮门闩、卡片时长、过渡态失败逃生、探测命令队列、按服务超时、输入校验、服务注册、配置参数、删除端到端、对话框提交。NSSM、服务启停、配置保存及菜单的外部操作采用替身，不会注册测试服务或改动 `services.json`。真实 UAC、系统 Mica 效果与 NSSM 服务生命周期需在本机交互验证。
 
-`sc.exe` 一律经 `Get-ScExe` 解析后调用（本机实测 System32 可能不在 PATH，裸调会拿不到命令而让 `$LASTEXITCODE` 停留在上一条的码）。`test-add-svc.ps1` / `test-exitcode-map.ps1` 专门守这条：注入一个**不同名**的替身命令，只有真的走了解析才会调到它——注入名若和裸调同名（`sc.exe`），调用点退回裸调也照样命中，测不出来。
+> 2026-10-28 精简测试：原先 31 个文件 / 3323 行里，多数是同一批状态机在不同夹具下的重复断言。保留的 11 项互不重叠；**因此不再自动覆盖**的几处——`Set-ServiceParamsAcl` 泄漏判据、`Remove-RotatedLogs` 轮转保留窗口、并发探测块的 `$using:` 作用域、托盘策略真值表、启动器/UAC、单实例互斥、GUI 冒烟。这些要么改动频率低，要么只能在真机交互里验；改到对应代码时需手工过一遍。状态栏显示的租约（后台失败消息不被同一帧的自动刷新覆盖）也在其中。
 
-`test-svc-input.ps1` 覆盖纯函数负例：`Test-SvcInput` 的四类拒绝（名称字符集 / exe 不存在 / 端口越界 / 重名）与校验顺序，`ConvertTo-EnvPairs` 的分隔符/去空白/丢空项与「值内分隔符不拆分」（`NO_PROXY=127.0.0.1,localhost`、`PATH=C:\a;C:\b`），`Test-EnvPairs` 的格式与 APPDATA 交互路径拒绝，`Get-NssmSetSpec` 的 `AppExit` 双 token、`AppEnvironmentExtra` 多 token、`ObjectName` 单 token（LocalSystem/空值不产生该键）、可选键省略与值必须为数组，以及 `Test-SvcAccount` 的白名单（三个内置账户大小写不敏感通过，自定义用户账户拒绝）。`test-security-parse.ps1` 额外覆盖 `Resolve-ServiceExeDir` 的 UNC、引号不闭合、正斜杠、无扩展名等边界（均不应抛错）。
+`sc.exe` 一律经 `Get-ScExe` 解析后调用（本机实测 System32 可能不在 PATH，裸调会拿不到命令而让 `$LASTEXITCODE` 停留在上一条的码）。`test-add-svc.ps1` 专门守这条：注入一个**不同名**的替身命令，只有真的走了解析才会调到它——注入名若和裸调同名（`sc.exe`），调用点退回裸调也照样命中，测不出来。
+
+`test-svc-input.ps1` 覆盖纯函数负例：`Test-SvcInput` 的四类拒绝（名称字符集 / exe 不存在 / 端口越界 / 重名）与校验顺序，`ConvertTo-EnvPairs` 的分隔符/去空白/丢空项与「值内分隔符不拆分」（`NO_PROXY=127.0.0.1,localhost`、`PATH=C:\a;C:\b`），`Test-EnvPairs` 的格式与 APPDATA 交互路径拒绝，`Get-NssmSetSpec` 的 `AppExit` 双 token、`AppEnvironmentExtra` 多 token、`ObjectName` 单 token（LocalSystem/空值不产生该键）、可选键省略与值必须为数组，以及 `Test-SvcAccount` 的白名单（三个内置账户大小写不敏感通过，自定义用户账户拒绝）。
 
 `test-config-params.ps1` 验证 `config.json` 覆盖与坏 JSON 回落：临时写一份非默认值的 `config.json`，确认超时/轮转/冷却随之改变；恢复默认模拟测试夹具（不注入超时键）时 runspace 回落 200/3000/6000；mock `restart` 用注入的短 `waitMs` 快速收尾（若误用默认 6s 会在 1.2s 内只看到 stop）。
 
-`test-tray.ps1` 覆盖托盘策略真值表：默认（三项全关）最小化进任务栏、关闭即退出；全开时关闭/最小化都进托盘；`TrayEnabled` 关时子开关失效回落默认；`$null` config 不抛错；`Remove-Tray` 幂等。未启用托盘时整个 WinForms 都不加载（`Initialize-Tray` 按需 Add-Type）。托盘的创建/菜单/双击是真实 GUI 交互，单测不做——留给本机验证。
+托盘策略没有自动化覆盖：创建托盘图标、菜单和双击都是真实 GUI 交互，改 `lib/tray.ps1` 后需在本机把三项开关各试一遍（默认全关：最小化进任务栏、关闭即退出；全开：关闭/最小化都进托盘）。
 
-按钮与双击共用 `Invoke-CardToggle`，状态校验、8 秒冷却和过渡态只维护一份；`test-card-actions.ps1` 覆盖两个入口的 20 个状态/门闩场景及反馈文案；`test-card-clock.ps1` 覆盖卡片上的时长显示（秒/分/时边界、负值、状态变化时才重记起算点）。GUI 与 CLI 的输入校验共用 `Test-SvcInput`（CLI 用 `exit 1`、GUI 用 MessageBox 呈现，文案各自保留），NSSM 注册配置共用 `Install-NssmService` + `Get-NssmSetSpec`。
+按钮与双击共用一个动作入口 `Invoke-CardAction`，区别只在传进来的方向：按钮写死方向（启动按钮只发 start），双击按当前状态取反。8 秒冷却、健康门闩、过渡态保护都只维护一份。`test-card-actions.ps1` 覆盖按钮门闩（未运行只能启动、运行中只能关闭、过渡态两个都禁用）与双击切换；`test-card-clock.ps1` 覆盖卡片上的时长显示（秒/分/时边界、负值、状态变化时才重记起算点）。GUI 与 CLI 的输入校验共用 `Test-SvcInput`（CLI 用 `exit 1`、GUI 用 MessageBox 呈现，文案各自保留），NSSM 注册配置共用 `Install-NssmService` + `Get-NssmSetSpec`。
 
 `Send-ServiceCommand` 统一提交 GUI 命令并触发唤醒；`test-poll-commands.ps1` 用隔离 runspace 验证空闲唤醒、慢探测之间的命令优先、FIFO 与关闭唤醒。正在进行的单次探测或服务命令仍需结束后才能处理后续命令。另覆盖两点：服务处于 `StartPending` 时下「启动」不调 `sc.exe`、不产生失败消息（否则会回落取回 1056，拼出「启动失败(1056 已在运行)」的矛盾文案）；刚执行过命令的那一轮睡眠用 `ProbeIntervalMs` 而非 `ProbeIdleMs`，否则卡片会停在「启动中」最长约 15 秒；有服务停在 `StartPending`/`StopPending` 时同理（慢启动期间整轮没有可探测项，否则十几秒才更新一次状态）。
 
-过渡态必须有失败出口，否则卡片会永久卡死：`test-transition-failure.ps1` 覆盖多层——失败命令仍要发回执（`ok=$false`，修前失败即静默，UI 侧收不到失败事实）；`ok=$false` 时回滚到命令前的终态并解封按钮（右键启停不置过渡态时只重算门闩、不回滚）；回执彻底丢失时超过 `ToggleTimeoutMs` 逃生；**后台 runspace 死亡**（队列再无生产者）时由 `Update-StatusTick` 每帧无条件扫卡片逃生，不依赖探测结果到达；成功回执按当前状态/健康重算门闩（不无条件点亮，否则绕过健康门闩）；删除中超时收敛到「未知」而非到达的探测值（否则会点亮按钮让用户启动一个正在删除的服务）。`test-transition-race.ps1` 覆盖的是反向：过渡态期间在途的旧探测不得覆盖状态。
+过渡态必须有失败出口，否则卡片会永久卡死：`test-transition-failure.ps1` 覆盖多层——失败命令仍要发回执（`ok=$false`，修前失败即静默，UI 侧收不到失败事实）；`ok=$false` 时回滚到命令前的终态并解封按钮（右键启停不置过渡态时只重算门闩、不回滚）；回执彻底丢失时超过 `ToggleTimeoutMs` 逃生；**后台 runspace 死亡**（队列再无生产者）时由 `Update-StatusTick` 每帧无条件扫卡片逃生，不依赖探测结果到达；成功回执按当前状态/健康重算门闩（不无条件点亮，否则绕过健康门闩）；删除中超时收敛到「未知」而非到达的探测值（否则会点亮按钮让用户启动一个正在删除的服务）。
 
-`test-status-lease.ps1` 守状态栏消息的显示租约：后台失败消息写入后不得被同一帧的「状态自动刷新」覆盖（用户没在操作时距上次操作早已超过 4 秒门槛，而 remove 路径的 stop + Wait-Stopped 最长 6 秒，失败消息必然跨过）。另覆盖 UI 回调异常的截断提示，以及**真触发一次 `DispatcherUnhandledException`**（注册到真 dispatcher、真抛真接）验证「兜底接住异常、窗口不消失、状态栏出提示」——提示词原本把这条列为人工确认，现已自动化。`test-log-retention.ps1` 锁住 `Remove-RotatedLogs` 的真实口径：全局前 N 份豁免 + 天数窗口两个条件是「且」的关系，窗口内一份都不删，当前档（无轮转后缀）永不动。
+`test-remove-e2e.ps1` 把删除流程的两半接起来跑：让 UI 的命令/结果/消息队列直接指向 worker 的，于是真 runspace 产出的回执由真 UI tick 消费，成功与失败两个方向都断言到用户可见结果（成功清卡片并落盘；失败回滚卡片、保留服务、状态栏给原因）。中间那一跳——worker 的回执真的落进 UI 队列——是这份测试存在的理由。
 
-`test-remove-e2e.ps1` 把删除流程的**两半接起来**跑：`test-remove-async.ps1` 分别测了「runspace 产出什么回执」与「UI 拿到回执怎么处理」，中间那一跳（worker 的回执真的落进 UI 队列）此前没被验过。本测试让 UI 的命令/结果/消息队列直接指向 worker 的，于是真 runspace 的回执由真 UI tick 消费，成功与失败两个方向都断言到用户可见结果（成功清卡片并落盘；失败回滚卡片、保留服务、状态栏给原因且带租约）。
-
-`test-dialogs-submit.ps1` 直测两个对话框的提交体（`Submit-AddService` / `Submit-RemoveCommand`），校验顺序、`Test-EnvPairs`、敏感键 OKCancel 的取消/继续两分支、`Save-Svc` 失败分支、账户透传、GPU 提示的三个分支、删除入队与过渡态都可无头驱动（`MessageBox` 用薄包装替身）。另外**真的把「添加服务」弹起来点了一次**：离屏窗口 + `ContentRendered` 里点「注册并启动」，验证下拉选中值、`NO_PROXY` 整条值、`DialogResult` 关闭——`New-AddDialog` 抽出来后点击处理器曾因「脚本块不是闭包」取到 `$null`，只直调 `Submit-AddService` 是测不出来的。非交互会话自动跳过该用例（那里 `ShowDialog` 会永久阻塞）。`test-exitcode-map.ps1` 直测 `Convert-ScExitCode` / `Convert-ServiceStatus` 的完整文案表（此前只断言消息前缀，不校验「1060 → 服务未安装」这类用户可见映射）。`test-acl-script.ps1` 守 `scripts/set-service-params-acl.ps1` 的不变量：泄漏主体判据只有一份（`Test-LeakyAce`），移除与校验共用，覆盖默认 ACL 里的 AppContainer 包 SID（`ALL APPLICATION PACKAGES` 与 `S-1-15-3-*`）。
+`test-dialogs-submit.ps1` 直测两个对话框的提交体（`Submit-AddService` / `Submit-RemoveCommand`），校验顺序、`Test-EnvPairs`、敏感键 OKCancel 的取消/继续两分支、`Save-Svc` 失败分支、账户透传、GPU 提示的三个分支、删除入队与过渡态都可无头驱动（`MessageBox` 用薄包装替身）。另外**真的把「添加服务」弹起来点了一次**：离屏窗口 + `ContentRendered` 里点「注册并启动」，验证下拉选中值、`NO_PROXY` 整条值、`DialogResult` 关闭——`New-AddDialog` 抽出来后点击处理器曾因「脚本块不是闭包」取到 `$null`，只直调 `Submit-AddService` 是测不出来的。非交互会话自动跳过该用例（那里 `ShowDialog` 会永久阻塞）。
 
 `tests/probe-1053-timing.ps1` 是**手动探针**（需管理员，不在 `run-all` 里）：注册一个 BinaryPathName 指向「存在但非服务程序」的 exe，让 SCM 拉起进程、等它连 SCP，超时返回 1053，实测这条启动失败路径的真实耗时。**2026-10-28 实测**：`ServiceController.Start()` 30032ms、`sc.exe start` 30034ms（exit 1053），与 `ServicesPipeTimeout` 默认 30000ms 吻合——`ToggleTimeoutMs = 45000` 留 15s 余量，够用。
 
 注意造场景的方式：**不能用「exe 路径不存在」**——那条路 SCM 立刻返回 2（文件找不到），15~18ms 就结束，走不到管道等待。探针原版就是这么写的，所以它从没产出过有意义的数字。
 
-`test-per-service-timeout.ps1` 守「重服务不该被全局超时硬套」的几件事：`Read-SvcFile` 必须保留 `toggleTimeoutMs` / `httpTimeoutMs` / `tcpTimeoutMs`（只挑 port/url 的话，用户配的覆盖会在下一次 GUI 保存时被静默抹掉）、读→写→读 round-trip 后字段还在、**字段写错（0 / 负数 / 非数字）只让该字段失效而服务条目保留**（抛错会落进 `Load-Svc` 的 catch，整份清单退回 `services.example.json`，下一次保存就把真实清单写丢——这条断言直接比对 `Load-Svc` 的返回是否含真实服务名）、卡片阈值优先取 per-service 值、探测报同一个过渡态时过渡计时会刷新（慢启动不在第 45 秒变「未知」），以及探测超时按服务给（真监听但不应答的端口 + 全局 6000ms / 服务 200ms，断言本轮 3s 内出结果——覆盖被忽略时会拖到 6s）。`test-probe-timeout-scope.ps1` 守并行探测块的 runspace 作用域：`ForEach-Object -Parallel` 开新 runspace，不继承父作用域变量，超时变量必须经 `$using:` 传入。裸用 `$tcpMs` 会让子 runspace 取到 `$null`，`WaitOne($null,$false)` 等价 `WaitOne(0)`，TCP 握手没完成就判「无响应」——该状态在 `card.ps1` 落到红色分支，于是「启停一个服务，别的运行中服务变红」。测试两路：静态扫并行块裸引用（剥注释后不误报），行为段用真监听端口 + 真 poll 脚本块端到端验证。`test-parallel-probe.ps1` 探的是未监听端口，0ms 与 200ms 结果都是「无响应」，对这类 bug 天然免疫，故单开一份。
+`test-per-service-timeout.ps1` 守「重服务不该被全局超时硬套」的几件事：`Read-SvcFile` 必须保留 `toggleTimeoutMs` / `httpTimeoutMs` / `tcpTimeoutMs`（只挑 port/url 的话，用户配的覆盖会在下一次 GUI 保存时被静默抹掉）、读→写→读 round-trip 后字段还在、**字段写错（0 / 负数 / 非数字）只让该字段失效而服务条目保留**（抛错会落进 `Load-Svc` 的 catch，整份清单退回 `services.example.json`，下一次保存就把真实清单写丢——这条断言直接比对 `Load-Svc` 的返回是否含真实服务名）、卡片阈值优先取 per-service 值、探测报同一个过渡态时过渡计时会刷新（慢启动不在第 45 秒变「未知」），以及探测超时按服务给（真监听但不应答的端口 + 全局 6000ms / 服务 200ms，断言本轮 3s 内出结果——覆盖被忽略时会拖到 6s）。这份测试同时守住并行块的超时传递：`ForEach-Object -Parallel` 开新 runspace，不继承父作用域变量，超时变量裸用会取到 `$null`，`WaitOne($null,$false)` 等价 `WaitOne(0)`，TCP 握手没完成就判「无响应」，运行中的服务无故变红。
 
 CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）。
 

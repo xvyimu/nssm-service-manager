@@ -1,15 +1,8 @@
 # lib/svc-common.ps1 — UI 线程与后台 runspace 共用的服务操作原语
-#
-# 只有一份 Wait-Stopped 实现（原 poll.ps1 的 runspace 字符串里一份、add-svc.ps1 里一份，
-# 靠「SYNC: 两处同改」注释人工同步）。poll.ps1 在构造 runspace 脚本时把本文件内容前置进
-# 脚本字符串，add-svc.ps1 直接点源本文件——两边引用的是同一份文本。
+# poll.ps1 把本文件文本前置进 runspace 脚本，add-svc.ps1 直接点源——两边引用同一份。
 
-# sc.exe 的可执行路径：**必须解析，不能裸调**。
-# 起因（2026-10-28 实测）：本机 `C:\Windows\System32` 不在机器/用户 PATH 里，
-# `Get-Command sc.exe` 为空。裸调会抛 CommandNotFoundException，而 `$LASTEXITCODE`
-# 保留的是**上一条**命令的码——下面几个判据（Test-ServiceGone / Test-ServicePresent /
-# Invoke-ServiceRemove / Invoke-Sc）都是从退出码读结论的，拿到假码就会把「删失败」
-# 判成成功，正是这些复核注释反复要防的事。
+# sc.exe 的路径必须解析后调用：裸调一个不存在的命令时 $LASTEXITCODE 保留上一条的码，
+# 而下面几个判据都从退出码读结论（本机 System32 一度不在 PATH，实测会误判）。
 # 每次调用时才解析，便于注入：runspace 用 $sync.scExe、UI 侧用 $script:ScExe。
 # 盘上找不到就退回裸名——让「找不到」如实报错，而不是悄悄用一个不存在的路径。
 function Get-ScExe {
@@ -20,16 +13,12 @@ function Get-ScExe {
   'sc.exe'
 }
 
-# 跑 sc.exe 但**不弹控制台窗口**，返回退出码（stdout/stderr 丢弃，调用方只看退出码）。
-# 为什么需要：本工具是 GUI 进程，`& sc.exe` 会让 Windows 给这个控制台子进程开一个窗口——
-# 实测「点启动约 30 秒后冒出黑框」就是 Start() 超时回落 sc.exe start 的那一刻。
-# 测试夹具把命令注入成**函数名**（$sync.scExe / $script:ScExe）：那种情况直接调用，
-# 既保留测试缝，也不会真去启动进程。
-function Invoke-ScQuiet([string[]]$argv){
-  $exe = Get-ScExe
+# 跑外部控制台程序但**不弹窗口**，返回 @{ exit; out }。GUI 进程直接 `& sc.exe` / `& nssm.exe`
+# 会开出控制台窗口（实测：点启动约 30s 后冒黑框）。注入成函数名时直接调用，保留测试缝。
+function Invoke-ExternalQuiet([string]$exe, [string[]]$argv){
   if (Get-Command -Name $exe -CommandType Function -EA SilentlyContinue) {
-    & $exe @argv 2>&1 | Out-Null
-    return $LASTEXITCODE
+    $o = @(& $exe @argv 2>&1)
+    return @{ exit = $LASTEXITCODE; out = ($o -join "`n") }
   }
   $psi = [Diagnostics.ProcessStartInfo]::new()
   $psi.FileName = $exe
@@ -39,11 +28,16 @@ function Invoke-ScQuiet([string[]]$argv){
   $psi.RedirectStandardOutput = $true
   $psi.RedirectStandardError = $true
   $p = [Diagnostics.Process]::Start($psi)
-  # 先读完再等退出：sc.exe 输出很小，不会把管道填满（大输出才需要异步读）
-  [void]$p.StandardOutput.ReadToEnd()
-  [void]$p.StandardError.ReadToEnd()
+  # 先读完再等退出：sc.exe / nssm.exe 的输出都很小，不会把管道填满
+  $stdout = $p.StandardOutput.ReadToEnd()
+  $stderr = $p.StandardError.ReadToEnd()
   $p.WaitForExit()
-  $p.ExitCode
+  @{ exit = $p.ExitCode; out = ($stdout + $stderr).Trim() }
+}
+
+# sc.exe 的便捷包装：只要退出码。
+function Invoke-ScQuiet([string[]]$argv){
+  (Invoke-ExternalQuiet (Get-ScExe) $argv).exit
 }
 
 # 轮询服务到 Stopped，用于重启/删除前等端口释放。
@@ -99,26 +93,28 @@ function Convert-ScExitCode([int]$code){
 # ServiceController.Status → 中文状态（与 Convert-ScExitCode 同处，避免兜底分支缩水版漂移）
 function Convert-ServiceStatus([string]$s){
   switch ($s) {
-    'Stopped'      { '已停止' }
-    'StartPending'  { '启动中' }
-    'StopPending'   { '停止中' }
-    'Running'       { '运行中' }
-    default         { '未知' }
+    'Stopped'         { '已停止' }
+    'StartPending'    { '启动中' }
+    'StopPending'     { '停止中' }
+    'Running'         { '运行中' }
+    'Paused'          { '已暂停' }
+    'PausePending'    { '暂停中' }
+    'ContinuePending' { '继续中' }
+    default           { '未知' }
   }
 }
 
-# 删除服务的**核心序列**：stop → 等 Stopped → nssm remove confirm → 实证复核是否真消失。
-# 放在本文件而不是 nssm.ps1：本文件文本被 poll.ps1 前置进 runspace，UI 线程与后台引用的是
-# **同一份**——此前两处各写一份（nssm.ps1 的 Remove-NssmService 与 poll.ps1 的 remove 分支），
-# 复核逻辑只在一侧被改就会漂移。这里只共用「判定」，不共用「呈现」：UI/CLI 要抛错、
-# runspace 要入 msg 队列，故返回结果对象由调用方决定怎么报。
+# 删除序列：stop → 等 Stopped → nssm remove confirm → 实证复核是否真消失。
+# 放在本文件是因为 poll.ps1 会前置它的文本，UI 线程与 runspace 共用同一份判定；
+# 只共用「判定」不共用「呈现」——返回结果对象，由调用方决定抛错还是入 msg 队列。
 # $nssmExe 必须传参——runspace 里 $script:nssm 不可见（NSSM 路径经 $sync.nssm 从 UI 传入）。
 function Invoke-ServiceRemove([string]$n,[string]$nssmExe){
   [void](Invoke-ScQuiet @('stop', $n))
   # stop 失败不阻断（服务可能已停），等 Stopped 再删，避免删一个还在跑的服务
   [void](Wait-Stopped $n)
-  $o = & $nssmExe remove $n confirm 2>&1
-  $code = $LASTEXITCODE
+  $r = Invoke-ExternalQuiet $nssmExe @('remove', $n, 'confirm')
+  $o = $r.out
+  $code = $r.exit
   # 退出码**不可信**：不非零只能说明「没报错」，不能说「删掉了」——故下面还要实证复核。
   # 非零时不再查 Test-ServiceGone：命令根本没成功，服务必然还在，再查一次反而可能
   # 因权限类错误把原因说成「服务仍存在」，掩盖真正的原因（退出码）。

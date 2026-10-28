@@ -1,13 +1,7 @@
 # lib/add-svc.ps1 — CLI 添加服务（-Add Name,Port,Exe[,Url,Dir,Args,Env]）
 #
-# 2026-10-05 拆分：纯函数族（Test-SvcInput / ConvertTo-EnvPairs / Test-EnvPairs /
-# Find-SensitiveEnvKeys / Get-NssmSetSpec）→ lib/svc-input.ps1；
-# NSSM 注册/删除（Install-NssmService / Remove-NssmService）→ lib/nssm.ps1；
-# GUI 对话框（Show-Add / Show-Remove）→ lib/dialogs.ps1。
-# 本文件只剩 CLI 入口 Add-SvcFromCli 与自加载钩子。
-#
-# 自加载 config：CLI 模式（-Add）分支不加载 config.ps1，Wait-Stopped 需要默认值。
-# Wait-Stopped 抽到 lib/svc-common.ps1，与 poll.ps1 的 runspace 引用同一份实现（原 SYNC 注释消除）。
+# 纯函数族在 svc-input.ps1、NSSM 注册/删除在 nssm.ps1、对话框在 dialogs.ps1；
+# 本文件只剩 CLI 入口与自加载钩子（CLI 模式不加载 config.ps1，Wait-Stopped 需要默认值）。
 if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
 
 # CLI 模式：解析逗号分隔参数，注册 NSSM 服务并启动，不弹 GUI

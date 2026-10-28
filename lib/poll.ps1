@@ -1,12 +1,8 @@
 # lib/poll.ps1 — 后台探测与命令执行；命令可唤醒空闲等待，在每次服务探测之间优先处理
 # UI 线程绝不碰 I/O；结果经 ConcurrentQueue 回 UI 侧 DispatcherTimer 取
 #
-# 内存优化（vs 初版）：
-# - 端口探测用 System.Net.Sockets.TcpClient（200ms 超时），不用 Get-NetTCPConnection
-#   （后者拉 NetTCPIP CIM provider，常驻 +10MB）
-# - HTTP 探测用单个共享 HttpClient，不用 Invoke-WebRequest（IWR 每次 new+dispose 一个
-#   HttpClient，且加载整个 Microsoft.PowerShell.Commands.Utility HTTP cmdlet 机器）
-# - 结果仍是字符串，runsapce 不持有 UI 对象
+# 内存取舍：端口探测用 TcpClient（Get-NetTCPConnection 会常驻 +10MB CIM provider）；
+# HTTP 用共享 HttpClient（IWR 每次新建并加载整套 cmdlet）。结果仍是字符串，不持有 UI 对象。
 
 # 后台探测脚本块（字符串，在 runspace 里执行）
 # Wait-Stopped 抽到 lib/svc-common.ps1，与 add-svc.ps1（UI 线程）引用同一份实现。
@@ -15,14 +11,14 @@
 $script:poll = (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'svc-common.ps1')) + @'
 # runspace 内构造一次、复用到退出——HttpClient 本身线程安全
 $http = [System.Net.Http.HttpClient]::new()
-# 超时从 $sync 读（由 UI 线程从 config.ps1 注入）；测试夹具未设时回落默认（200/3000/6000）。
-# 生效值写回 $sync 同一键：UI 侧/测试可见 runspace 实际用的是什么（写回即覆盖原注入值）。
+# 超时从 $sync 读（UI 线程从 config 注入），未设时回落默认；生效值写回同一键供测试断言。
 $tcpMs  = if ($sync.tcpTimeoutMs)        { [int]$sync.tcpTimeoutMs }        else { 200 }
 $httpMs = if ($sync.httpTimeoutMs)       { [int]$sync.httpTimeoutMs }       else { 3000 }
 $waitMs = if ($sync.waitStoppedTimeoutMs){ [int]$sync.waitStoppedTimeoutMs } else { 6000 }
 # 节奏与并行度也从 $sync 读（UI 线程从 config 注入），测试夹具未设时回落原硬编码值。
 $probeIntervalMs = if ($sync.probeIntervalMs) { [int]$sync.probeIntervalMs } else { 4000 }
 $probeIdleMs     = if ($sync.probeIdleMs)     { [int]$sync.probeIdleMs }     else { 15000 }
+$probePendingMs  = if ($sync.probePendingMs)  { [int]$sync.probePendingMs }  else { 1000 }
 $probeThrottle   = if ($sync.probeThrottleLimit) { [int]$sync.probeThrottleLimit } else { 8 }
 # 超时改由**每次请求**的 CancellationTokenSource 控制（services.json 里 per-service 的
 # httpTimeoutMs 可能比全局值更长，而 HttpClient.Timeout 是实例级上限，单次请求改不动）。
@@ -32,6 +28,7 @@ $probeThrottle   = if ($sync.probeThrottleLimit) { [int]$sync.probeThrottleLimit
 $http.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan
 $sync.tcpTimeoutMs = $tcpMs; $sync.httpTimeoutMs = $httpMs; $sync.waitStoppedTimeoutMs = $waitMs
 $sync.probeIntervalMs = $probeIntervalMs; $sync.probeIdleMs = $probeIdleMs
+$sync.probePendingMs = $probePendingMs
 $sync.probeThrottleLimit = $probeThrottle
 
 # sc.exe 不抛异常，只靠 $LASTEXITCODE；包装成 helper，失败时反馈到 UI 状态栏
@@ -49,17 +46,12 @@ function Invoke-Sc([string]$verb,[string]$n,[string]$fail){
   $true
 }
 
-# **2026-10-28 订正**：原先这里写「ServiceController.Start() 是异步的（不等 RUNNING）」——不对。
-# 实测它对慢启动服务会等满 ServicesPipeTimeout（30s）再抛异常（probe-1053-timing.ps1：
-# 30032ms）。好处是仍然比 sc.exe 子进程好（不弹控制台窗口、不额外起进程），所以继续用它；
-# 但 catch 里必须先看真实状态（StartPending/Running 就算启动成功），否则会误回落 sc.exe。
-# 两个不能照搬报告原片的坑（已验，见 docs/HANDOFF.md P0-2）：
-# 1. ServiceController.Status 对不存在的服务返回空串（不抛异常）——先判空走 sc.exe 取「未安装」错码，
-#    否则空串会落到 Start() 抛 'Cannot open ... service'，文案退化。
-# 2. Start() 对已运行/无权限抛 MethodInvocationException，内层是英文包壳——直接吐不如落回 sc.exe
-#    取退出码经 Convert-ScExitCode 出中文文案友好。
-# 失败路径仍付一次 sc.exe（~90ms），但只在异常时触发；正常慢启动走 Start() 立即返回。
-# ServiceController 是 IDisposable（持有 SCM 句柄）；用 try/finally 保证释放，不靠 GC。
+# Start() 对慢启动服务会等满 ServicesPipeTimeout（30s）再抛异常（实测 30032ms）——
+# 所以 catch 里先看真实状态：StartPending/Running 就算启动成功，别回落 sc.exe（会弹控制台窗）。
+# 两个坑（见 docs/HANDOFF.md P0-2）：① Status 对不存在的服务返回空串而非抛异常，
+# 需先判空回落 sc.exe 取「未安装」错码；② 已运行/无权限时抛英文包壳异常，
+# 回落到 sc.exe 取退出码经 Convert-ScExitCode 出中文更友好。
+# ServiceController 持有 SCM 句柄，用 try/finally 释放，不靠 GC。
 function Invoke-ServiceStart([string]$n,[string]$fail='启动失败'){
   $svc = $null
   try {
@@ -245,7 +237,11 @@ while(-not $sync.stop){
   # 第三种活跃情形：有服务停在 StartPending/StopPending（$pendingSeen）——慢启动期间整轮
   # 没有可探测项，若不特殊处理，卡片上的「启动中」要 15 秒才更新一次，过渡计时也迟迟不刷新。
   if (-not $sync.stop) {
-    $sleepMs = if ($toProbe.Count -or $executedCmd -or $pendingSeen) { $probeIntervalMs } else { $probeIdleMs }
+    # 有服务停在中间态 → 用更短的间隔，让「启动中 → 运行中」这类翻转在 1 秒内可见；
+    # 否则退到常规节奏。中间态时也照常探测运行中的服务（代价是本地回环 TCP/HTTP，可忽略）。
+    $sleepMs = if ($pendingSeen) { $probePendingMs }
+               elseif ($toProbe.Count -or $executedCmd) { $probeIntervalMs }
+               else { $probeIdleMs }
     [void]$sync.wake.WaitOne($sleepMs)
   }
 }
