@@ -34,6 +34,15 @@ function Set-CardTransition($card, [string]$state, [int]$epoch, [datetime]$at){
   $card.Btn.Content=$state
   $card.ReadyToToggle=$false
   $card.LblSt.Text=$state
+  # 过渡态自己的副标题：不换的话，启动中会一直挂着上一次的「随时可以启动」，
+  # 再叠上时长就变成「随时可以启动 · 已 12s」，自相矛盾。
+  $card.LblUpBase = switch ($state) {
+    '启动中' { '正在启动…' }
+    '停止中' { '正在停止…' }
+    '删除中' { '正在删除…' }
+    default  { $card.LblUpBase }
+  }
+  if ($card.LblUp) { $card.LblUp.Text = [string]$card.LblUpBase }
   $card.LblSt.Foreground=[System.Windows.Media.Brushes]::Orange
   $card.Dot.Fill=[System.Windows.Media.Brushes]::Orange
   $card.PendingEpoch=$epoch
@@ -43,6 +52,43 @@ function Set-CardTransition($card, [string]$state, [int]$epoch, [datetime]$at){
 # 超时后调用方（Update-CardData）按到达的探测值收敛并解封按钮；这是丢失回执的最后逃生口。
 # TransitionAt 未记录（MinValue：手工置态的旧夹具、或状态被直接赋值绕过 Set-CardTransition）
 # 时不判超时——没有起算点就无法断言「超时了」，宁可维持原守卫行为。
+# 把时长格式化成「12s / 3分12秒 / 2小时05分」。负值（时钟回拨）返回空串。
+function Format-Elapsed([datetime]$since, [datetime]$now) {
+  $s = [int](($now - $since).TotalSeconds)
+  if ($s -lt 0) { return '' }
+  if ($s -lt 60) { return "${s}s" }
+  $m = [int][math]::Floor($s / 60); $r = $s % 60
+  if ($m -lt 60) { return "${m}分${r}秒" }
+  $h = [int][math]::Floor($m / 60); $m = $m % 60
+  return "${h}小时${m}分"
+}
+
+# 每帧刷新卡片上的时长：启动/停止过程中显示已用时，运行中显示已运行多久。
+# 只改 LblUp 的**后缀**——正文由 Update-CardData 写进 LblUpBase，这里不重算，
+# 否则健康文案会被时钟逻辑复制一份、两边迟早不一致。
+function Update-CardClock($card, [datetime]$now) {
+  if (-not $card -or -not $card.LblUp) { return }
+  $suffix = ''
+  if ($card.ST -in @('启动中','停止中','删除中')) {
+    if ($card.TransitionAt -ne [datetime]::MinValue) {
+      $e = Format-Elapsed $card.TransitionAt $now
+      if ($e) { $suffix = " · 已 $e" }
+    }
+  } elseif ($card.ST -eq '运行中') {
+    if ($card.StateSince -and $card.StateSince -ne [datetime]::MinValue) {
+      $e = Format-Elapsed $card.StateSince $now
+      if ($e) { $suffix = " · 已运行 $e" }
+    }
+  } elseif ($card.ST -eq '已停止') {
+    if ($card.StateSince -and $card.StateSince -ne [datetime]::MinValue) {
+      $e = Format-Elapsed $card.StateSince $now
+      if ($e) { $suffix = " · 已停 $e" }
+    }
+  }
+  $base = if ($null -ne $card.LblUpBase) { [string]$card.LblUpBase } else { '' }
+  $card.LblUp.Text = $base + $suffix
+}
+
 # 卡片过渡态阈值：services.json 的 per-service 覆盖优先，缺省回落全局。
 # New-Card 与 Update-CardInfo 都要算它——写成一份，免得将来改判据时只改一边（本仓的惯常教训）。
 function Resolve-ToggleTimeoutMs($info){
@@ -89,6 +135,7 @@ function Set-CardRollback($card, [string]$toState, [string]$toHealth){
   $h = if ($PSBoundParameters.ContainsKey('toHealth')) { $toHealth } else { $card.PrevH }
   # 先落回目标终态，再交给 Update-CardData 走常规渲染——否则过渡态守卫会按旧 ST 拦下这个值。
   $card.ST=$toState
+  $card.StateSince=[datetime]::Now   # 回滚也是「进入终态」，时长从此刻重新起算
   $card.PendingEpoch=0          # 清纪元：失败命令的回执/旧探测不再干扰
   $card.TransitionAt=[datetime]::MinValue
   $card.TransitionStartedAt=[datetime]::MinValue
@@ -212,6 +259,10 @@ function New-Card([string]$name, $info){
     # TransitionAt 是过渡态超时的独立起算点（MinValue = 不在过渡态）。
     H=''; PrevST='未知'; PrevH=''; TransitionAt=[datetime]::MinValue
     TransitionStartedAt=[datetime]::MinValue
+    # 进入当前终态的时刻（运行中=启动成功的时间；已停止=停下的时间），供卡片上的时长显示
+    StateSince=[datetime]::MinValue
+    # LblUp 的正文（健康文案），时钟只在它后面追加后缀，不重算
+    LblUpBase='正在获取服务状态'
     # per-service 过渡态超时（services.json 的 toggleTimeoutMs），缺省用全局
     ToggleTimeoutMs=$(Resolve-ToggleTimeoutMs $info)
     Dot=$dot; LblSt=$lblSt; LblUp=$lblUp; Btn=$btn
@@ -354,7 +405,10 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
   if ($c.ST -in @('启动中','停止中') -and $st -notin @('启动中','停止中')) {
     $c.TransitionAt = [datetime]::MinValue
   }
+  $prevST = $c.ST
   $c.ST = $st
+  # 只在状态**变化**时重记起算点：探测每 4 秒来一次，每次都重置的话时长永远停在 0
+  if ($st -ne $prevST) { $c.StateSince = [datetime]::Now }
   $c.H = $h   # 记住生效的健康文案：进入下一次过渡态时由 Set-CardTransition 留档为 PrevH
   $running = $st -eq '运行中'
   $healthy = $h -eq '正常'
@@ -370,8 +424,8 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
   $c.LblSt.Text = $st
   $c.LblSt.Foreground = $brush
 
-  # 健康文字
-  $c.LblUp.Text = if ($running -and $healthy) {
+  # 健康文字：正文存进 LblUpBase，时长后缀由 Update-CardClock 追加（它每帧跑）。
+  $c.LblUpBase = if ($running -and $healthy) {
     '服务响应正常'
   } elseif ($running) {
     $h
@@ -382,6 +436,8 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
   } else {
     '等待服务状态更新'
   }
+  $c.LblUp.Text = $c.LblUpBase
+  Update-CardClock $c ([datetime]::Now)
   $c.ReadyToToggle = Test-CardToggleReady $st $h
   $c.Btn.Content = if ($running) { '停止' } else { '启动' }
   $c.Btn.IsEnabled = $c.ReadyToToggle

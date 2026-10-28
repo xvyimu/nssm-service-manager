@@ -209,12 +209,13 @@ Copy-Item config.example.json config.json
 | `WaitStoppedTimeoutMs` | 6000 | 重启/删除前轮询 Stopped 的上限（`lib/svc-common.ps1` 的 `Wait-Stopped`，UI 线程与 runspace 共用一份） |
 | `LogKeepCount` | 10 | 轮转日志保留份数（`util.ps1` Remove-RotatedLogs）。口径是**跨服务全局**按修改时间倒序的前 N 份豁免，不是每服务各 N 份 |
 | `LogKeepDays` | 14 | 轮转日志保留天数：删除须同时满足「不在全局前 N 份」且「早于 N 天」，故 14 天内高频轮转的档一份都不删（保留份数上限只在跨过天数后生效） |
-| `LogDir` | `''` | 日志根覆盖；空 = 仓内 `logs/`。只影响新注册的服务——已注册服务的 AppStdout/AppStderr 写死在注册表，须逐个重新注册 |
+| `LogDir` | `''` | 日志根覆盖；空 = 仓内 `logs/`。只影响新注册的服务——已注册服务的 AppStdout/AppStderr 写死在注册表，须逐个重新注册。**日志窗口与保留策略按每个服务实际的 AppStdout 目录走**（读注册表），`LogDir` 只在读不到时兜底——手工 `nssm install` 的服务日志在别处，也能被看到和清理 |
 | `ProbeThrottleLimit` | 8 | 并行探测的 ThrottleLimit（`poll.ps1` ForEach-Object -Parallel） |
 | `ProbeIntervalMs` | 4000 | 有运行中服务、本轮执行过命令、或有服务停在 StartPending/StopPending 时的轮询间隔（`poll.ps1` 循环尾 WaitOne） |
 | `ProbeIdleMs` | 15000 | 全停止、无在途命令、且没有服务处于中间态时的轮询间隔——省下空转的唤醒与整轮扫描 |
 | `WaitStoppedPollMs` | 300 | `Wait-Stopped` 轮询步长（`svc-common.ps1`） |
 | `AppRotateBytes` | 5242880 | 单日志档轮转阈值（5 MiB，NSSM `AppRotateBytes`） |
+| `AppRotateSeconds` | 86400 | 轮转的年龄门槛（NSSM `AppRotateSeconds`）：文件比这更「新」就不轮转。`AppRotateFiles=1` 是**每次服务启动**都轮转一次，频繁重启的服务一天能堆几十个档；设了门槛后每个文件至少活一天才允许被轮转 |
 | `AppStopMethodConsole` | 5000 | 停止时给控制台进程的收尾毫秒（NSSM `AppStopMethodConsole`） |
 | `AckPollIntervalMs` | 400 | 命令回执/探测结果轮询的 DispatcherTimer 间隔（主脚本） |
 | `TrayEnabled` | false | 托盘总开关；关时下面两项无效，也不加载 WinForms |

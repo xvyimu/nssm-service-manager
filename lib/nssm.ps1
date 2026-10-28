@@ -35,8 +35,10 @@ function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$
   # config 可能未加载（单独点源本模块时）——用 $null 判断回落，不靠 [int]$null=0。
   $rotateBytes = if ($script:config -and $script:config.AppRotateBytes) { [int]$script:config.AppRotateBytes } else { 5242880 }
   $stopMethod  = if ($script:config -and $script:config.AppStopMethodConsole) { [int]$script:config.AppStopMethodConsole } else { 5000 }
+  # 轮转年龄门槛：不设的话「每次启动轮转一次」会把频繁重启的服务的日志堆成几十个档
+  $rotateSecs  = if ($script:config -and $script:config.AppRotateSeconds) { [int]$script:config.AppRotateSeconds } else { 86400 }
   try {
-    foreach($s in Get-NssmSetSpec $n $dir $par $envPairs $rotateBytes $stopMethod $account){ nssm-set $n $s.k $s.v }
+    foreach($s in Get-NssmSetSpec $n $dir $par $envPairs $rotateBytes $stopMethod $account $rotateSecs){ nssm-set $n $s.k $s.v }
   } catch {
     # 回滚失败不该盖掉原始错误（$s 未配全才是根因）；但也不能静默——回滚没成功意味着
     # 残骸服务还留在服务数据库里，用户需要知道。

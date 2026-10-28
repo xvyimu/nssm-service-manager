@@ -46,6 +46,10 @@ $script:config = [ordered]@{
   WaitStoppedPollMs   = 300      # Wait-Stopped 轮询步长（svc-common.ps1）
   # ---- NSSM 注册参数（原硬编码在 Get-NssmSetSpec）----
   AppRotateBytes      = 5242880  # 单日志档轮转阈值（5 MiB，NSSM AppRotateBytes）
+  AppRotateSeconds    = 86400    # 文件「太新」就不轮转的年龄门槛（NSSM AppRotateSeconds，默认 1 天）——
+                                 # AppRotateFiles=1 会在**每次服务启动**时轮转一次：频繁重启的服务
+                                 # 一天能堆几十个档（本机 ComfyUI 重启 18 次 → 37 个）。设了年龄门槛后
+                                 # 每个文件至少活 1 天才允许被轮转，堆积速度立刻降下来。
   AppStopMethodConsole = 5000    # 停止时给控制台进程的收尾毫秒（NSSM AppStopMethodConsole）
   # ---- UI 节奏 ----
   AckPollIntervalMs   = 400      # 命令回执/探测结果轮询的 DispatcherTimer 间隔（主脚本）

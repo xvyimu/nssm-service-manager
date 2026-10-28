@@ -15,6 +15,7 @@
   "ProbeIdleMs":          15000,
   "WaitStoppedPollMs":    300,
   "AppRotateBytes":       5242880,
+  "AppRotateSeconds":     86400,
   "AppStopMethodConsole": 5000,
   "AckPollIntervalMs":    400,
   "TrayEnabled":          false,

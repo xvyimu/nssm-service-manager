@@ -224,7 +224,12 @@ function Update-StatusTick {
     # Invoke-TransitionTimeoutEscape 内部自带 Test-TransitionTimedOut 判据，此处不再预判。
     # Get-Command 守卫与主脚本的 Dispatcher handler 同款：card.ps1 未加载（CLI/部分单测）
     # 时该函数不存在，不能让它把整个 tick 带崩。
-    foreach ($card in @($script:cards.Values)) { [void](Invoke-TransitionTimeoutEscape $card $now) }
+    foreach ($card in @($script:cards.Values)) {
+      [void](Invoke-TransitionTimeoutEscape $card $now)
+      # 同帧刷新卡片时长（启动/停止过程显示已用多久，运行中显示已运行多久）。
+      # 与逃生口同一处：两者都不依赖队列，后台 runspace 死了也照常走。
+      Update-CardClock $card $now
+    }
   }
   # 空闲 4 秒后自动刷新状态文字；消息租约未到期时不覆盖（T4）。
   if ($script:statusBar -and (-not $script:lastActionAt -or ([datetime]::Now - $script:lastActionAt).TotalSeconds -ge 4)) {
@@ -262,6 +267,20 @@ function Test-GuiInstanceRunning([string]$mutexName){
 # 删除 0 份；再加 5 份 20 天前的，删掉的是那 5 份（全局前 10 份豁免留给了另外两组）。
 # 返回被删文件路径列表。
 # 注：参数名不能用 $LogDir（PS 变量名大小写不敏感，会遮蔽外层 $logDir，与 Get-LogFiles 同坑）。
+# 某个服务的日志目录：读注册表里 nssm 写的 AppStdout，取它的父目录。
+# 为什么不能直接用 $logDir：服务未必是本工具注册的。手工 `nssm install` 的服务
+# AppStdout 指向别处（本机 ComfyUI 就指向 D:\AI\...\logs），那些日志既不会出现在
+# 日志窗口里，也永远进不了下面的保留策略——一天就堆了 37 个轮转档。
+# 读不到（服务未注册 / 无 AppStdout / 无权限）时回落 $logDir。
+function Get-SvcLogDir([string]$n){
+  try {
+    $p = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$n\Parameters" -Name AppStdout -EA Stop
+    $dir = Split-Path ([string]$p.AppStdout) -Parent
+    if ($dir -and (Test-Path -LiteralPath $dir)) { return $dir }
+  } catch {}
+  $logDir
+}
+
 function Remove-RotatedLogs([string]$LogPath,[int]$KeepCount=10,[int]$KeepDays=14){
   if (-not $LogPath) { $LogPath = $logDir }
   if (-not $LogPath -or -not (Test-Path -LiteralPath $LogPath)) { return @() }

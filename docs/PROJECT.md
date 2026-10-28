@@ -27,6 +27,7 @@ service-manager-gui.ps1（主入口：CLI 分支 + 提权 + 模块加载 + 窗�
 ├─ lib/config.ps1     可调常量收口（PerPage/超时/轮转/冷却/托盘/日志保留）
 ├─ lib/theme.ps1      系统字体、主题色 $script:T、按钮模板、Mica P/Invoke
 ├─ lib/util.ps1       配置持久化（Read-SvcFile/Load-Svc/Save-Svc）、命令入队（Send-ServiceCommand）、
+│                     每服务日志目录解析（Get-SvcLogDir，读注册表 AppStdout）、
 │                     打开面板（Open-PanelUrl）、日志轮转保留（Remove-RotatedLogs）、
 │                     安全检查（Resolve-ServiceExeDir/Show-SecurityCheck）
 ├─ lib/svc-input.ps1  纯函数族：输入校验（Test-SvcInput/Test-SvcAccount）、env 解析
