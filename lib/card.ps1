@@ -25,6 +25,9 @@ function Set-CardTransition($card, [string]$state, [int]$epoch, [datetime]$at){
   # 过渡时钟独立于 LastToggle：后者兼作冷却起算点、回执到达时会被重写，
   # 拿它算超时会在回执后把计时重置。TransitionAt 只在进出过渡态时动。
   $card.TransitionAt=$at
+  # 过渡态的**起点**，只在进入时记一次；TransitionAt 会被探测刷新（慢启动），它不刷新。
+  # 逃生硬上限用它算，防止刷新把逃生口永久顶掉。
+  $card.TransitionStartedAt=$at
   $card.Btn.IsEnabled=$false
   $card.Btn.Content=$state
   $card.ReadyToToggle=$false
@@ -38,10 +41,26 @@ function Set-CardTransition($card, [string]$state, [int]$epoch, [datetime]$at){
 # 超时后调用方（Update-CardData）按到达的探测值收敛并解封按钮；这是丢失回执的最后逃生口。
 # TransitionAt 未记录（MinValue：手工置态的旧夹具、或状态被直接赋值绕过 Set-CardTransition）
 # 时不判超时——没有起算点就无法断言「超时了」，宁可维持原守卫行为。
+# 卡片过渡态阈值：services.json 的 per-service 覆盖优先，缺省回落全局。
+# New-Card 与 Update-CardInfo 都要算它——写成一份，免得将来改判据时只改一边（本仓的惯常教训）。
+function Resolve-ToggleTimeoutMs($info){
+  if($info -and $info.toggleTimeoutMs){ [int]$info.toggleTimeoutMs } else { $script:TOGGLE_TIMEOUT_MS }
+}
+
+# 阈值优先取卡片自己的 ToggleTimeoutMs（services.json 的 per-service 覆盖），缺省回落全局。
+# 重服务（AI 服务冷启动一分钟起）不该被全局 45s 硬套；旧夹具手工搭的卡片对象没有该字段，
+# 取到 $null 即回落，不抛错。
 function Test-TransitionTimedOut($card, [datetime]$now){
   if ($card.ST -notin @('启动中','停止中','删除中')) { return $false }
   if ($card.TransitionAt -eq [datetime]::MinValue) { return $false }
-  ($now - $card.TransitionAt).TotalMilliseconds -ge $script:TOGGLE_TIMEOUT_MS
+  $limit = if ($card.ToggleTimeoutMs) { [int]$card.ToggleTimeoutMs } else { $script:TOGGLE_TIMEOUT_MS }
+  # 硬上限：探测报同一过渡态时 TransitionAt 会被刷新（慢启动不误判），但**不能无限刷新**——
+  # 服务永久卡在 StartPending/StopPending（停止回调挂死这类）时，逃生口会彻底失效，
+  # 而那正是这套机制存在的理由。取 10 倍阈值：正常慢启动够用，真挂了也一定会被放出来。
+  # TransitionStartedAt 缺失（MinValue：旧夹具手工置态）时退回 TransitionAt 当起点。
+  $started = if ($card.TransitionStartedAt -and $card.TransitionStartedAt -ne [datetime]::MinValue) { $card.TransitionStartedAt } else { $card.TransitionAt }
+  if (($now - $started).TotalMilliseconds -ge ($limit * 10)) { return $true }
+  ($now - $card.TransitionAt).TotalMilliseconds -ge $limit
 }
 
 # 健康门闩：卡片此刻是否允许切换（停止或启动）。已停止 → 可启动；运行中且健康正常 → 可停止。
@@ -67,6 +86,7 @@ function Set-CardRollback($card, [string]$toState, [string]$toHealth){
   $card.ST=$toState
   $card.PendingEpoch=0          # 清纪元：失败命令的回执/旧探测不再干扰
   $card.TransitionAt=[datetime]::MinValue
+  $card.TransitionStartedAt=[datetime]::MinValue
   $card.LastToggle=[datetime]::MinValue  # 清冷却：用户刚吃了失败，应能立刻重试
   Update-CardData $card.SvcName $toState $h
 }
@@ -186,6 +206,9 @@ function New-Card([string]$name, $info){
     # 供命令失败时 Set-CardRollback 原样放回（反推方向会猜错 restart/remove）。
     # TransitionAt 是过渡态超时的独立起算点（MinValue = 不在过渡态）。
     H=''; PrevST='未知'; PrevH=''; TransitionAt=[datetime]::MinValue
+    TransitionStartedAt=[datetime]::MinValue
+    # per-service 过渡态超时（services.json 的 toggleTimeoutMs），缺省用全局
+    ToggleTimeoutMs=$(Resolve-ToggleTimeoutMs $info)
     Dot=$dot; LblSt=$lblSt; LblUp=$lblUp; Btn=$btn
     PortText=$portText; Endpoint=$endpoint; OpenBtn=$open
   }
@@ -234,6 +257,8 @@ function Update-CardInfo([string]$name, $info){
   if (-not $script:cards.ContainsKey($name)) { return }
   $c = $script:cards[$name]
   $c.Port = $info.port; $c.Url = $info.url
+  # 配置改了超时覆盖时，命中缓存的旧卡片要跟着换阈值
+  $c.ToggleTimeoutMs = Resolve-ToggleTimeoutMs $info
   $c.PortText.Text = ":$($info.port)"
   $c.Endpoint.Text = $info.url
   $c.Endpoint.ToolTip = $info.url
@@ -306,6 +331,13 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
   # 超时逃生（T1）：命令驱动的过渡态若回执丢失，超过 ToggleTimeoutMs 后不再按方向过滤，
   # 直接接受到达的探测值并解封按钮。
   $commandDriven = $c.TransitionAt -ne [datetime]::MinValue
+  # 探测报的状态和卡片一样（都在启动中/停止中）→ 服务确实还在动，不是回执丢了。
+  # 刷新过渡计时，让逃生阈值从「最后一次看到它在动」起算：重服务冷启动 90s 时，
+  # 卡片不会在第 45 秒显示「未知」。不刷新的话，下面这道方向守卫会把 st='启动中'
+  # 直接丢掉，计时永远停在用户点下按钮那一刻。
+  # 有界：SCM 自己会把卡在 StartPending 的服务收敛到 Stopped（ServicesPipeTimeout），
+  # 一旦探测不再报同一状态，计时就不再刷新，逃生照常生效。
+  if (-not $timedOut -and $commandDriven -and $st -eq $c.ST) { $c.TransitionAt = [datetime]::Now }
   $transitionExpect = @{ '启动中' = '运行中'; '停止中' = '已停止' }
   if (-not $timedOut -and $commandDriven -and $transitionExpect.ContainsKey($c.ST)) {
     $expected = $transitionExpect[$c.ST]

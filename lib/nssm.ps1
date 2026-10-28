@@ -19,7 +19,7 @@ function nssm-set([string]$n,[string]$k,[Parameter(ValueFromRemainingArguments=$
 }
 
 # GUI/CLI 共用 NSSM 注册与配置；输入校验、错误显示、保存和启动仍由调用方处理。
-function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$envPairs){
+function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$envPairs,[string]$account=''){
   $nssmOut=& $script:nssm install $n $exe 2>&1
   if($LASTEXITCODE -ne 0){ throw "NSSM install 失败($LASTEXITCODE): $($nssmOut -join ' ')" }
   # install 的退出码同样不可信（实测：提权不足时打印 "Administrator access is needed"
@@ -36,7 +36,7 @@ function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$
   $rotateBytes = if ($script:config -and $script:config.AppRotateBytes) { [int]$script:config.AppRotateBytes } else { 5242880 }
   $stopMethod  = if ($script:config -and $script:config.AppStopMethodConsole) { [int]$script:config.AppStopMethodConsole } else { 5000 }
   try {
-    foreach($s in Get-NssmSetSpec $n $dir $par $envPairs $rotateBytes $stopMethod){ nssm-set $n $s.k $s.v }
+    foreach($s in Get-NssmSetSpec $n $dir $par $envPairs $rotateBytes $stopMethod $account){ nssm-set $n $s.k $s.v }
   } catch {
     # 回滚失败不该盖掉原始错误（$s 未配全才是根因）；但也不能静默——回滚没成功意味着
     # 残骸服务还留在服务数据库里，用户需要知道。

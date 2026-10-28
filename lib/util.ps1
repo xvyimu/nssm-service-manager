@@ -22,18 +22,52 @@
 # 且用 `if (-not $script:configWarning)` 守卫，无需预设。
 
 function Read-SvcFile([string]$path){
+  # 可选字段写错的收集箱（Load-Svc 读完并入 configNotices 弹给用户）。
+  # 为什么收集而不抛：抛会让 Load-Svc 落到 catch，整份清单退回 services.example.json——
+  # GUI 里显示的是示例服务，用户点一次增删，Save-Svc 就把示例写回真实文件，清单全没。
+  # 一个可选字段写错只该让**那个字段**不生效。
+  $script:svcFieldWarnings = @()
   $j = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
   $o = [ordered]@{}; foreach ($k in $j.Keys) {
     $p = [int]$j[$k].port; $u = [string]$j[$k].url
     if ($p -lt 1 -or $p -gt 65535) { throw "$k 端口非法: $p" }
-    $o[$k] = @{ port = $p; url = $u }
+    $entry = @{ port = $p; url = $u }
+    # 可选 per-service 超时覆盖（缺省回落 config 的全局值）：
+    #   toggleTimeoutMs — 卡片过渡态超时逃生（重服务冷启动一分钟起时调大）
+    #   httpTimeoutMs   — HTTP 健康探测超时
+    #   tcpTimeoutMs    — 端口探测超时
+    # **必须在这里显式带走**：Save-Svc 写的是整份 $script:svc，本函数只挑 port/url 的话，
+    # 用户在 services.json 里写的覆盖字段会在下一次 GUI 增删服务时被静默抹掉。
+    foreach ($opt in 'toggleTimeoutMs','httpTimeoutMs','tcpTimeoutMs') {
+      if (-not $j[$k].ContainsKey($opt)) { continue }
+      $raw = $j[$k][$opt]
+      $v = 0
+      if (-not [int]::TryParse([string]$raw, [ref]$v) -or $v -le 0) {
+        # 写错/写 0 只让该字段不生效（回落全局），服务本身照常保留；原因记进收集箱弹给用户。
+        $script:svcFieldWarnings += "$k 的 $opt 无效（$raw），已回落全局值"
+        continue
+      }
+      $entry[$opt] = $v
+    }
+    $o[$k] = $entry
   }
   $o
 }
 
 function Load-Svc {
   if (Test-Path $cfg) {
-    try { return Read-SvcFile $cfg }
+    try {
+      $loaded = Read-SvcFile $cfg
+      # 可选字段写错：清单照常用，只把原因攒成提示（configNotices），不走 configWarning——
+      # 后者配套的弹框会写「当前使用恢复配置」，而这里并没有用恢复配置。
+      # **必须先判空初始化为 @()**：`$null += "x"` 得到的不是数组而是 String（+= 走字符串
+      # 拼接），后面 -join 就失效，多条提示会粘成一行。注意 `@($null)` 也不是空数组，
+      # 是「含一个 $null 的数组」——只能在确认是 $null 时显式赋 @()。
+      # 这里可以初始化：本变量没有别的模块写入，不存在 configWarning 那种被覆盖的问题。
+      if ($null -eq $script:configNotices) { $script:configNotices = @() }
+      foreach ($w in $script:svcFieldWarnings) { $script:configNotices += "services.json：$w" }
+      return $loaded
+    }
     # 消息自带文件名：主脚本的弹框用中性前缀（configWarning 可能来自 config.json 或
     # services.json，调用方无从判断），来源只能由写入方在这里讲清楚。
     catch { $script:configWarning = "services.json 无效：$($_.Exception.Message)" }

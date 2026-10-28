@@ -63,6 +63,17 @@ try {
   Assert ($pairs[1] -eq 'B=2') "trim should strip leading space, got [$($pairs[1])]"
   $pairs = ConvertTo-EnvPairs 'A=1,B=2' ','
   Assert ($pairs.Count -eq 2) 'comma separator should split GUI env'
+  # 值里含分隔符时不得被拆散：GUI 填多地址 NO_PROXY 的真实场景（改前直接报格式错误）
+  $pairs = ConvertTo-EnvPairs 'HTTP_PROXY=http://h:1,NO_PROXY=127.0.0.1,localhost' ','
+  Assert ($pairs.Count -eq 2) "逗号出现在值里不应拆成新变量，got $($pairs.Count): $($pairs -join '|')"
+  Assert ($pairs[1] -eq 'NO_PROXY=127.0.0.1,localhost') "NO_PROXY 的值必须原样保留，got [$($pairs[1])]"
+  Assert ($null -eq (Test-EnvPairs $pairs)) 'NO_PROXY 多地址应通过格式校验'
+  # 分号同理：CLI 的 PATH 值本身就含分号
+  $pairs = ConvertTo-EnvPairs 'PATH=C:\Windows;C:\Windows\System32' ';'
+  Assert ($pairs.Count -eq 1) "分号出现在值里不应拆成新变量，got $($pairs.Count): $($pairs -join '|')"
+  # 分隔符按字面量切（原实现把 separator 当正则，传 | 会炸）
+  $pairs = ConvertTo-EnvPairs 'A=1|B=2' '|'
+  Assert ($pairs.Count -eq 2) "字面量分隔符应能切开，got $($pairs.Count): $($pairs -join '|')"
 
   # ---- Test-EnvPairs：缺 = / 空 key / APPDATA 交互路径 ----
   Assert ($null -eq (Test-EnvPairs @('A=1','B=2'))) 'well-formed pairs should pass'
@@ -151,12 +162,32 @@ try {
   # spec 里每个 value 都必须是数组——nssm-set 的 ValueFromRemainingArguments 靠它展开
   foreach ($s in $spec) { Assert ($s.v -is [array]) "spec value for $($s.k) must be an array, got $($s.v.GetType().Name)" }
 
+  # ---- 运行账户：白名单只有三个内置账户（都不需要密码）----
+  foreach ($a in @('LocalSystem','NT AUTHORITY\LocalService','NT AUTHORITY\NetworkService','locALsystem')) {
+    Assert ($null -eq (Test-SvcAccount $a)) "内置账户应通过：$a"
+  }
+  Assert ($null -eq (Test-SvcAccount '')) '空账户（沿用 nssm install 的默认）应通过'
+  $bad = Test-SvcAccount 'DOMAIN\someone'
+  Assert ($bad.code -eq 'account') "自定义用户账户应被拒绝，got $($bad.code)"
+
+  # ObjectName 必须是一个 token：nssm 把它当 username（additional 参数），密码位留空由
+  # well-known SID 识别路径补空串。多 token 会把第二个当成密码。
+  $spec = Get-NssmSetSpec 'SvcC' $null $null @() 5242880 5000 'NT AUTHORITY\LocalService'
+  $byKey = @{}; foreach ($s in $spec) { $byKey[$s.k] = $s.v }
+  Assert ($byKey['ObjectName'].Count -eq 1) "ObjectName 必须是单个 token，got $($byKey['ObjectName'].Count)"
+  Assert ($byKey['ObjectName'] -join '|' -eq 'NT AUTHORITY\LocalService') "ObjectName 值不对：$($byKey['ObjectName'] -join '|')"
+  # LocalSystem 就是 nssm install 的默认账户，不必再 set（保持 spec 最小）
+  foreach ($a in @('LocalSystem','')) {
+    $spec = Get-NssmSetSpec 'SvcC' $null $null @() 5242880 5000 $a
+    Assert (@($spec | Where-Object { $_.k -eq 'ObjectName' }).Count -eq 0) "账户 [$a] 不该产生 ObjectName"
+  }
+
   if ($cfgExisted) {
     if ((Get-FileHash -LiteralPath $cfg).Hash -ne $before) { throw 'Test changed services.json.' }
   } elseif (Test-Path -LiteralPath $cfg) {
     throw 'Test created services.json where none existed.'
   }
-  Write-Output 'PASS: Test-SvcInput (name/exe/port/dup + order), ConvertTo-EnvPairs (sep/trim/drop-empty), Test-EnvPairs (format/APPDATA), Find-SensitiveEnvKeys (sensitive-name detection + _FILE path-aware skip + expanded patterns), Get-LogFiles (regex-escaped service names), Get-NssmSetSpec (AppExit dual-token, env multi-token, optional-key omission, array-typed values).'
+  Write-Output 'PASS: Test-SvcInput (name/exe/port/dup + order), Test-SvcAccount (built-in whitelist, custom rejected), ConvertTo-EnvPairs (sep/trim/drop-empty, separator inside value kept), Test-EnvPairs (format/APPDATA), Find-SensitiveEnvKeys (sensitive-name detection + _FILE path-aware skip + expanded patterns), Get-LogFiles (regex-escaped service names), Get-NssmSetSpec (AppExit dual-token, env multi-token, ObjectName single token, optional-key omission, array-typed values).'
 } finally {
   Remove-Item -LiteralPath $fakeExe -Force -EA SilentlyContinue
 }

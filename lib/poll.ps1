@@ -24,7 +24,12 @@ $waitMs = if ($sync.waitStoppedTimeoutMs){ [int]$sync.waitStoppedTimeoutMs } els
 $probeIntervalMs = if ($sync.probeIntervalMs) { [int]$sync.probeIntervalMs } else { 4000 }
 $probeIdleMs     = if ($sync.probeIdleMs)     { [int]$sync.probeIdleMs }     else { 15000 }
 $probeThrottle   = if ($sync.probeThrottleLimit) { [int]$sync.probeThrottleLimit } else { 8 }
-$http.Timeout = [TimeSpan]::FromMilliseconds($httpMs)
+# 超时改由**每次请求**的 CancellationTokenSource 控制（services.json 里 per-service 的
+# httpTimeoutMs 可能比全局值更长，而 HttpClient.Timeout 是实例级上限，单次请求改不动）。
+# 实例级放开到无限，全局 $httpMs 变成「没有 per-service 覆盖时」的默认值。
+# 注意是 System.Threading.Timeout.InfiniteTimeSpan；TimeSpan.InfiniteTimeSpan 在旧运行时上不存在
+# （PowerShell 里取到 $null → 赋值抛 "Cannot convert null to type System.TimeSpan"）。
+$http.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan
 $sync.tcpTimeoutMs = $tcpMs; $sync.httpTimeoutMs = $httpMs; $sync.waitStoppedTimeoutMs = $waitMs
 $sync.probeIntervalMs = $probeIntervalMs; $sync.probeIdleMs = $probeIdleMs
 $sync.probeThrottleLimit = $probeThrottle
@@ -151,6 +156,9 @@ while(-not $sync.stop){
   # 改并行后最坏 ~3.2s（HTTP 超时上限）。命令在收集间隙仍优先处理，
   # 但并行探测期间不插 Invoke-PendingCommands——最长等一次并行轮。
   $toProbe = [System.Collections.Generic.List[pscustomobject]]::new()
+  # 有服务停在 StartPending/StopPending 时也算「活跃」：否则慢启动期间整轮没有可探测项，
+  # 轮询退到 ProbeIdleMs(15s)，卡片上的「启动中」十几秒才收到一次状态，过渡计时也迟迟不刷新。
+  $pendingSeen = $false
   foreach($n in $snap){
     # 收集间隙也优先处理命令；此处执行过的命令同样算「有在途命令」，影响循环尾间隔。
     if ((Invoke-PendingCommands) -gt 0) { $executedCmd = $true }
@@ -167,8 +175,13 @@ while(-not $sync.stop){
     }
 
     if ($st -eq '运行中') {
-      $toProbe.Add([pscustomobject]@{n=$n;port=[int]$info.port;url=[string]$info.url})
+      # per-service 探测超时随探测项带给并行块；缺省是 0，并行块回落到全局值
+      $toProbe.Add([pscustomobject]@{
+        n=$n; port=[int]$info.port; url=[string]$info.url
+        tcpMs=[int]$info.tcpTimeoutMs; httpMs=[int]$info.httpTimeoutMs
+      })
     } else {
+      if ($st -in @('启动中','停止中')) { $pendingSeen = $true }
       $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$st;h=''})
     }
   }
@@ -178,8 +191,11 @@ while(-not $sync.stop){
   if ($toProbe.Count -and -not $sync.stop) {
     $results = $toProbe | ForEach-Object -Parallel {
       $n=$_.n; $p=$_.port; $url=$_.url
+      # 每项的生效超时：per-service 覆盖优先，缺省回落经 $using: 传入的全局值
+      $tcpMsLocal  = if ($_.tcpMs)  { [int]$_.tcpMs }  else { $using:tcpMs }
+      $httpMsLocal = if ($_.httpMs) { [int]$_.httpMs } else { $using:httpMs }
       $httpClient=$using:http
-      # 轻量端口探测：TcpClient $tcpMs 超时（不用 Get-NetTCPConnection）
+      # 轻量端口探测：TcpClient $tcpMsLocal 超时（不用 Get-NetTCPConnection）
       # $tcpMs 必须经 $using: 传入——ForEach-Object -Parallel 开新 runspace，
       # 不继承父作用域变量；裸用 $tcpMs 在此取到 $null，WaitOne(0) 立刻返回 False，
       # 运行中服务被误判「无响应」变红（启停时 runspace 更忙，0ms 扑空概率上升）。
@@ -187,14 +203,16 @@ while(-not $sync.stop){
       $tcp=[System.Net.Sockets.TcpClient]::new()
       try {
         $iar=$tcp.BeginConnect('127.0.0.1',$p,$null,$null)
-        if($iar.AsyncWaitHandle.WaitOne($using:tcpMs,$false)){ try{$tcp.EndConnect($iar);$listen=$true}catch{} }
+        if($iar.AsyncWaitHandle.WaitOne($tcpMsLocal,$false)){ try{$tcp.EndConnect($iar);$listen=$true}catch{} }
       } finally { try{$tcp.Close()}catch{} }
 
       if(-not $listen){ return [pscustomobject]@{n=$n;h='无响应'} }
-      # HTTP 探测：共享 HttpClient，3s 超时（本地面板冷启动宽限）
+      # HTTP 探测：共享 HttpClient，超时按请求给（默认 3s，per-service 可覆盖）。
       # 响应必须 Dispose，否则内容缓冲滞留——每轮探测泄漏一份。
+      # CTS 也必须 Dispose：它是 WaitHandle 持有者，每轮每服务泄漏一份。
+      $cts = [System.Threading.CancellationTokenSource]::new($httpMsLocal)
       try {
-        $r=$httpClient.GetAsync($url).GetAwaiter().GetResult()
+        $r=$httpClient.GetAsync($url,$cts.Token).GetAwaiter().GetResult()
         try { $h=if($r.StatusCode -eq [System.Net.HttpStatusCode]::OK){'正常'}else{'HTTP '+[int]$r.StatusCode} } finally { $r.Dispose() }
       } catch {
         # 异常归类：refused/connection 类 → 无响应，其余（含超时、DNS 失败等）→ 超时。
@@ -202,7 +220,7 @@ while(-not $sync.stop){
         $ex=$_.Exception.InnerException; if(-not $ex){$ex=$_.Exception}
         $msg=[string]$ex.Message
         $h=if($msg -match 'refused|unable to connect|连接|connection|ConnectFailure'){'无响应'}else{'超时'}
-      }
+      } finally { $cts.Dispose() }
       [pscustomobject]@{n=$n;h=$h}
     } -ThrottleLimit $probeThrottle
     foreach($r in $results){ $sync.queue.Enqueue([pscustomobject]@{n=$r.n;st='运行中';h=$r.h}) }
@@ -214,8 +232,10 @@ while(-not $sync.stop){
   # 除「有运行中服务」外，「本轮执行过命令」也算活跃：刚下发的启动命令那一轮里服务通常还
   # 是 Stopped/StartPending（$toProbe 为空），若按空闲走 15s 长睡眠，卡片会停在「启动中」
   # 最长约 15 秒才收到第一份探测结果。有在途命令时用短间隔，让回执与状态尽快收敛。
+  # 第三种活跃情形：有服务停在 StartPending/StopPending（$pendingSeen）——慢启动期间整轮
+  # 没有可探测项，若不特殊处理，卡片上的「启动中」要 15 秒才更新一次，过渡计时也迟迟不刷新。
   if (-not $sync.stop) {
-    $sleepMs = if ($toProbe.Count -or $executedCmd) { $probeIntervalMs } else { $probeIdleMs }
+    $sleepMs = if ($toProbe.Count -or $executedCmd -or $pendingSeen) { $probeIntervalMs } else { $probeIdleMs }
     [void]$sync.wake.WaitOne($sleepMs)
   }
 }

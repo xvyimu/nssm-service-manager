@@ -3,7 +3,85 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
-## [未发布] — 2026-10-20：静默不执行的日志清理
+## [未发布]
+
+### 2026-10-28：添加服务能选运行账户，GPU 程序有提示
+
+给 ComfyUI 注册服务时的第一反应是「SYSTEM 账户能不能用 GPU」。本机实测能（驱动与显卡形态使然），但这不该靠运气——换个环境（纯集显、Optimus 混合、远程会话）就可能拿不到。工具原来对账户完全无感知。
+
+做法，范围比原方案收窄了一档：
+
+- 添加服务对话框加「运行账户」下拉，只列 `LocalSystem`（默认）/ `LocalService` / `NetworkService`。这三个都是 nssm 认得的 well-known SID，**不需要密码**，一条 argv 就够。
+- **自定义用户账户故意不做**：nssm 只收 `nssm set <服务> ObjectName <用户名> <密码>`，密码是命令行参数，同机管理员在进程列表里可见。为一次性操作引入这个暴露面不划算，需要时用 `nssm edit`。
+- 加「这是 GPU / 桌面交互程序」勾选：勾了且账户仍是 LocalSystem 时弹一条**不阻断**的提示。不做自动判断——按 exe 名猜不准，误报比不报更烦。
+- `Get-NssmSetSpec` 对 `LocalSystem` 和空值不产生 `ObjectName`：那本来就是 `nssm install` 的默认值，写进去只是多一条无意义的 set，还会让「没选账户」和「选了 LocalSystem」两条路径分叉。
+
+顺带修了一个自己制造的问题：高级区加了两个控件后内容超过固定高度 540。固定高度窗口里多出来的部分是被**裁掉**的，没有任何提示。改成 `SizeToContent='Height'` + `MaxHeight=720` + `ScrollViewer`：折叠时 3 个必填项窗口自然变矮（原 540 会在下方留近 300px 空白），展开到约 560，再高才出滚动条。离屏渲染核对过折叠/展开两态。
+
+测试：`Test-SvcAccount` 白名单（大小写不敏感、自定义账户拒绝）、`ObjectName` 必须是单 token、GUI 透传、GPU 提示的三个分支（选了非 LocalSystem 不提示 / 勾了 LocalSystem 提示但不阻断 / 未知账户拒绝且不注册）。每条都先摘掉账户支持跑出失败再修。
+
+**复查抓到两个自己引入的问题，都记在这里：**
+
+- 把 `Show-Add` 拆成 `New-AddDialog` + `Show-Add` 之后，两个 Click 处理器引用的 `$f` / `$inName` 等
+  全是**已返回函数**的局部变量。PowerShell 脚本块不是闭包，点击时解析到 `$null` ——
+  点「注册并启动」抛 `You cannot call a method on a null-valued expression`，
+  `Submit-AddService` 一次都进不去，界面表现为「点了没反应」，而**测试全绿**（它们直调 Submit，绕过了处理器）。
+  修法是给两个处理器加 `.GetNewClosure()`（与 `logview.ps1` 同款），并补一条**真点按钮**的测试。
+- `$null += "x"` 得到的不是数组而是 String，`-join` 失效，多条配置提示会粘成一行；
+  而且 `@($null)` 也不是空数组（是含一个 `$null` 的数组）。改成判空后显式 `@()` 再 `+=`。
+  测试最初预置了 `@()`，把这个缺陷遮住了——夹具必须还原生产状态（`$null`）才测得到。
+
+### 2026-10-28：重服务不再被全局超时硬套
+
+工具原先假定「所有服务都秒起」：卡片过渡态逃生 45s、HTTP 探测 3s，都是全局单值。
+ComfyUI 冷启动到端口可用约 90 秒，于是第 45 秒卡片显示「未知」（服务其实还在正常启动），
+HTTP 面板 3 秒不回就判「超时」——橙灯同样误导。
+
+三条改法，都由 `tests/test-per-service-timeout.ps1` 守住：
+
+1. `services.json` 支持 per-service `toggleTimeoutMs` / `httpTimeoutMs` / `tcpTimeoutMs`，缺省回落全局。
+   `Read-SvcFile` 显式保留这三个字段——它原来只挑 `port`/`url`，用户手写的覆盖会在下一次 GUI
+   保存时**被静默抹掉**。这条最容易漏，测试的第一条断言就是它。
+   字段写错（`0` / 负数 / 非数字）**不抛**：抛会让 `Load-Svc` 退回 `services.example.json`，
+   GUI 里显示示例服务，用户点一次增删就把示例写回真实文件——**整份清单连同已注册服务一起丢**。
+   实测确认过这条路径（给一个服务写 `toggleTimeoutMs: 0`，GUI 拿到的是 6 个示例服务）。
+   现在的处理是忽略该字段、回落全局，并单独弹一个「配置提示」框。
+2. 探测到服务仍处于同一过渡态（StartPending/StopPending）时刷新过渡计时。这比单纯调大阈值准：
+   服务确实在动，就不该按「回执丢了」处理。顺带把「有服务停在中间态」算进活跃轮询，
+   慢启动期间不再退到 15s 空闲间隔。
+   刷新有硬上限：`TransitionStartedAt` 只在进入过渡态时记一次，累计超过阈值 10 倍就强制逃生。
+   没有这条，永久卡在 StopPending 的服务会把逃生口自己刷掉——而那正是逃生存在的理由。
+   这也避免依赖「SCM 一定会把 StartPending 收敛掉」这个没实测过的假设。
+3. HTTP 探测改成每请求 `CancellationTokenSource`，共享 HttpClient 的实例级 `Timeout` 放开为无限
+   ——否则 per-service 想设得比全局更大根本改不动（实例级属性是上限，单次请求无法突破）。
+
+运行时坑（已订正）：`[TimeSpan]::InfiniteTimeSpan` 在 PowerShell 里取到 `$null`，赋值直接抛
+`Cannot convert null to type "System.TimeSpan"`；要用 `[System.Threading.Timeout]::InfiniteTimeSpan`。
+这个错误只在后台 runspace 的错误流里，界面表现为探测不更新——第一次跑全量测试才暴露。
+
+### 2026-10-28：env 值里自带的分隔符不再被拆坏
+
+起因很具体：给 ComfyUI 填 `NO_PROXY=127.0.0.1,localhost`，GUI 直接报「环境变量格式错误: localhost」。
+
+根因是 `ConvertTo-EnvPairs` 无脑 `-split $separator`。GUI 用逗号当分隔符，值里的逗号被当成下一对的开头——
+`localhost` 没有 `=`，于是被 `Test-EnvPairs` 拦下。**多地址 NO_PROXY 在 GUI 里根本填不进去**，
+而这是代理配置里最常见的写法之一。
+
+CLI 侧是同类但更隐蔽的问题：`-Add ...,,A=1,B=2` 不会拆成两对，整串变成一个名为 `A`、值为 `1,B=2`
+的变量；CLI 不跑 `Test-EnvPairs`，于是**静默写错**。
+
+修法：切分时只在「下一段形如 `KEY=`」处真断开，否则当作上一段值的续写接回去。顺带把分隔符改成按字面量切
+（原实现把它当正则用，传 `|` 之类会炸）。CLI 的字段切分改 `-split ',', 7`，env 段原样保留、不再先拆再拼。
+
+三处回归测试，都**先在旧代码上跑出失败**再修（`git stash` 回旧 lib 验证过）：
+`test-svc-input.ps1` 覆盖逗号/分号/字面量三种分隔符；`test-add-svc.ps1` 覆盖 CLI 的「逗号分对」与「值内逗号保留」；
+`test-dialogs-submit.ps1` 断言 GUI 提交体拿到的是一条完整的 `NO_PROXY`。
+
+> 顺带订正一个外部方案里的判断：它说 `AppEnvironmentExtra` 多值只存第一个、要在 `Get-NssmSetSpec` 里 join 成单串。
+> **不成立**。`nssm-set` 传出的确是多个 argv（实测），而 nssm 自己会按 `ADDITIONAL_CRLF` 用 CRLF 拼成一个 value，
+> `unformat_double_null` 再转成 `REG_MULTI_SZ`——三条都写得进去。**没有改 join**，改了就只是把对的改成另一种对的。
+
+### 2026-10-20：静默不执行的日志清理
 
 ### `Dispatcher.BeginInvoke` 挑错重载，首帧后的日志清理从未执行
 

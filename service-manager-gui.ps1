@@ -272,6 +272,13 @@ if ($script:configWarning) {
   [System.Windows.MessageBox]::Show("$($script:configWarning)`n当前使用恢复配置，保存前请修复该文件。",'配置错误','OK','Warning') | Out-Null
 }
 
+# 配置提示（非致命）：目前唯一的来源是 services.json 里 per-service 可选字段写错
+# （toggleTimeoutMs / httpTimeoutMs / tcpTimeoutMs）。清单照常用，只是那个字段回落全局，
+# 所以单独一条、措辞里不讲「恢复配置」——否则用户会以为整份清单被换掉了。
+if ($script:configNotices) {
+  [System.Windows.MessageBox]::Show(($script:configNotices -join "`n`n"),'配置提示','OK','Warning') | Out-Null
+}
+
 # ---- 显示（Application.Run 等价）----
 $win.Add_ContentRendered({
   Write-CrashLog 'Window content rendered'

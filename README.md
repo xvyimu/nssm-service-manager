@@ -57,7 +57,7 @@ pwsh -NoProfile -File service-manager-gui.ps1
 | `lib/svc-input.ps1` | 纯函数族：输入校验、env 解析、敏感键名检测、NSSM set 参数组装（可单独点源，不加载 WPF/config） |
 | `lib/nssm.ps1` | NSSM 注册/删除：`nssm-set` / `Install-NssmService` / `Remove-NssmService` |
 | `lib/add-svc.ps1` | CLI 添加服务入口（`Add-SvcFromCli`，agent 友好，不弹 GUI） |
-| `lib/dialogs.ps1` | GUI 对话框：`Show-Add`（注册）+ `Show-Remove`（输入全名确认才点亮删除） |
+| `lib/dialogs.ps1` | GUI 对话框：`Show-Add` / `New-AddDialog`（注册；后者只搭控件，留给无头测试）+ `Show-Remove`（输入全名确认才点亮删除） |
 | `lib/logview.ps1` | 日志窗口：`Get-LogFiles` / `Show-Log` |
 | `lib/config.ps1` | 可调常量集中收口（每页卡片数 / 探测超时 / 日志轮转 / 双击冷却 / 托盘开关），默认值内嵌，`config.json` 覆盖 |
 | `lib/tray.ps1` | 可选托盘图标（`TrayEnabled` 打开才加载 WinForms）+ 关闭/最小化策略纯函数 |
@@ -127,6 +127,30 @@ Copy-Item services.example.json services.json
 | BuddyAPI | 7863 | http://127.0.0.1:7863/panel/ | 独立部署 |
 | ServiceF | 9000 | http://127.0.0.1:9000/health | 独立部署 |
 
+### 重服务（冷启动慢）的单服务覆盖
+
+`config.json` 里的超时是**全局**的，假定服务都秒起。AI 服务、冷启动 JVM 这类动辄一分钟才 listen 的，直接在 `services.json` 的该服务条目里加三项覆盖，缺省回落全局：
+
+```json
+{
+  "ComfyUI": {
+    "port": 8188,
+    "url": "http://127.0.0.1:8188",
+    "toggleTimeoutMs": 180000,
+    "httpTimeoutMs": 12000,
+    "tcpTimeoutMs": 800
+  }
+}
+```
+
+| 字段 | 回落 | 作用 |
+|------|------|------|
+| `toggleTimeoutMs` | `ToggleTimeoutMs` | 卡片过渡态超时逃生阈值。重服务冷启动时调大，别让它显示「未知」 |
+| `httpTimeoutMs` | `HttpTimeoutMs` | 该服务的 HTTP 健康探测超时 |
+| `tcpTimeoutMs` | `TcpTimeoutMs` | 该服务的端口探测超时 |
+
+必须写成正整数毫秒。写错（`0` / 负数 / 非数字）时**只有该字段不生效、回落全局**，服务条目照常保留，启动时弹一条「配置提示」说明是哪个服务的哪个字段——不会因为一个数字写错就把整份清单换成示例配置。这些字段由 `Read-SvcFile` 显式保留，GUI 增删别的服务不会把它们抹掉。
+
 > **环境变量与注册表密钥暴露面：** NSSM 把 `AppEnvironmentExtra` 明文写入注册表 `HKLM\SYSTEM\CurrentControlSet\Services\<服务名>\Parameters\AppEnvironmentExtra`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出你填进去的环境变量明文。**凡含密钥、令牌、口令的变量（如 `*_API_KEY` / `*_TOKEN` / `*SECRET` / `*PASSWORD` / `*ACCESS_KEY` / `*CREDENTIAL` / `*PRIVATE_KEY` / `*PASSPHRASE`），不要直接填进环境变量框**——改为让服务本体从独立的密钥文件（仅 Administrators+SYSTEM 可读）读取，文件路径不进注册表。GUI 与 CLI 在你填写此类键名时会提示这一点；`*_FILE` 后缀仅在值看起来像路径时才跳过提示，否则照样警告（键名后缀不等于值就是路径）。彻底收紧注册表键 ACL 用 `scripts/set-service-params-acl.ps1`（见下）。
 
 ### 从旧版 TTS 管理器升级
@@ -177,17 +201,17 @@ Copy-Item config.example.json config.json
 |------|------|------|
 | `PerPage` | 6 | 卡片每页数量（`xaml.ps1` UniformGrid 列数按 `ceil(sqrt(PerPage))` 自适应） |
 | `TcpTimeoutMs` | 200 | 端口探测超时（`poll.ps1` TcpClient BeginConnect） |
-| `HttpTimeoutMs` | 3000 | HTTP 探测超时（`poll.ps1` 共享 HttpClient.Timeout） |
+| `HttpTimeoutMs` | 3000 | HTTP 探测超时（`poll.ps1`，每请求一个 CancellationTokenSource；共享 HttpClient 的实例级 Timeout 已放开为无限，否则 per-service 的更大值改不动单次请求） |
 | `CrashLogMaxBytes` | 524288 | `gui-crash.log` 轮转阈值（512 KiB，超则挪成 `.1`） |
 | `ToggleCooldownMs` | 8000 | 双击启停冷却（`card.ps1` Invoke-CardToggle） |
-| `ToggleTimeoutMs` | 45000 | 卡片过渡态超时逃生（`card.ps1` Test-TransitionTimedOut）：命令回执丢失时，超时后按到达的探测值收敛并解封按钮，防永久卡在「启动中/停止中/删除中」。须大于正常路径最长耗时，否则会误触发——启动失败回落 `sc.exe start` 走 SCM 同步管道，上限 `ServicesPipeTimeout`（本机未设 = 默认 30000ms），故取值须留出余量 |
+| `ToggleTimeoutMs` | 45000 | 卡片过渡态超时逃生（`card.ps1` Test-TransitionTimedOut）：命令回执丢失时，超时后按到达的探测值收敛并解封按钮，防永久卡在「启动中/停止中/删除中」。须大于正常路径最长耗时，否则会误触发——启动失败回落 `sc.exe start` 走 SCM 同步管道，上限 `ServicesPipeTimeout`（本机未设 = 默认 30000ms），故取值须留出余量。**探测到服务仍在同一过渡态时计时会刷新**，慢启动/慢停止不会在阈值那一刻被误判；但累计超过该阈值的 10 倍后仍强制逃生（服务永久卡在中间态时不能把逃生口刷掉）。单一服务可单独调大，见下方「重服务」 |
 | `WaitStoppedTimeoutMs` | 6000 | 重启/删除前轮询 Stopped 的上限（`lib/svc-common.ps1` 的 `Wait-Stopped`，UI 线程与 runspace 共用一份） |
 | `LogKeepCount` | 10 | 轮转日志保留份数（`util.ps1` Remove-RotatedLogs）。口径是**跨服务全局**按修改时间倒序的前 N 份豁免，不是每服务各 N 份 |
 | `LogKeepDays` | 14 | 轮转日志保留天数：删除须同时满足「不在全局前 N 份」且「早于 N 天」，故 14 天内高频轮转的档一份都不删（保留份数上限只在跨过天数后生效） |
 | `LogDir` | `''` | 日志根覆盖；空 = 仓内 `logs/`。只影响新注册的服务——已注册服务的 AppStdout/AppStderr 写死在注册表，须逐个重新注册 |
 | `ProbeThrottleLimit` | 8 | 并行探测的 ThrottleLimit（`poll.ps1` ForEach-Object -Parallel） |
-| `ProbeIntervalMs` | 4000 | 有运行中服务（或本轮执行过命令）时的轮询间隔（`poll.ps1` 循环尾 WaitOne） |
-| `ProbeIdleMs` | 15000 | 全停止且无在途命令时的轮询间隔——省下空转的唤醒与整轮扫描 |
+| `ProbeIntervalMs` | 4000 | 有运行中服务、本轮执行过命令、或有服务停在 StartPending/StopPending 时的轮询间隔（`poll.ps1` 循环尾 WaitOne） |
+| `ProbeIdleMs` | 15000 | 全停止、无在途命令、且没有服务处于中间态时的轮询间隔——省下空转的唤醒与整轮扫描 |
 | `WaitStoppedPollMs` | 300 | `Wait-Stopped` 轮询步长（`svc-common.ps1`） |
 | `AppRotateBytes` | 5242880 | 单日志档轮转阈值（5 MiB，NSSM `AppRotateBytes`） |
 | `AppStopMethodConsole` | 5000 | 停止时给控制台进程的收尾毫秒（NSSM `AppStopMethodConsole`） |
@@ -205,22 +229,24 @@ Copy-Item config.example.json config.json
 
 ## 添加新服务
 
-**GUI**：工具栏「添加服务」→ 3 必填（服务名/端口/可执行文件）+ 高级折叠（URL/工作目录/启动参数/环境变量）。
+**GUI**：工具栏「添加服务」→ 3 必填（服务名/端口/可执行文件）+ 高级折叠（URL/工作目录/启动参数/环境变量/运行账户/GPU 勾选）。
+
+运行账户只列三个内置账户——`LocalSystem`（默认）、`LocalService`、`NetworkService`，**都不需要密码**。CLI `-Add` 没有账户参数，注册的即默认 `LocalSystem`；要改账户请走 GUI 或 `nssm set <服务> ObjectName <账户名>`。自定义用户账户不在这里做：nssm 要求密码，而密码只能作为命令行参数传（同机管理员在进程列表里可见），这个暴露面不值得为一个一次性操作引入；需要时用 `nssm edit` 或服务管理器改。勾选「这是 GPU / 桌面交互程序」且账户仍是 `LocalSystem` 时，会弹一条提示（不阻断注册）：GPU/桌面程序在 LocalSystem 下未必拿得到显卡，视驱动与会话形态而定。
 
 **CLI（agent 友好）**：
 ```
 pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,Port,Exe[,Url,Dir,Args,Env]
 ```
-`Env` 多对用分号分隔：`KEY=VAL;KEY2=VAL2`（逗号已被字段分隔符占用）。不弹 GUI，注册 + 启动后退出。
+`Env` 多对用分号分隔：`KEY=VAL;KEY2=VAL2`；逗号分隔也认（`KEY=VAL,KEY2=VAL2`）。不弹 GUI，注册 + 启动后退出。
 
-环境变量格式 `KEY=VAL,KEY2=VAL2`（GUI）或 `KEY=VAL;KEY2=VAL2`（CLI，分号分隔）。NSSM `AppEnvironmentExtra` 是整列表替换。
+环境变量格式 `KEY=VAL,KEY2=VAL2`（GUI）或 `KEY=VAL;KEY2=VAL2`（CLI，分号分隔）。**值里自带分隔符不会拆坏**：切分只在「下一段以 `KEY=` 开头」时断开，所以 `NO_PROXY=127.0.0.1,localhost`、`PATH=C:\a;C:\b` 都按一条处理。NSSM `AppEnvironmentExtra` 是整列表替换。
 
-服务名限 `A-Za-z0-9_.-`，可执行文件路径必须存在——两条入口都校验，共用 `Test-SvcInput`（校验顺序：名称 → 可执行文件 → 端口 → 重名）。`Get-NssmSetSpec` 收口 NSSM 注册后要 set 的全部键值（`AppExit Default Ignore` 这类多 token 值），`Install-NssmService` 只负责执行与失败回滚。
+服务名限 `A-Za-z0-9_.-`，可执行文件路径必须存在——两条入口都校验，共用 `Test-SvcInput`（校验顺序：名称 → 可执行文件 → 端口 → 重名）。`Test-SvcAccount` 单独把关运行账户白名单（只收三个内置账户，空值 = 不改）。`Get-NssmSetSpec` 收口 NSSM 注册后要 set 的全部键值（`AppExit Default Ignore` 这类多 token 值、非 LocalSystem 时的 `ObjectName`），`Install-NssmService` 只负责执行与失败回滚。
 
 ## 测试与截图
 
 ```powershell
-pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 23 项 PowerShell 回归
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 25 项 PowerShell 回归
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-tmp/，已 git 忽略）
 ```
@@ -233,7 +259,7 @@ ffmpeg -y -framerate 3 -i .demo-tmp/frame-%02d.png -vf "scale=640:-1:flags=lancz
 
 `run-all.ps1` 先解析全部 PowerShell 文件，再执行 VBS 编译与 UAC 守卫断言、3×2 布局与缩放、卡片启停门闩、翻页冷却、卡片缓存清理与重建、过渡态竞态保护、后台命令唤醒、菜单和 CLI 注册参数测试。NSSM、服务启停、配置保存及菜单的外部操作采用替身，不会注册测试服务或改动 `services.json`。真实 UAC、系统 Mica 效果与 NSSM 服务生命周期需在本机交互验证。
 
-`test-svc-input.ps1` 覆盖纯函数负例：`Test-SvcInput` 的四类拒绝（名称字符集 / exe 不存在 / 端口越界 / 重名）与校验顺序，`ConvertTo-EnvPairs` 的分隔符/去空白/丢空项，`Test-EnvPairs` 的格式与 APPDATA 交互路径拒绝，`Get-NssmSetSpec` 的 `AppExit` 双 token、`AppEnvironmentExtra` 多 token、可选键省略与值必须为数组。`test-security-parse.ps1` 额外覆盖 `Resolve-ServiceExeDir` 的 UNC、引号不闭合、正斜杠、无扩展名等边界（均不应抛错）。
+`test-svc-input.ps1` 覆盖纯函数负例：`Test-SvcInput` 的四类拒绝（名称字符集 / exe 不存在 / 端口越界 / 重名）与校验顺序，`ConvertTo-EnvPairs` 的分隔符/去空白/丢空项与「值内分隔符不拆分」（`NO_PROXY=127.0.0.1,localhost`、`PATH=C:\a;C:\b`），`Test-EnvPairs` 的格式与 APPDATA 交互路径拒绝，`Get-NssmSetSpec` 的 `AppExit` 双 token、`AppEnvironmentExtra` 多 token、`ObjectName` 单 token（LocalSystem/空值不产生该键）、可选键省略与值必须为数组，以及 `Test-SvcAccount` 的白名单（三个内置账户大小写不敏感通过，自定义用户账户拒绝）。`test-security-parse.ps1` 额外覆盖 `Resolve-ServiceExeDir` 的 UNC、引号不闭合、正斜杠、无扩展名等边界（均不应抛错）。
 
 `test-config-params.ps1` 验证 `config.json` 覆盖与坏 JSON 回落：临时写一份非默认值的 `config.json`，确认超时/轮转/冷却随之改变；恢复默认模拟测试夹具（不注入超时键）时 runspace 回落 200/3000/6000；mock `restart` 用注入的短 `waitMs` 快速收尾（若误用默认 6s 会在 1.2s 内只看到 stop）。
 
@@ -241,7 +267,7 @@ ffmpeg -y -framerate 3 -i .demo-tmp/frame-%02d.png -vf "scale=640:-1:flags=lancz
 
 按钮与双击共用 `Invoke-CardToggle`，状态校验、8 秒冷却和过渡态只维护一份；`test-card-actions.ps1` 覆盖两个入口的 20 个状态/门闩场景及反馈文案。GUI 与 CLI 的输入校验共用 `Test-SvcInput`（CLI 用 `exit 1`、GUI 用 MessageBox 呈现，文案各自保留），NSSM 注册配置共用 `Install-NssmService` + `Get-NssmSetSpec`。
 
-`Send-ServiceCommand` 统一提交 GUI 命令并触发唤醒；`test-poll-commands.ps1` 用隔离 runspace 验证空闲唤醒、慢探测之间的命令优先、FIFO 与关闭唤醒。正在进行的单次探测或服务命令仍需结束后才能处理后续命令。另覆盖两点：服务处于 `StartPending` 时下「启动」不调 `sc.exe`、不产生失败消息（否则会回落取回 1056，拼出「启动失败(1056 已在运行)」的矛盾文案）；刚执行过命令的那一轮睡眠用 `ProbeIntervalMs` 而非 `ProbeIdleMs`，否则卡片会停在「启动中」最长约 15 秒。
+`Send-ServiceCommand` 统一提交 GUI 命令并触发唤醒；`test-poll-commands.ps1` 用隔离 runspace 验证空闲唤醒、慢探测之间的命令优先、FIFO 与关闭唤醒。正在进行的单次探测或服务命令仍需结束后才能处理后续命令。另覆盖两点：服务处于 `StartPending` 时下「启动」不调 `sc.exe`、不产生失败消息（否则会回落取回 1056，拼出「启动失败(1056 已在运行)」的矛盾文案）；刚执行过命令的那一轮睡眠用 `ProbeIntervalMs` 而非 `ProbeIdleMs`，否则卡片会停在「启动中」最长约 15 秒；有服务停在 `StartPending`/`StopPending` 时同理（慢启动期间整轮没有可探测项，否则十几秒才更新一次状态）。
 
 过渡态必须有失败出口，否则卡片会永久卡死：`test-transition-failure.ps1` 覆盖多层——失败命令仍要发回执（`ok=$false`，修前失败即静默，UI 侧收不到失败事实）；`ok=$false` 时回滚到命令前的终态并解封按钮（右键启停不置过渡态时只重算门闩、不回滚）；回执彻底丢失时超过 `ToggleTimeoutMs` 逃生；**后台 runspace 死亡**（队列再无生产者）时由 `Update-StatusTick` 每帧无条件扫卡片逃生，不依赖探测结果到达；成功回执按当前状态/健康重算门闩（不无条件点亮，否则绕过健康门闩）；删除中超时收敛到「未知」而非到达的探测值（否则会点亮按钮让用户启动一个正在删除的服务）。`test-transition-race.ps1` 覆盖的是反向：过渡态期间在途的旧探测不得覆盖状态。
 
@@ -253,7 +279,7 @@ ffmpeg -y -framerate 3 -i .demo-tmp/frame-%02d.png -vf "scale=640:-1:flags=lancz
 
 `tests/probe-1053-timing.ps1` 是**手动探针**（需管理员，不在 `run-all` 里）：注册一个 exe 路径故意写错的服务，实测启动失败路径的真实耗时，用于判定 `ToggleTimeoutMs` 是否够大。SCM 的 `ServicesPipeTimeout` 本机未设 = 默认 30000ms，而启动失败回落 `sc.exe start` 走的正是这条同步管道——故 `ToggleTimeoutMs` 已从 30000 抬到 45000 留余量，但**该路径耗时仍未真机实测**，跑过探针才能确认这个值够不够。
 
-`test-probe-timeout-scope.ps1` 守并行探测块的 runspace 作用域：`ForEach-Object -Parallel` 开新 runspace，不继承父作用域变量，超时变量必须经 `$using:` 传入。裸用 `$tcpMs` 会让子 runspace 取到 `$null`，`WaitOne($null,$false)` 等价 `WaitOne(0)`，TCP 握手没完成就判「无响应」——该状态在 `card.ps1` 落到红色分支，于是「启停一个服务，别的运行中服务变红」。测试两路：静态扫并行块裸引用（剥注释后不误报），行为段用真监听端口 + 真 poll 脚本块端到端验证。`test-parallel-probe.ps1` 探的是未监听端口，0ms 与 200ms 结果都是「无响应」，对这类 bug 天然免疫，故单开一份。
+`test-per-service-timeout.ps1` 守「重服务不该被全局超时硬套」的几件事：`Read-SvcFile` 必须保留 `toggleTimeoutMs` / `httpTimeoutMs` / `tcpTimeoutMs`（只挑 port/url 的话，用户配的覆盖会在下一次 GUI 保存时被静默抹掉）、读→写→读 round-trip 后字段还在、**字段写错（0 / 负数 / 非数字）只让该字段失效而服务条目保留**（抛错会落进 `Load-Svc` 的 catch，整份清单退回 `services.example.json`，下一次保存就把真实清单写丢——这条断言直接比对 `Load-Svc` 的返回是否含真实服务名）、卡片阈值优先取 per-service 值、探测报同一个过渡态时过渡计时会刷新（慢启动不在第 45 秒变「未知」），以及探测超时按服务给（真监听但不应答的端口 + 全局 6000ms / 服务 200ms，断言本轮 3s 内出结果——覆盖被忽略时会拖到 6s）。`test-probe-timeout-scope.ps1` 守并行探测块的 runspace 作用域：`ForEach-Object -Parallel` 开新 runspace，不继承父作用域变量，超时变量必须经 `$using:` 传入。裸用 `$tcpMs` 会让子 runspace 取到 `$null`，`WaitOne($null,$false)` 等价 `WaitOne(0)`，TCP 握手没完成就判「无响应」——该状态在 `card.ps1` 落到红色分支，于是「启停一个服务，别的运行中服务变红」。测试两路：静态扫并行块裸引用（剥注释后不误报），行为段用真监听端口 + 真 poll 脚本块端到端验证。`test-parallel-probe.ps1` 探的是未监听端口，0ms 与 200ms 结果都是「无响应」，对这类 bug 天然免疫，故单开一份。
 
 CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）。
 

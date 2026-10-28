@@ -5,7 +5,8 @@
 #
 # 依赖（均为「调用时解析」，PowerShell 函数体内符号延迟绑定——点源顺序不影响正确性，
 # 只要调用发生在全部模块加载之后，即 GUI 运行时）：
-#   Show-Add    → Test-SvcInput（svc-input.ps1）、Install-NssmService（nssm.ps1）、
+#   New-AddDialog / Show-Add → 只搭控件；提交走 Submit-AddService →
+#                 Test-SvcInput / Test-SvcAccount（svc-input.ps1）、Install-NssmService（nssm.ps1）、
 #                 Send-ServiceCommand / Save-Svc（util.ps1）
 #   Show-Remove → Set-CardTransition（card.ps1）、Send-ServiceCommand（util.ps1）
 # 注意本文件与 card.ps1 是**双向**依赖（card.ps1 右键菜单调 Show-Remove），
@@ -94,6 +95,7 @@ function Show-DialogWarning($owner,[string]$msg,[string]$title){
 function Submit-AddService($owner,[hashtable]$fields){
   $n=[string]$fields.n; $p=[int]$fields.p; $exe=[string]$fields.exe
   $url=[string]$fields.url; $dir=[string]$fields.dir; $par=[string]$fields.par; $envRaw=[string]$fields.env
+  $account=[string]$fields.account; $gpu=[bool]$fields.gpu
   if(-not $n -or -not $exe){ Show-DialogError $owner '服务名和可执行文件必填'; return $false }
   # 校验顺序与 CLI 同（Test-SvcInput）；端口文案 GUI 保留自己的措辞，按 code 覆盖
   $bad = Test-SvcInput $n $p $exe $script:svc
@@ -101,6 +103,10 @@ function Submit-AddService($owner,[hashtable]$fields){
     $msg = if($bad.code -eq 'port'){ '端口必须是 1-65535' } else { $bad.msg }
     Show-DialogError $owner $msg; return $false
   }
+  # 运行账户白名单（只收三个内置账户）：纯函数校验放在 svc-input.ps1，与 Test-SvcInput 同族。
+  # 未知值直接拒——静默回落到 LocalSystem 会让用户以为「按最小权限跑了」，实际没有。
+  $badAcct = Test-SvcAccount $account
+  if($badAcct){ Show-DialogError $owner $badAcct.msg; return $false }
   if(-not $url){ $url="http://127.0.0.1:$p" }
   # GUI 的 env 以逗号分隔（字段分隔符），且多一层格式校验（CLI 不做）
   $envPairs = ConvertTo-EnvPairs $envRaw ','
@@ -113,8 +119,13 @@ function Submit-AddService($owner,[hashtable]$fields){
     $tip = "以下环境变量将明文写入注册表（BUILTIN\Users 可读）：`n$($sensitive -join ', ')`n`n推荐改用 *_FILE 路径让服务本体从密钥文件读，文件权限收口到 Administrators+SYSTEM。`n仍要继续注册吗？"
     if(-not (Confirm-SensitiveEnvKeys $owner $tip)){ return $false }
   }
+  # GPU/桌面程序 + LocalSystem：只提示不阻断（与敏感 env 同级，不是确认框）。
+  # 不追求自动判断「是不是 GPU 程序」——那不可能准，由用户勾选声明。
+  if($gpu -and (-not $account -or $account -ieq 'LocalSystem')){
+    Show-DialogWarning $owner "「$n」将以 LocalSystem 运行。`nGPU/桌面交互程序在 LocalSystem 下未必拿得到显卡或桌面（取决于驱动与会话形态）。`n若启动后异常，改成本机用户账户运行——那需要该账户密码，本工具不代管，请用 nssm edit 或服务管理器修改。" '运行账户提示'
+  }
   try {
-    Install-NssmService $n $exe $dir $par $envPairs
+    Install-NssmService $n $exe $dir $par $envPairs $account
   } catch {
     Show-DialogError $owner $_.Exception.Message; return $false
   }
@@ -132,10 +143,14 @@ function Submit-AddService($owner,[hashtable]$fields){
   $true
 }
 
-# GUI 添加服务对话框：3 必填 + 高级折叠，注册成功后入队启动命令
-function Show-Add($owner){
+# 只搭窗口、不 ShowDialog：给测试留缝。模态框在测试里打不开，但控件搭错、属性名写错
+# 会在这里当场抛——那类错误在生产里表现为「点『添加服务』没反应」，冒烟测试比读代码可靠。
+# 返回几个控件句柄，供测试断言账户下拉的选项与默认项。
+function New-AddDialog(){
+  # 高度跟内容走：折叠时只有 3 个必填项，固定 620 会在下方留一大片空白；
+  # 展开后内容又超过 620。SizeToContent + MaxHeight 两头都对，超长时由 ScrollViewer 接管。
   $f = New-Object System.Windows.Window -Property @{
-    Title='添加服务'; Width=460; Height=540; WindowStartupLocation='CenterOwner'
+    Title='添加服务'; Width=460; MaxHeight=720; SizeToContent='Height'; WindowStartupLocation='CenterOwner'
     Background=[System.Windows.Media.Brushes]::White; ResizeMode='NoResize'
   }
   $stack=New-Object System.Windows.Controls.StackPanel -Property @{Margin='15'}
@@ -159,6 +174,21 @@ function Show-Add($owner){
   $advContent.Children.Add((& $mkLabel '工作目录')) | Out-Null; $advContent.Children.Add($inDir) | Out-Null
   $advContent.Children.Add((& $mkLabel '启动参数')) | Out-Null; $advContent.Children.Add($inPar) | Out-Null
   $advContent.Children.Add((& $mkLabel '环境变量 KEY=VAL,KEY2=VAL2')) | Out-Null; $advContent.Children.Add($inEnv) | Out-Null
+
+  # 运行账户：列表来自 svc-input.ps1 的 $script:SvcAccounts（白名单与下拉同一份）。
+  # 三个都是内置账户、都不需要密码，故本对话框不碰任何凭据。
+  # 默认 LocalSystem 就是 nssm install 建出来的账户，选它等于不改。
+  $inAcct=New-Object System.Windows.Controls.ComboBox -Property @{ Margin='0,0,0,8'; FontFamily=$script:cjkFont }
+  foreach($a in $script:SvcAccounts){
+    [void]$inAcct.Items.Add((New-Object System.Windows.Controls.ComboBoxItem -Property @{Content=$a.Label; Tag=$a.Key}))
+  }
+  $inAcct.SelectedIndex=0
+  $advContent.Children.Add((& $mkLabel '运行账户')) | Out-Null; $advContent.Children.Add($inAcct) | Out-Null
+  # 「是不是 GPU/桌面程序」由用户勾选，不做自动判断——按 exe 猜不准，误报比不报更烦。
+  $inGpu=New-Object System.Windows.Controls.CheckBox -Property @{
+    Content='这是 GPU / 桌面交互程序（需要显卡或桌面）'; FontFamily=$script:cjkFont; Margin='0,4,0,8'
+  }
+  $advContent.Children.Add($inGpu) | Out-Null
   $adv.Content=$advContent
   $stack.Children.Add($adv) | Out-Null
 
@@ -168,19 +198,41 @@ function Show-Add($owner){
   [void]$btnPanel.Children.Add($ok); [void]$btnPanel.Children.Add($cancel)
   [void]$stack.Children.Add($btnPanel)
 
-  $f.Content=$stack
-  $cancel.Add_Click({ $f.DialogResult=$false; $f.Close() })
+  # 高级区展开后内容会超过窗口高度（运行账户 + GPU 勾选是后加的）。套一层 ScrollViewer：
+  # 固定高度的窗口里不加滚动，多出来的控件是被裁掉的——用户看不到，也没有任何提示。
+  $scroll=New-Object System.Windows.Controls.ScrollViewer -Property @{VerticalScrollBarVisibility='Auto'}
+  $scroll.Content=$stack
+  $f.Content=$scroll
+  # 两个处理器必须 .GetNewClosure()：PowerShell 脚本块**不是闭包**（同 xaml.ps1 的
+  # $script:toggleMax、logview.ps1 的 $load 那两处），变量在**点击时**按调用点动态解析。
+  # New-AddDialog 返回后它的局部作用域就没了，不建闭包的话 $f / $inName 全是 $null ——
+  # 点「注册并启动」抛 null-valued 异常，Submit-AddService 一次都进不去，界面表现为点了没反应。
+  $cancel.Add_Click({ $f.DialogResult=$false; $f.Close() }.GetNewClosure())
 
   $ok.Add_Click({
     # 提交逻辑抽到 Submit-AddService 以便直测（校验顺序、Test-EnvPairs、敏感键 OKCancel
     # 分支、Save 失败分支原本全内联在 Click 里，没有测试缝）。$f 作 owner 供 MessageBox 用。
     # 返回 $true 表示注册成功（调用方据此关弹窗）。
     if (Submit-AddService $f @{ n=$inName.Text.Trim(); p=$inPort.Text.Trim(); exe=$inExe.Text.Trim()
-        url=$inUrl.Text.Trim(); dir=$inDir.Text.Trim(); par=$inPar.Text.Trim(); env=$inEnv.Text.Trim() }) {
+        url=$inUrl.Text.Trim(); dir=$inDir.Text.Trim(); par=$inPar.Text.Trim(); env=$inEnv.Text.Trim()
+        account=[string]$inAcct.SelectedItem.Tag; gpu=[bool]$inGpu.IsChecked }) {
       $f.DialogResult=$true; $f.Close()
     }
-  })
+  }.GetNewClosure())
 
-  $f.Owner=$owner
-  $f.ShowDialog() | Out-Null
+  # 把 OK 按钮与输入框句柄一并给出：测试要能**点真的按钮**走真的处理器，
+  # 否则「处理器引用了已消失的局部变量」这类错误测不出来（本仓已有先例）。
+  [pscustomobject]@{
+    Window = $f; Account = $inAcct; Gpu = $inGpu; Ok = $ok
+    Inputs = @{ name=$inName; port=$inPort; exe=$inExe; url=$inUrl; dir=$inDir; par=$inPar; env=$inEnv }
+  }
+}
+
+# GUI 添加服务对话框：3 必填 + 高级折叠，注册成功后入队启动命令
+# Owner 只在这里设：WPF 要求 Owner 必须是**已经显示过**的窗口，放进 New-AddDialog 会让
+# 无头构造（测试）直接抛「无法将 Owner 属性设置为之前未显示的 Window」。
+function Show-Add($owner){
+  $d = New-AddDialog
+  $d.Window.Owner = $owner
+  $d.Window.ShowDialog() | Out-Null
 }
