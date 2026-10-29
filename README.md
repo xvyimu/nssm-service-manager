@@ -11,7 +11,7 @@
 
 NSSM 本身是命令行工具。服务一多，日常启停、查状态、看日志全靠背命令——这个工具把它们收敛成一个窗口：
 
-- **一眼看全**——每张卡显示服务名、端口、健康圆点（绿=正常 / 橙=响应慢 / 红=无响应），六个服务一屏扫完
+- **一眼看全**——每张卡显示服务名、端口、健康圆点（绿=正常 / 橙=等待中或响应慢 / 红=无响应），六个服务一屏扫完
 - **一个键一个方向**——卡片右上角是「关闭」「启动」两个按钮，各自只管一个方向；习惯双击的也能双击切换。右键管重启/日志/删除，8 秒冷却 + 健康门闩挡住误操作
 - **配置是清单不是代码**——`services.json` 一份 JSON 列出所有服务，换机器复制即用；CLI 也有增删入口，脚本和 agent 可直接调用
 - **健康探测不靠猜**——端口 TCP + HTTP 两档并行：服务在但响应慢标「超时」，端口没监听标「无响应」
@@ -40,6 +40,8 @@ pwsh -NoProfile -File service-manager-gui.ps1
 
 NSSM 路径按三档探测：`$env:NSSM_PATH` → `Get-Command nssm.exe` → scoop 安装路径。都找不到时弹窗提示安装。进程声明 DPI Aware，高缩放屏下不糊。
 
+**提权面**：`launch.vbs` 优先用 `C:\Program Files\PowerShell\7\pwsh.exe`，scoop 的 shim 只是次选——scoop 装在用户目录，中等完整性进程能替换它，下一次双击 + UAC 就是管理员权限。NSSM 也一样：启动时检查 `nssm.exe` 所在目录的 ACL，普通用户可写就在状态栏提示「建议改装到系统目录」（不阻断，scoop 默认就这么装）。
+
 ## 文件
 
 | 文件 | 作用 |
@@ -66,22 +68,24 @@ NSSM 路径按三档探测：`$env:NSSM_PATH` → `Get-Command nssm.exe` → sco
 | `tests/run-all.ps1` | 语法检查 + 全部回归测试 |
 | `tests/make-screenshot.ps1` | 离屏渲染主窗口导出 `assets/screenshot.png` |
 | `tests/make-demo.ps1` | 离屏渲染 12 帧 PNG 序列，供 ffmpeg 合成 `assets/demo.gif` |
+| `docs/IMPLEMENTATION-NOTES.md` | 实现注记：代码里的 `§小节名` 指针指向这里（踩坑记录、实测数据、为什么这么写） |
 | `logs/` | NSSM 服务运行日志（`.out.log` / `.err.log`，git 忽略） |
 
 ## 功能
 
 - 卡片网格填满主区域（默认 3 列 × 2 行六张，`PerPage` 可调），窗口缩放同步伸展；单页隐藏分页按钮
 - 每张卡：服务名、端口、URL、状态圆点、健康说明、运行时长、打开面板、「关闭」「启动」两个按钮（关闭在左）
-- 健康三档：`正常` / `超时`（服务在但响应慢）/ `无响应`（端口未监听或连接被拒）
+- 健康三档：`正常` / `超时`（服务在但响应慢）/ `无响应`（端口未监听或连接被拒）。服务进程在、但健康探测还没通过时，状态标签显示「等待中」+ 橙点；超过 `WaitHealthyTimeoutMs`（默认 2 分钟）仍不通过才升级为「无响应」+ 红点——冷启动不该被误认成已可用，也不该一点就报红。恢复要连续两次探测正常，单次抖动不会重置计时
 - 状态覆盖 SCM 全部取值：`已停止` / `启动中` / `运行中` / `停止中` / `已暂停` / `暂停中` / `继续中` / `未安装`。暂停态两个按钮都禁用，副标题提示用右键「重启」**尝试**恢复——这条未实测：本机没有可暂停的服务，且暂停/恢复需管理员；能否接受 STOP 控制码由各服务自己的控制处理函数决定
 - 按钮各管一个方向（启动只在未运行时可点、关闭只在运行中可点，过渡态两个都禁用）；双击卡片仍是切换（8 秒冷却 + 健康门闩：只有运行中且健康正常才允许关闭）
 - 过渡态保护：启动中/停止中时，在途的旧探测不覆盖用户刚触发的过渡态，直到同方向终态探测到达才收尾
 - 右键卡片 = 启动/停止/重启/面板/日志/安全检查/删除（删除需输入完整服务名；走后台命令队列，UI 不冻结）
 - 后台 runspace 探测（批量 `Get-Service` + 并行 TCP/HTTP），UI 线程只取结果刷卡片；命令入队并唤醒后台，每次探测之间优先处理
+- 后台不会因为一条命令而瘫痪：单条命令抛异常、外部进程挂住（`ExtCommandTimeoutMs` 超时即 Kill）、runspace 整个退出——三种情况都有对应处理，最后一种会在状态栏提示重启
 - 中间态（启动中/停止中/暂停中/继续中）状态查询 1 秒一次，健康探测仍按 4 秒限流，不互相拖累
 - `sc.exe` 失败时状态栏给中文原因（1056 已在运行 / 1060 服务未安装 等），不是裸数字
 - 日志查看器支持轮转历史（`*.out-*.log` / `*.err-*.log`）下拉切换
-- 单实例互斥：重复启动只保留第一个窗口；重启走 stop→轮询 Stopped（≤6s）→start，避免端口未释放导致 bind 失败
+- 单实例互斥：重复启动只保留第一个窗口；互斥体用 `Global\` 命名空间，计划任务/SSH 会话里跑 CLI 也能看到 GUI 正在运行。重启走 stop→轮询 Stopped（≤6s）→start，避免端口未释放导致 bind 失败
 - 删除后卡片缓存清零，同名重建显示新端口/URL；配置变更后翻页命中缓存也刷新
 - 浅色高对比 + 系统 Mica 背景；主题色统一收口在 `lib/theme.ps1` 的 `$script:T`，改色只动一份
 - 默认关闭即退出、最小化进任务栏；需要常驻可开托盘（见 `TrayEnabled` / `MinimizeToTray` / `CloseToTray`）
@@ -142,7 +146,7 @@ pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName <服务名
 
 ## 可调常量（config.json）
 
-所有阈值收口在 `lib/config.ps1`，默认值内嵌、开箱即用。`config.json` 已 git 忽略，未知键忽略、类型强转；解析失败不阻断启动，回落默认值并在窗口启动后弹框。
+所有阈值收口在 `lib/config.ps1`，默认值内嵌、开箱即用。`config.json` 已 git 忽略；未知键忽略，覆盖值按默认值的类型校验——`"TcpTimeoutMs": "200ms"` 这种写法保留默认并给一条提示，不会让窗口起不来；解析失败同样不阻断启动，回落默认值并弹框。
 
 | 键 | 默认 | 作用 |
 |------|------|------|
@@ -151,9 +155,11 @@ pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName <服务名
 | `HttpTimeoutMs` | 3000 | HTTP 探测超时（每请求一个 CancellationTokenSource；共享 HttpClient 的实例级 Timeout 已放开为无限，否则 per-service 的更大值改不动单次请求） |
 | `CrashLogMaxBytes` | 524288 | `gui-crash.log` 轮转阈值（512 KiB，超则挪成 `.1`） |
 | `ToggleCooldownMs` | 8000 | 双击启停冷却（`card.ps1` Invoke-CardToggle） |
-| `ToggleTimeoutMs` | 45000 | 过渡态超时逃生：命令回执丢失时按到达的探测值收敛并解封按钮，防永久卡在「启动中/停止中/删除中」。须大于正常路径最长耗时——启动失败回落 `sc.exe start` 走 SCM 同步管道，上限 `ServicesPipeTimeout`（本机默认 30000ms，**2026-10-28 实测该路径 30.0s**），故留 15s 余量。探测到服务仍在同一过渡态时计时会刷新（慢启动不误判），但累计超过本值的 `TransitionHardCapFactor` 倍后强制逃生。单服务可单独调大，见「重服务」 |
+| `ToggleTimeoutMs` | 45000 | 过渡态超时逃生：回执丢失时按到达的探测值收敛并解封按钮。须大于正常路径最长耗时——启动失败回落 `sc.exe start` 走 SCM 同步管道，上限 `ServicesPipeTimeout`（**2026-10-28 实测该路径 30.0s**），故留 15s 余量。服务仍在同一过渡态时计时刷新（慢启动不误判），累计超 `TransitionHardCapFactor` 倍后强制逃生。单服务可单独调大，见「重服务」 |
 | `TransitionHardCapFactor` | 10 | 过渡计时刷新的硬上限倍数，防止永久卡在中间态的服务把逃生口刷掉 |
+| `WaitHealthyTimeoutMs` | 120000 | 「运行中但健康探测不通过」超过此时长：「等待中」升级为「无响应」+ 红点。冷启动一分钟起的服务可以调大 |
 | `WaitStoppedTimeoutMs` | 6000 | 重启/删除前轮询 Stopped 的上限（`Wait-Stopped`，UI 与 runspace 共用一份） |
+| `ExtCommandTimeoutMs` | 60000 | 外部命令（`sc.exe` / `nssm.exe`）超时：超时即 `Kill` 整棵进程树并返回 `exit=-1`，不让一条挂住的命令拖死后台 |
 | `LogKeepCount` | 10 | 轮转日志保留份数，**按日志目录**各留前 N 份：共用 `LogDir` 的服务算一个目录，有独立 `AppStdout` 目录的各算一份配额 |
 | `LogKeepDays` | 14 | 轮转日志保留天数：删除须同时满足「不在前 N 份」且「早于 N 天」，故窗口内高频轮转的档一份不删 |
 | `LogDir` | `''` | 日志根覆盖；空 = 仓内 `logs/`。只影响新注册的服务——已注册服务的 AppStdout 写死在注册表。日志窗口与保留策略按每个服务实际的 AppStdout 目录走，`LogDir` 只在读不到时兜底（手工 `nssm install` 的服务也能被看到和清理） |
@@ -191,12 +197,12 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 
 不弹 GUI，注册 + 启动后退出。`Env` 多对用分号分隔（`KEY=VAL;KEY2=VAL2`），逗号也认。**值里自带分隔符不会拆坏**：只有「这一段含 `=`」才算新变量，不含 `=` 的片段并回上一个值，所以 `NO_PROXY=127.0.0.1,localhost`、`PATH=C:\a;C:\b` 都按一条处理；变量名不限于字母数字开头（`2FA_TOKEN=x`、`ProgramFiles(x86)=C:\PF` 照样识别）。
 
-`services.json` 解析失败时 `-Add` **直接退出（码 1）**而不是继续——继续会把回落的示例清单写回你的真实配置。服务名限 `A-Za-z0-9_.-`，exe 路径必须存在，两条入口共用 `Test-SvcInput`（校验顺序：名称 → exe → 端口 → 重名）；`Test-SvcAccount` 把关账户白名单；`Get-NssmSetSpec` 收口要 set 的全部键值，`Install-NssmService` 只负责执行与失败回滚。
+`services.json` 解析失败时 `-Add` **直接退出（码 1）**而不是继续——继续会把回落的示例清单写回你的真实配置。GUI 侧也不示弱：`Save-Svc` 在同样的条件下拒绝落盘，免得点一次「添加」就把示例清单覆盖真实文件（`Replace` 不带备份，`services.json` 又不在 git 里）。服务名限 `A-Za-z0-9_.-`；exe 必须是**存在的文件**的**完整本地路径**——UNC（含 `//host/share` 这种正斜杠写法）、目录、相对路径一律拒，因为注册成 LocalSystem 后，UNC 等于把提权面交给共享写者。两条入口共用 `Test-SvcInput`（校验顺序：名称 → exe → 端口 → 重名）；`Test-SvcAccount` 把关账户白名单；`Get-NssmSetSpec` 收口要 set 的全部键值，`Install-NssmService` 只负责执行与失败回滚。
 
 ## 测试与截图
 
 ```powershell
-pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 11 项回归
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 13 项回归
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-tmp/，已 git 忽略）
 ```
@@ -214,10 +220,12 @@ pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-t
 | `test-config-params` | `config.json` 覆盖、坏 JSON 回落、runspace 注入值 |
 | `test-remove-e2e` | 真 runspace 回执 → 真 UI tick 消费，成功/失败两向 |
 | `test-dialogs-submit` | 两个提交体全分支；真弹一次「添加服务」并点击 |
+| `test-external-timeout` | 外部命令挂住时被 Kill、返回失败；正常命令的退出码与输出不受影响 |
+| `test-log-rotation` | 只删轮转档、当前档永不误删；NSSM 的 `T…` 时间戳格式能识别；保留窗口生效 |
 
 NSSM、服务启停、配置保存及菜单的外部操作都用替身，不会注册测试服务或改 `services.json`。真实 UAC、Mica 效果与 NSSM 生命周期需本机交互验证。
 
-**没有自动覆盖的**（改到对应代码时手工过一遍）：`Set-ServiceParamsAcl` 泄漏判据、`Remove-RotatedLogs` 保留窗口、托盘策略、启动器/UAC、单实例互斥、GUI 冒烟、`Save-Svc` 原子写、状态栏租约、暂停态恢复路径。
+**没有自动覆盖的**（改到对应代码时手工过一遍）：`Set-ServiceParamsAcl` 泄漏判据、托盘策略、启动器/UAC、单实例互斥（跨会话那条尤其）、`BeginStop` 的关闭路径、GUI 冒烟、状态栏租约、暂停态恢复路径。
 
 `tests/probe-1053-timing.ps1` 是手动探针（需管理员，不在 `run-all` 里）：注册一个指向「存在但非服务程序」的 exe，让 SCM 拉起进程等它连 SCP，超时返回 1053。**2026-10-28 实测**：`ServiceController.Start()` 30032ms、`sc.exe start` 30034ms，与 `ServicesPipeTimeout` 默认 30000ms 吻合。注意不能用「exe 路径不存在」造场景——那条路 SCM 立刻返回 2，15ms 就结束，走不到管道等待。
 
