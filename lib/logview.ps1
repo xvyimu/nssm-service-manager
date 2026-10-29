@@ -1,17 +1,9 @@
 # lib/logview.ps1 — 日志查看器：枚举轮转档 + WPF 查看窗口
-#
-# 依赖调用方作用域的 $logDir 与字体变量；WPF 程序集须由调用方先 Add-Type 加载。
+# 依赖调用方作用域的 $logDir 与字体变量。实现细节：docs/IMPLEMENTATION-NOTES.md
 
-# 枚举当前 + 轮转日志：out/err 是当前，out-YYYYMMDDHHMMSS.log / err-*.log 是轮转
-# 服务名允许含 . 与 -（Test-SvcInput 的 [A-Za-z0-9_.-]），正则里这些是元字符——
-# 必须先 [regex]::Escape 再插，否则 "My.Service" 的 . 会匹配任意字符，跨服务串台。
-# 参数名必须是 $LogPath 不能是 $LogDir：PowerShell 变量名大小写不敏感，参数一旦叫
-# $LogDir 就会遮蔽同名（不区分大小写）的外层 $logDir，下面那句回落变成自己赋给自己，
-# GUI 的单参调用永远拿到 $null。改名后回落才能经动态作用域读到调用方的 $logDir。
+# 枚举当前 + 轮转日志；服务名须 [regex]::Escape，参数名必须是 $LogPath 以免遮蔽外层 $logDir。§Get-LogFiles
 function Get-LogFiles([string]$n, [string]$LogPath){
-  # 不给路径时用该服务**实际**的日志目录（读注册表 AppStdout），而不是一律用 $logDir：
-  # 手工 nssm 注册的服务（如 ComfyUI）日志在别处，用 $logDir 会显示「无日志」。
-  # Get-SvcLogDir 内部已处理读不到时回落 $logDir 的情形。
+  # 不给路径时读该服务实际的日志目录（AppStdout），手工注册的服务日志可能不在 $logDir。
   if(-not $LogPath){ $LogPath = Get-SvcLogDir $n }
   if(-not $LogPath -or -not (Test-Path -LiteralPath $LogPath)){ return @() }
   $esc = [regex]::Escape($n)
@@ -34,9 +26,7 @@ function Get-LogFiles([string]$n, [string]$LogPath){
   @($current) + @($rotated)
 }
 
-# ---- 日志查看器（闭包 hashtable 持久切换状态）----
-# 发现 5：除当前 .out.log / .err.log 外，加轮转历史下拉（nssm AppRotateFiles 产生的
-# .out-*.log / .err-*.log）。22 个轮转文件此前在 GUI 中不可见。
+# 日志查看器（闭包 hashtable 持久切换状态）。§Show-Log
 function Show-Log([string]$n, $owner){
   $f2 = New-Object System.Windows.Window -Property @{
     Title = "$n 日志"; Width = 760; Height = 520; WindowStartupLocation='CenterOwner'

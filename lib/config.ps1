@@ -1,6 +1,6 @@
 # lib/config.ps1 — 可调常量集中收口（PER_PAGE / 探测超时 / 日志轮转 / 冷却）
-# 默认值内嵌于此；仓根 config.json（已 git 忽略）存在时覆盖默认值——
-# 与 services.json 同构：示例进仓，实配每台机器自定，不进 git。
+# 默认值内嵌；仓根 config.json（已 git 忽略）存在时覆盖——与 services.json 同构：示例进仓、实配不进 git。
+# 实现细节与踩坑记录：docs/IMPLEMENTATION-NOTES.md
 $script:configPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'config.json'
 $script:config = [ordered]@{
   PerPage             = 6        # 卡片每页数量（xaml.ps1 UniformGrid 3×2 与 Render-Page 分页共用）
@@ -8,35 +8,23 @@ $script:config = [ordered]@{
   HttpTimeoutMs       = 3000     # HTTP 探测超时（poll.ps1 共享 HttpClient.Timeout，本地面板冷启动宽限）
   CrashLogMaxBytes    = 524288   # gui-crash.log 轮转阈值（512 KiB，超则挪成 .1）
   ToggleCooldownMs    = 8000     # 双击启停冷却（card.ps1 Invoke-CardToggle）
-  ToggleTimeoutMs     = 45000    # 卡片过渡态超时逃生（card.ps1 Test-TransitionTimedOut）：回执丢失时
-                                 # 按到达的探测值收敛并解封按钮，防永久卡住。启动失败回落路径已实测
-                                 # 30.0s（ServicesPipeTimeout），故 45000 留 15s 余量。
-                                 # 测法见 tests/probe-1053-timing.ps1；不能用「exe 路径不存在」造场景
-                                 # （那条路 SCM 立刻返回 2，15ms 就结束，走不到管道等待）。
-  TransitionHardCapFactor = 10   # 过渡计时刷新的硬上限倍数：慢启动时计时会刷新，但累计超过
-                                 # ToggleTimeoutMs × 本值就强制逃生，防止服务卡死时逃生口被刷掉。
+  ToggleTimeoutMs     = 45000    # 卡片过渡态超时逃生（回执丢失时按探测值收敛解封）。§ToggleTimeoutMs
+  WaitHealthyTimeoutMs = 120000  # 「运行中但健康探测不通过」超过此时长：从「等待中」升级为「无响应」+ 红点
+  TransitionHardCapFactor = 10   # 过渡计时刷新的硬上限倍数：累计超过 ToggleTimeoutMs × 本值就强制逃生。
   WaitStoppedTimeoutMs = 6000    # 重启/删除前轮询 Stopped 的上限（svc-common.ps1 Wait-Stopped）
-  LogKeepCount        = 10       # 轮转日志保留份数（util.ps1 Remove-RotatedLogs）——
-                                 # 口径是**按日志目录**各留前 N 份：共用 $logDir 的服务算一个目录，
-                                 # 有独立 AppStdout 目录的服务（如 ComfyUI）各算一份配额
+  ExtCommandTimeoutMs = 60000    # 外部命令（sc.exe / nssm.exe）超时；超时即 Kill 并返回 exit=-1
+  LogKeepCount        = 10       # 轮转日志保留份数（util.ps1 Remove-RotatedLogs），按日志目录各留前 N 份。§LogKeepCount
   LogKeepDays         = 14       # 轮转日志保留天数：删除须同时满足「不在全局前 N 份」且「早于 N 天」。
-                                 # 故 14 天内高频轮转的档一份都不删——保留份数上限只在跨过天数后生效
-  LogDir              = ''       # 日志根覆盖；空 = 仓内 logs/。改它只影响新注册的服务——
-                                 # 已注册服务的 AppStdout/AppStderr 写死在注册表，须逐个重新注册
+  LogDir              = ''       # 日志根覆盖；空 = 仓内 logs/。已注册服务的 AppStdout/AppStderr 写死在注册表，须重新注册。
   # ---- 轮询与探测节奏（原硬编码在 poll.ps1 / svc-common.ps1）----
   ProbeThrottleLimit  = 8        # 并行探测的 ThrottleLimit（poll.ps1 ForEach-Object -Parallel）
   ProbeIntervalMs     = 4000     # 有运行中服务时的轮询间隔（poll.ps1 循环尾 WaitOne）
-  ProbePendingMs      = 1000     # 有服务处于 StartPending/StopPending 时的轮询间隔——
-                                 # 查状态是廉价查询，没必要跟着 4s 的健康探测节奏，
-                                 # 否则「启动中」最多要 4 秒才翻成「运行中」
+  ProbePendingMs      = 1000     # 有服务处于 Pending 时的轮询间隔（查状态廉价，不必跟 4s 健康探测节奏）。§ProbePendingMs
   ProbeIdleMs         = 15000    # 全停止时的轮询间隔——省下空转的唤醒与整轮扫描
   WaitStoppedPollMs   = 300      # Wait-Stopped 轮询步长（svc-common.ps1）
   # ---- NSSM 注册参数（原硬编码在 Get-NssmSetSpec）----
   AppRotateBytes      = 5242880  # 单日志档轮转阈值（5 MiB，NSSM AppRotateBytes）
-  AppRotateSeconds    = 86400    # 文件「太新」就不轮转的年龄门槛（NSSM AppRotateSeconds，默认 1 天）——
-                                 # AppRotateFiles=1 会在**每次服务启动**时轮转一次：频繁重启的服务
-                                 # 一天能堆几十个档（本机 ComfyUI 重启 18 次 → 37 个）。设了年龄门槛后
-                                 # 每个文件至少活 1 天才允许被轮转，堆积速度立刻降下来。
+  AppRotateSeconds    = 86400    # 文件「太新」不轮转的年龄门槛；AppRotateFiles=1 每次服务启动都轮转，靠它压堆积。§AppRotateSeconds
   AppStopMethodConsole = 5000    # 停止时给控制台进程的收尾毫秒（NSSM AppStopMethodConsole）
   # ---- UI 节奏 ----
   AckPollIntervalMs   = 400      # 命令回执/探测结果轮询的 DispatcherTimer 间隔（主脚本）
@@ -46,24 +34,39 @@ $script:config = [ordered]@{
   CloseToTray     = $false   # 关闭窗口收进托盘而非退出（需 TrayEnabled）
 }
 
-# 可选覆盖：仓根 config.json 存在时按 key 覆盖（未知 key 忽略，类型强转）。
+# 可选覆盖：仓根 config.json 存在时按 key 覆盖（未知 key 忽略）。
+# 覆盖值按默认值的类型校验：`"TcpTimeoutMs": "200ms"` 这种带单位的写法若原样赋值，
+# 主脚本的 [int] 强转会抛 RuntimeException，而那时 $ErrorActionPreference='Stop' 已生效
+# → 窗口根本不出现。坏值只让该字段保留默认 + 记一条提示。
 if (Test-Path -LiteralPath $script:configPath) {
   try {
     $override = Get-Content $script:configPath -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
     foreach ($k in $override.Keys) {
-      if ($script:config.Contains($k)) {
-        $script:config[$k] = $override[$k]  # 已有 key 才覆盖，防注入未知字段
+      if (-not $script:config.Contains($k)) { continue }  # 已有 key 才覆盖，防注入未知字段
+      $def = $script:config[$k]
+      $raw = $override[$k]
+      $value = $null
+      $valid = $false
+      if ($def -is [int]) {
+        $n = 0
+        if ([int]::TryParse([string]$raw, [ref]$n)) { $value = $n; $valid = $true }
+      } elseif ($def -is [bool]) {
+        $b = $false
+        if ([bool]::TryParse([string]$raw, [ref]$b)) { $value = $b; $valid = $true }
+      } else {
+        $value = [string]$raw; $valid = $true
+      }
+      if ($valid) { $script:config[$k] = $value }
+      else {
+        if ($null -eq $script:configNotices) { $script:configNotices = @() }
+        $script:configNotices += "config.json：$k 的值 '$raw' 无效，已用默认值 $def"
       }
     }
   } catch {
-    # 配置解析失败不阻断启动——用默认值。错误记进 configWarning，由 GUI 加载完成后弹框。
-    # 消息格式与 Load-Svc 的 `"services.json 无效：…"` 统一为 `<文件名> 无效：<原因>`：
-    # 弹框判断不了来源，文件名只能由写入方带。本变量不带处置语（弹框自己补）。
-    # 注：Load-Svc 的 services.json 分支无条件覆盖本变量，只有读示例清单的兜底分支带守卫。
+    # 解析失败不阻断启动：记 configWarning，由 GUI 加载后弹框（格式 `<文件名> 无效：<原因>`）。§config 加载
     $msg = "config.json 无效：$($_.Exception.Message)"
     if (-not $script:configWarning) { $script:configWarning = $msg }
-    # 正常启动顺序下 statusBar 还没建（config 先于窗口加载）；留这句是给「先建窗口再加载
-    # config」的顺序兜底，那时也不该带租约——Set-StatusMessage 此刻尚不可用。
+    # 正常启动顺序下 statusBar 还没建（config 先于窗口加载）；这句是给「先建窗口再加载 config」兜底。
     if ($script:statusBar) { $script:statusBar.Text = "$msg，用默认配置" }
   }
 }

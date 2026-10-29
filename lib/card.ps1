@@ -2,47 +2,37 @@
 # 自加载 config：测试 dot-source 本模块时未必先加载 config.ps1，此处自洽
 #
 # 与 dialogs.ps1 双向依赖（右键菜单调 Show-Remove），符号调用时解析，加载顺序不分先后。
+# 实现细节与踩坑记录：docs/IMPLEMENTATION-NOTES.md
 if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
 $script:TOGGLE_COOLDOWN_MS = [int]$script:config.ToggleCooldownMs
-# 过渡态超时上限：命令回执迟迟不到时（后台异常/命令丢失），探测到点后按到达值强制收敛，
-# 不让卡片永久卡在启动中/停止中/删除中。取值见 config.ps1 的说明。
 $script:TOGGLE_TIMEOUT_MS = [int]$script:config.ToggleTimeoutMs
-# 过渡计时刷新的硬上限倍数（见 config.ps1）。config 缺该键时回落 10，别让 [int]$null=0 把上限归零。
-$script:TRANSITION_HARD_CAP_FACTOR = if ($script:config.TransitionHardCapFactor) { [int]$script:config.TransitionHardCapFactor } else { 10 }
+$script:TRANSITION_HARD_CAP_FACTOR = if ($script:config.TransitionHardCapFactor) { [int]$script:config.TransitionHardCapFactor } else { 10 }  # 缺键回落 10，[int]$null=0 会把上限归零
+$script:WAIT_HEALTHY_TIMEOUT_MS = if ($script:config.WaitHealthyTimeoutMs) { [int]$script:config.WaitHealthyTimeoutMs } else { 120000 }
 
-# 把卡片置为过渡态：文字/按钮/指示灯转橙并禁用，记录命令纪元。启停与删除共用——
-# 两处字段集曾不一致，导致删除中的卡片被探测刷回「已停止」。$at 由调用方给。
+# 置过渡态：转橙、禁用按钮、记命令纪元。启停与删除共用。§Set-CardTransition
 function Set-CardTransition($card, [string]$state, [int]$epoch, [datetime]$at){
-  # 留档进入过渡态之前的终态：命令失败要 Set-CardRollback 原样放回。
-  # 不许反推方向——restart 的期望终态与起始方向相反，remove 干脆没有方向，
-  # 「按目标状态取反」会猜出错的终态。
   $card.PrevST=$card.ST; $card.PrevH=$card.H
   $card.ST=$state
   $card.LastToggle=$at
-  # 过渡时钟独立于 LastToggle：后者兼作冷却起算点、回执到达时会被重写，
-  # 拿它算超时会在回执后把计时重置。TransitionAt 只在进出过渡态时动。
   $card.TransitionAt=$at
-  # 过渡态的**起点**，只在进入时记一次；TransitionAt 会被探测刷新（慢启动），它不刷新。
-  # 逃生硬上限用它算，防止刷新把逃生口永久顶掉。
   $card.TransitionStartedAt=$at
-  # 卡片时长的起算点：与 TransitionStartedAt 同步。分开是因为语义不同——
-  # 那个服务超时判据，这个服务显示，将来改一个不该动另一个。
   $card.StateSince=$at
+  # 状态切换就重新计时：否则重启后的服务会带着上一次的等待时长，一点就红。
+  $card.UnhealthySince=[datetime]::MinValue
+  $card.HealthyStreak=0
   $card.Btn.IsEnabled=$false
   if ($card.BtnStop) { $card.BtnStop.IsEnabled=$false }
   $card.ReadyToToggle=$false
   $card.LblSt.Text=$state
-  # 过渡态自己的副标题：不换的话，启动中会一直挂着上一次的「随时可以启动」，
-  # 再叠上时长就变成「随时可以启动 · 已 12s」，自相矛盾。
+  # 换副标题，否则会挂着上一次的「随时可以启动」再叠时长
   $card.LblUpBase = switch ($state) {
     '启动中' { '正在启动…' }
     '停止中' { '正在停止…' }
     '删除中' { '正在删除…' }
     default  { $card.LblUpBase }
   }
-  if ($card.LblUp) { $card.LblUp.Text = [string]$card.LblUpBase }
-  # 立刻补一次时长后缀：否则最长有 400ms 的空窗，副标题会「没有后缀」再「有后缀」闪一下
-  if (Get-Command Update-CardClock -EA SilentlyContinue) { Update-CardClock $card ([datetime]::Now) }
+  # 立刻补一次时长后缀：否则最长有 400ms 空窗，副标题会闪一下
+  Update-CardClock $card ([datetime]::Now)
   $card.LblSt.Foreground=[System.Windows.Media.Brushes]::Orange
   $card.Dot.Fill=[System.Windows.Media.Brushes]::Orange
   $card.PendingEpoch=$epoch
@@ -59,16 +49,12 @@ function Format-Elapsed([datetime]$since, [datetime]$now) {
   return "${h}小时${m}分"
 }
 
-# 每帧刷新卡片上的时长：启动/停止过程中显示已用时，运行中显示已运行多久。
-# 只改 LblUp 的**后缀**——正文由 Update-CardData 写进 LblUpBase，这里不重算，
-# 否则健康文案会被时钟逻辑复制一份、两边迟早不一致。
+# 每帧刷新时长后缀，只改后缀不重算正文。§Update-CardClock
 function Update-CardClock($card, [datetime]$now) {
   if (-not $card -or -not $card.LblUp) { return }
-  # **必须用 StateSince，不能用 TransitionAt**：后者会在每次探测报同一中间态时被刷新
-  # （那是超时逃生判据的一部分），拿它算时长的话，慢启动服务会永远显示「已 0s」。
   $label = switch ($card.ST) {
     { $_ -in @('启动中','停止中','删除中','暂停中','继续中') } { '已' }
-    '运行中' { '已运行' }
+    '运行中' { if ($card.H -and $card.H -ne '正常') { '已等待' } else { '已运行' } }
     '已停止' { '已停' }
     default   { $null }
   }
@@ -81,23 +67,20 @@ function Update-CardClock($card, [datetime]$now) {
   $card.LblUp.Text = $base + $suffix
 }
 
-# 卡片过渡态阈值：services.json 的 per-service 覆盖优先，缺省回落全局。
-# New-Card 与 Update-CardInfo 都要算它——写成一份，免得将来改判据时只改一边（本仓的惯常教训）。
+# 过渡阈值：per-service 覆盖优先，缺省回落全局。两处共用，免得改判据只改一边。
 function Resolve-ToggleTimeoutMs($info){
   if($info -and $info.toggleTimeoutMs){ [int]$info.toggleTimeoutMs } else { $script:TOGGLE_TIMEOUT_MS }
 }
 
-# 阈值优先取卡片自己的 ToggleTimeoutMs（services.json 的 per-service 覆盖），缺省回落全局。
-# 重服务（AI 服务冷启动一分钟起）不该被全局 45s 硬套；旧夹具手工搭的卡片对象没有该字段，
-# 取到 $null 即回落，不抛错。
+# 取卡片自己的覆盖，缺省回落全局；旧夹具没该字段，$null 即回落。§Test-TransitionTimedOut
 function Test-TransitionTimedOut($card, [datetime]$now){
   if ($card.ST -notin @('启动中','停止中','删除中')) { return $false }
   if ($card.TransitionAt -eq [datetime]::MinValue) { return $false }
-  $limit = if ($card.ToggleTimeoutMs) { [int]$card.ToggleTimeoutMs } else { $script:TOGGLE_TIMEOUT_MS }
-  # 硬上限：探测报同一过渡态时 TransitionAt 会刷新（慢启动不误判），但累计超过阈值×倍数
-  # 就强制逃生，否则「命令发了没回执」的卡片会一直停在中间态。
-  # 只管命令驱动的过渡态（MinValue 直接 false）；代价见 docs/PROJECT.md 已知限制。
+  $limit = Resolve-ToggleTimeoutMs $card
   $started = if ($card.TransitionStartedAt -and $card.TransitionStartedAt -ne [datetime]::MinValue) { $card.TransitionStartedAt } else { $card.TransitionAt }
+  # 墙钟被回拨（NTP 校正/手改时间）时差值恒为负，两个阈值都判不出来，卡片永久卡在过渡态。
+  # 判不了就按超时处理——逃生只是解封按钮，比卡死好。
+  if ($now -lt $started) { return $true }
   if (($now - $started).TotalMilliseconds -ge ($limit * $script:TRANSITION_HARD_CAP_FACTOR)) { return $true }
   ($now - $card.TransitionAt).TotalMilliseconds -ge $limit
 }
@@ -108,8 +91,7 @@ function Test-CardCanStop([string]$state, [string]$health){
   $state -eq '运行中' -and $health -eq '正常'
 }
 
-# 按当前状态/健康算两个按钮的可用性。三处（回执成功、回执失败、探测刷新）共用一份，
-# 免得拆成两个按钮后某条路径只更新了其中一个。
+# 按状态/健康算按钮可用性。三处共用一份，免得某条路径只更新了一个按钮。
 function Update-CardButtons($card){
   if (-not $card) { return }
   $card.ReadyToToggle = Test-CardCanStop $card.ST $card.H
@@ -117,11 +99,7 @@ function Update-CardButtons($card){
   if ($card.BtnStop) { $card.BtnStop.IsEnabled = $card.ReadyToToggle }
 }
 
-# 命令失败（回执 ok=false）或过渡态超时逃生时，把卡片放回一个确定终态并解封按钮。
-# 不能复用 Invoke-CardToggle 的方向推导：失败时服务状态没变，要的是「回到原样」。
-# $toState / $toHealth 可选覆盖目标态：删除中回执丢失时服务实际状态不明，调用方传
-# '未知' 收敛（见 Update-CardData 的删除中分支与 util.ps1 的过渡态 sweep）——回滚到
-# 删除前的终态会让卡片显示「运行中」，但服务可能已被删掉。
+# 失败/超时逃生时放回确定终态并解封按钮。不能复用方向推导：失败时状态没变，要的是回到原样。§Set-CardRollback
 function Set-CardRollback($card, [string]$toState, [string]$toHealth){
   if (-not $card) { return }
   if (-not $toState) {
@@ -129,9 +107,11 @@ function Set-CardRollback($card, [string]$toState, [string]$toHealth){
     if ([string]::IsNullOrEmpty($toState) -or $toState -in @('启动中','停止中','删除中','查询中')) { $toState='未知' }
   }
   $h = if ($PSBoundParameters.ContainsKey('toHealth')) { $toHealth } else { $card.PrevH }
-  # 先落回目标终态，再交给 Update-CardData 走常规渲染——否则过渡态守卫会按旧 ST 拦下这个值。
+  # 先落回目标终态再交给 Update-CardData，否则过渡态守卫会按旧 ST 拦下这个值
   $card.ST=$toState
   $card.StateSince=[datetime]::Now   # 回滚也是「进入终态」，时长从此刻重新起算
+  $card.UnhealthySince=[datetime]::MinValue
+  $card.HealthyStreak=0
   $card.PendingEpoch=0          # 清纪元：失败命令的回执/旧探测不再干扰
   $card.TransitionAt=[datetime]::MinValue
   $card.TransitionStartedAt=[datetime]::MinValue
@@ -139,9 +119,7 @@ function Set-CardRollback($card, [string]$toState, [string]$toHealth){
   Update-CardData $card.SvcName $toState $h
 }
 
-# 过渡态超时逃生：把超时的过渡态卡片放出来。由 Update-StatusTick 每帧无条件扫描调用，
-# **不依赖队列生产者**——后台 runspace 死掉时也要能逃出来。
-# 启动中/停止中回到命令前的终态；删除中收敛到「未知」（成败只有回执知道）。
+# 超时逃生：每帧无条件扫描，不依赖队列——后台 runspace 死掉也要能逃。§Invoke-TransitionTimeoutEscape
 function Invoke-TransitionTimeoutEscape($card,[datetime]$now){
   if (-not $card) { return $false }
   if (-not (Test-TransitionTimedOut $card $now)) { return $false }
@@ -178,9 +156,7 @@ function Invoke-CardAction($card, [string]$action, [string]$source='Button') {
     return
   }
 
-  # 记录本次命令纪元：Update-CardData 只接受 epoch ≥ 这个值的结果/回执。
-  # 旧探测（epoch 更小或为 0）在过渡态期间直接丢，不再靠方向匹配做症状层补丁。
-  # 顺序与原实现一致：先置 UI 过渡态，再入队命令（入队返回值作纪元）。
+  # 先置 UI 过渡态再入队命令；入队返回值作纪元。§Invoke-CardAction
   $state = if ($action -eq 'stop') { '停止中' } else { '启动中' }
   Set-CardTransition $card $state 0 $now
   $card.PendingEpoch = (Send-ServiceCommand $name $action)
@@ -209,7 +185,6 @@ function New-Card([string]$name, $info){
     Text=$name; FontFamily=$script:cjkFont; FontSize=19; FontWeight='SemiBold'; Foreground=$script:T.Fg
     VerticalAlignment='Center'; TextTrimming='CharacterEllipsis'; ToolTip=$name; Margin='0,0,8,0'
   }
-  # 端口徽章与 endpoint 行：端口号与面板 URL
   $port=New-Object System.Windows.Controls.Border -Property @{Background=$script:T.PortBg; CornerRadius=4; Padding='7,3'; VerticalAlignment='Center'}
   $portText=New-Object System.Windows.Controls.TextBlock -Property @{Text=":$($info.port)"; FontFamily=$script:fontMono; FontSize=12; Foreground=$script:T.Dim}
   $port.Child=$portText
@@ -237,14 +212,13 @@ function New-Card([string]$name, $info){
     HorizontalAlignment='Left'; Background='Transparent'; BorderThickness='0'; Foreground=$script:T.Accent
     Tag=$info.url; IsEnabled=(-not [string]::IsNullOrWhiteSpace($info.url))
   }
-  # 无面板 URL 时禁用「打开面板」（IsEnabled 由 url 是否为空决定）
   $open.Add_Click({ Open-PanelUrl ([string]$this.Tag) })
-  # 右侧并排两个按钮：关闭 在左、启动 在右。拆开而不是一个来回变文字的按钮——
-  # 「启动」和「关闭」是两个不同方向的动作，合成一个按钮时用户要靠读文字确认当前能干什么。
+  # 「启动」和「关闭」是两个方向，拆成两个按钮——合成一个要靠读文字才知道能干什么。§New-Card
   $rightBtns=New-Object System.Windows.Controls.StackPanel -Property @{Orientation='Horizontal'; HorizontalAlignment='Right'}
+  # 两个按钮同尺寸：它们是对等的两个方向，尺寸差会让「关闭」看起来比「启动」轻。
   $btnStop=New-Object System.Windows.Controls.Button -Property @{
-    Content='关闭'; FontFamily=$script:cjkFont; FontSize=12; Padding='12,6'; Margin='0,0,8,0'
-    MinWidth=72; IsEnabled=$false
+    Content='关闭'; FontFamily=$script:cjkFont; FontSize=12; Padding='14,6'; Margin='0,0,8,0'
+    MinWidth=82; IsEnabled=$false
   }
   $btn=New-Object System.Windows.Controls.Button -Property @{
     Content='启动'; FontFamily=$script:cjkFont; FontSize=12; Padding='14,6'
@@ -265,6 +239,12 @@ function New-Card([string]$name, $info){
     TransitionStartedAt=[datetime]::MinValue
     # 进入当前终态的时刻（运行中=启动成功的时间；已停止=停下的时间），供卡片上的时长显示
     StateSince=[datetime]::MinValue
+    # 首次看到「运行中但健康不通过」的时刻；恢复健康或离开运行中即清零。
+    # 用来区分「还在冷启动」与「已经卡死」——见 Update-CardData 的等待中/无响应判定。
+    UnhealthySince=[datetime]::MinValue
+    # 连续健康探测为「正常」的次数。抖动（不健康→正常→不健康）不该清零累计，
+    # 连续两次正常才算真恢复——见 Update-CardData。
+    HealthyStreak=0
     # LblUp 的正文（健康文案），时钟只在它后面追加后缀，不重算
     LblUpBase='正在获取服务状态'
     # per-service 过渡态超时（services.json 的 toggleTimeoutMs），缺省用全局
@@ -290,11 +270,16 @@ function New-Card([string]$name, $info){
     $ctx = New-Object System.Windows.Controls.ContextMenu
     $items = @(@('启动','start'),@('停止','stop'),@('重启','restart'),@('面板','open'),@('日志','log'),@('安全检查','security'),@('删除','remove'))
     foreach ($d in $items) {
-      $mi = New-Object System.Windows.Controls.MenuItem -Property @{Header=$d[0]; Tag=$d[1]+'|'+$n}
+      # Tag 存结构而不是 'act|name' 拼串：服务名允许的字符集不含 |，但配置是手写的，
+      # 名字里带 | 时拼串会把右键动作打偏到截断后的另一个服务上。
+      $mi = New-Object System.Windows.Controls.MenuItem -Property @{Header=$d[0]; Tag=@{act=$d[1]; name=$n}}
       if ($d[1] -eq 'remove') { $mi.Foreground = $script:T.Danger }
       $mi.Add_Click({
-        $parts = $this.Tag -split '\|'; $act = $parts[0]; $n = $parts[1]
+        $act = $this.Tag.act; $n = $this.Tag.name
         switch ($act) {
+          # 右键是逃生口：绕过卡片按钮的状态门闩，直接下发——服务卡在 StopPending 时
+          # 这是唯一还能下命令的入口（PROJECT.md 已知限制里承诺过）。失败回执不会错误
+          # 回滚别人的过渡态，那由 Update-CardData 的 epoch 归属判断兜住，不靠这里拦。
           { $_ -in @('start','stop','restart') } { Send-ServiceCommand $n $act }
           'open'    { Open-PanelUrl $script:svc[$n].url }
           'log'     { Show-Log $n $script:window }
@@ -312,13 +297,10 @@ function New-Card([string]$name, $info){
   $border
 }
 
-# 刷新缓存卡片的端口/URL/按钮 Tag（配置变更后命中缓存时调用）。
-# 同名重建或端口变更后，旧缓存的 Port/Url/Tag 会与 $script:svc 不一致——
-# 发现 1 的根因：New-Card 把 port/url 固化进控件，Render-Page 命中缓存直接复用。
+# 刷新缓存卡片的端口/URL/Tag（配置变更命中缓存时）。New-Card 把它们固化进控件，不复用会过期。§Update-CardInfo
 function Update-CardInfo([string]$name, $info){
   if (-not $script:cards.ContainsKey($name)) { return }
   $c = $script:cards[$name]
-  # 配置改了超时覆盖时，命中缓存的旧卡片要跟着换阈值
   $c.ToggleTimeoutMs = Resolve-ToggleTimeoutMs $info
   $c.PortText.Text = ":$($info.port)"
   $c.Endpoint.Text = $info.url
@@ -327,59 +309,35 @@ function Update-CardInfo([string]$name, $info){
   $c.OpenBtn.IsEnabled = (-not [string]::IsNullOrWhiteSpace($info.url))
 }
 
-# 更新卡片数据（由 DispatcherTimer 调用）
-# 调用方据 $item.done 分流：命令完成回执走 -ack 分支，探测结果走普通分支。
-# epoch 只过滤**命令回执**（-ack 分支）：旧命令的回执不解除新命令的过渡态。
-# **普通探测仍按方向匹配收尾**（见下 $transitionExpect）——服务真正进入期望终态时让
-# 过渡态退出，这是有意保留的行为，不是「症状层补丁消除」。回执丢失时由超时逃生兜底。
+# 更新卡片数据（DispatcherTimer 调用）。$item.done 分流：回执走 -ack，探测走普通分支。§Update-CardData
 function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ack,[bool]$ok=$true){
   if (-not $script:cards.ContainsKey($n)) { return }
   $c = $script:cards[$n]
   if ($ack) {
-    # 命令完成回执：epoch 低于卡片当前则丢弃（旧命令的回执不应解封新命令的过渡态）。
     if ($e -lt $c.PendingEpoch) { return }
-    # 失败回执（T1）：命令没成功（启动抛异常/停止 sc.exe 非零/删除失败），
-    # 不能只解封按钮——卡片还停在过渡态文字上，而后续探测会被上面的过渡态守卫
-    # 按「期望终态」永久丢弃（启动失败时服务恒为已停止，永远等不到运行中）。
-    # 故先回滚到命令前的终态，按钮恢复可用，让用户能重试。
     if (-not $ok) {
-      # 但右键菜单的启停（card.ps1 右键 'start'/'stop' 分支）直接 Send-ServiceCommand、
-      # 不置过渡态（TransitionAt 仍为 MinValue）——此时 PrevST/PrevH 还是 New-Card 的初值，
-      # 回滚会把卡片刷成「未知」并清掉按钮，而服务实际状态没变、还在跑。不在过渡态就
-      # 不回滚，只按当前状态/健康重算按钮（与成功分支同一门闩）。
-      if ($c.TransitionAt -eq [datetime]::MinValue) {
+      # 只有回执对应的就是卡片当前那条命令时才回滚。右键启停的 epoch 恒大于 PendingEpoch，
+      # 它的失败不该把别人的过渡态回滚掉——那会把「停止中」刷成「运行中」，而停止命令仍在途。
+      if ($e -ne $c.PendingEpoch -or $c.TransitionAt -eq [datetime]::MinValue) {
         Update-CardButtons $c
         return
       }
       Set-CardRollback $c; return
     }
-    # 成功回执：解封按钮 + 起冷却，但门闩必须按**当前**状态/健康重算——不能无条件置 $true。
-    # 右键菜单的启停（card.ps1 右键 'start'/'stop' 分支）直接 Send-ServiceCommand，不经
-    # Invoke-CardToggle，故回执到达时卡片可能仍停在「运行中/无响应」而没进过渡态；硬置
-    # ReadyToToggle=$true 会绕过健康门闩，用户此刻能双击关掉一个本不该关闭的服务。
+    # 成功回执：按当前状态重算门闩，硬置 $true 会绕过健康门闩
     $c.LastToggle = [datetime]::Now
     Update-CardButtons $c
     return
   }
-  # 删除中：终态由 remove 回执决定，没有「期望终态」可等。期间探测必然先报「已停止」、
-  # 随后可能报「未安装」，都只是过程态——一律丢弃，否则卡片会闪回并重新点亮按钮。
-  # 例外：超时逃生（回执彻底丢了时同样不能永久卡住）。
   $timedOut = Test-TransitionTimedOut $c ([datetime]::Now)
   if ($c.ST -eq '删除中') {
     if (-not $timedOut) { return }
-    # 删除中回执丢失（后台异常退出）时收敛到「未知」，**不用**到达的探测值：
-    # 探测可能报「已停止」（删除本就先 stop）→ 收敛后按钮点亮，用户能对一个正在删除的
-    # 服务下「启动」。删除的成败只有 remove 回执知道，丢失时状态就是不确定，故显示未知、
-    # 不解封按钮。删除路径正常 ≤6s，走到这里说明后台确已失联。
     Set-CardRollback $c '未知' ''
     return
   }
-  # 方向守卫：启动中只接受「运行中」收尾、停止中只接受「已停止」，未安装/未知放行。
-  # **只保护命令驱动的过渡态**（TransitionAt 有值）。探测驱动的（外部启停、MinValue）
-  # 若也按方向丢弃，启动失败的「已停止」会被永久丢、卡片卡死且连逃生都失效（H1）。
+  # 方向守卫：只保护命令驱动的过渡态；探测驱动的若也丢弃，启动失败会卡死（H1）
   $commandDriven = $c.TransitionAt -ne [datetime]::MinValue
-  # 探测报的状态和卡片一样 → 服务还在动，不是回执丢了。刷新计时，让逃生阈值从
-  # 「最后一次看到它在动」起算（否则慢启动会一直停在点按钮那一刻）。
+  # 探测报同一状态 → 服务还在动，刷新 TransitionAt，逃生阈值从最后一次看到它在动起算
   if (-not $timedOut -and $commandDriven -and $st -eq $c.ST) { $c.TransitionAt = [datetime]::Now }
   $transitionExpect = @{ '启动中' = '运行中'; '停止中' = '已停止' }
   if (-not $timedOut -and $commandDriven -and $transitionExpect.ContainsKey($c.ST)) {
@@ -387,52 +345,69 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
     if ($st -ne $expected -and $st -notin @('未安装','未知')) { return }
   }
   if ($timedOut) { $c.PendingEpoch=0 }  # 逃生后清纪元，避免迟到回执再搅一次
-  # 离开过渡态（旧 ST 是过渡态、新 ST 不是）→ 复位 TransitionAt。不复位它就会停在旧时间戳：
-  # 之后任何探测驱动的过渡态都会被误判成命令驱动（M1），方向守卫被错误施加。
+  # 离开过渡态复位 TransitionAt，否则旧时间戳会让后续探测驱动的过渡态被误判成命令驱动（M1）
   if ($c.ST -in @('启动中','停止中') -and $st -notin @('启动中','停止中')) {
     $c.TransitionAt = [datetime]::MinValue
   }
   $prevST = $c.ST
   $c.ST = $st
-  # 只在状态**变化**时重记起算点：探测每 4 秒来一次，每次都重置的话时长永远停在 0。
-  # **首次观测不算变化**（查询中/未知 → 终态）：那时长只能从「打开工具」算起，
-  # 不是服务真实的运行/停止时刻——一打开就跳「已运行 3 秒」是误导。
+  # 只在状态变化时重记起算点；首次观测不算变化，否则一打开就跳「已运行 3 秒」。
+  # 只有「查询中」是首帧——「未知」是探测出错/删除收敛后的真实状态，从它转进运行中该起算。
   if ($st -ne $prevST) {
-    $c.StateSince = if ($prevST -in @('查询中','未知')) { [datetime]::MinValue } else { [datetime]::Now }
+    $c.StateSince = if ($prevST -eq '查询中') { [datetime]::MinValue } else { [datetime]::Now }
   }
   $c.H = $h   # 记住生效的健康文案：进入下一次过渡态时由 Set-CardTransition 留档为 PrevH
   $running = $st -eq '运行中'
   $healthy = $h -eq '正常'
-  # 状态颜色映射：运行中按健康分档，停止/未安装统一灰，其余橙
+  # 服务进程在、但健康探测还没通过（冷启动、端口未监听、HTTP 超时）：先显示「等待中」。
+  # 等太久就不该再叫「等待中」——那是服务已经卡住，显示「无响应」+ 红点。
+  # UnhealthySince 只在「运行中且不健康」时累计，恢复健康或离开运行中立刻清零。
+  if ($running -and -not $healthy) {
+    $c.HealthyStreak = 0
+    if (-not $c.UnhealthySince -or $c.UnhealthySince -eq [datetime]::MinValue) { $c.UnhealthySince = [datetime]::Now }
+  } elseif ($running) {
+    # 抖动（不健康 → 一次正常 → 不健康）不该清零累计，否则永远升不到「无响应」。
+    # 连续两次正常才算真恢复：4 秒一拍，相当于多等一拍。
+    $c.HealthyStreak = [int]$c.HealthyStreak + 1
+    if ($c.HealthyStreak -ge 2) { $c.UnhealthySince = [datetime]::MinValue }
+  } else {
+    $c.UnhealthySince = [datetime]::MinValue   # 离开运行中立即清零，不等连击
+    $c.HealthyStreak = 0
+  }
+  $waitedMs = if ($c.UnhealthySince -and $c.UnhealthySince -ne [datetime]::MinValue) {
+    ([datetime]::Now - $c.UnhealthySince).TotalMilliseconds
+  } else { 0 }
+  if ($waitedMs -lt 0) { $waitedMs = 0 }   # 墙钟回拨
+  # 显示用的「健康」：从等待中恢复要连续两次正常，否则单次探测报正常会让颜色闪一下再变回去。
+  $settledHealthy = $healthy -and (-not $c.UnhealthySince -or $c.UnhealthySince -eq [datetime]::MinValue)
+  $stuck = $running -and (-not $healthy) -and $waitedMs -ge $script:WAIT_HEALTHY_TIMEOUT_MS
+  $displaySt = if ($running -and -not $settledHealthy) { if ($stuck) { '无响应' } else { '等待中' } } else { $st }
   $dotColor = switch ($st) {
-    '运行中' { if ($healthy) { 'Green' } elseif ($h -eq '超时') { 'Orange' } else { 'Red' } }
+    '运行中' { if ($settledHealthy) { 'Green' } elseif ($stuck) { 'Red' } else { 'Orange' } }
     { $_ -in @('已停止','未安装') } { 'Gray' }
     default { 'Orange' }
   }
   # 静态画刷已经冻结；这里只替换引用，不修改画刷颜色。
   $brush = [System.Windows.Media.Brushes]::$dotColor
   $c.Dot.Fill = $brush
-  $c.LblSt.Text = $st
+  $c.LblSt.Text = $displaySt
   $c.LblSt.Foreground = $brush
 
   # 健康文字：正文存进 LblUpBase，时长后缀由 Update-CardClock 追加（它每帧跑）。
-  $c.LblUpBase = if ($running -and $healthy) {
+  $c.LblUpBase = if ($running -and $settledHealthy) {
     '服务响应正常'
   } elseif ($running) {
     $h
   } elseif ($st -eq '已停止') {
     '随时可以启动'
   } elseif ($st -eq '已暂停') {
-    # 暂停态两个按钮都不可用（启动对已运行的服务无效，关闭要求健康正常）；
-    # 恢复得走右键菜单的「重启」——它先 stop 再 start，SCM 接受。
+    # 暂停态按钮都不可用，恢复走右键「重启」（先 stop 再 start，SCM 接受）
     '服务已暂停，可用右键「重启」尝试恢复'
   } elseif ($h) {
     $h
   } else {
     '等待服务状态更新'
   }
-  $c.LblUp.Text = $c.LblUpBase
   Update-CardClock $c ([datetime]::Now)
-  # 两个按钮各管一个方向：启动键只在已停止时可用，关闭键只在运行中且健康正常时可用
   Update-CardButtons $c
 }

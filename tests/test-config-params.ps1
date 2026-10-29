@@ -82,6 +82,18 @@ try {
   # LogDir 默认空串 = 用仓内 logs/（主脚本据此回落，见 service-manager-gui.ps1 顶部）
   Assert ($script:config.LogKeepCount -eq 10 -and $script:config.LogKeepDays -eq 14 -and $script:config.LogDir -eq '') 'Log retention defaults not restored on broken config.'
 
+  # ---- 2b. 类型不合法的覆盖值：保留默认 + 提示，不抛 ----
+  # 修前：config.ps1 原样赋值，主脚本的 [int] 强转在 $ErrorActionPreference='Stop' 下抛
+  # RuntimeException，窗口根本不出现——用户只看到「启动失败，见 crash log」，看不到是哪个字段。
+  $script:config = $null; $script:configWarning = $null; $script:configNotices = $null
+  [IO.File]::WriteAllText((Join-Path $RepoRoot 'config.json'), '{"TcpTimeoutMs":"200ms","TrayEnabled":"maybe"}', [Text.UTF8Encoding]::new($false))
+  . (Join-Path $RepoRoot 'lib/config.ps1')
+  Assert ($script:config.TcpTimeoutMs -eq 200) "坏值应保留默认 200，got $($script:config.TcpTimeoutMs)"
+  Assert ($script:config.TrayEnabled -eq $false) "坏 bool 应保留默认 false，got $($script:config.TrayEnabled)"
+  Assert (@($script:configNotices).Count -eq 2) "两个坏值应给两条提示，got $(@($script:configNotices) -join ' | ')"
+  [int]$script:config.TcpTimeoutMs | Out-Null   # 主脚本这步强转不该抛
+  Assert (-not $script:configWarning) '类型问题是提示，不是「config.json 无效」'
+
   # ---- 3. mock restart：Wait-Stopped 用 $sync 注入的 waitMs=50——
   # 若误用默认 6000，restart 会卡在轮询直到 6s，executed 里只有 stop；
   # 用 50 则 ~550ms 内 stop+start 都到，是「注入值确实生效」的判别。

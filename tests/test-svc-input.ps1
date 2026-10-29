@@ -42,6 +42,21 @@ try {
     Assert ($r.code -eq 'port') "port $p should be rejected, got $($r.code)"
   }
   Assert ($null -eq (Test-SvcInput 'SvcA' 65535 $fakeExe $null)) 'port 65535 should pass'
+  # 路径形态：UNC / 相对路径 / 目录一律拒绝。
+  # 注册成 LocalSystem 服务后，UNC 是「共享写者 → 本机 SYSTEM」，目录是必然 1053。
+  $r = Test-SvcInput 'SvcA' 8080 '\\fileserver\share\app.exe' $null
+  Assert ($r.code -eq 'exe') "UNC 路径应被拒，got $($r.code)"
+  Assert ($r.msg -match '网络共享') "UNC 的提示应点明共享风险：$($r.msg)"
+  # 正斜杠写法同样是 UNC：`//localhost/C$/...` 经 Test-Path 为 true，只认反斜杠会被绕过
+  $r = Test-SvcInput 'SvcA' 8080 '//localhost/C$/Windows/notepad.exe' $null
+  Assert ($r.code -eq 'exe') "正斜杠 UNC 也应被拒，got $($r.code)"
+  # drive-relative：IsPathRooted 说 true，但它相对的是 C: 盘的当前目录
+  $r = Test-SvcInput 'SvcA' 8080 'C:foo.exe' $null
+  Assert ($r.code -eq 'exe') "drive-relative 路径应被拒，got $($r.code)"
+  $r = Test-SvcInput 'SvcA' 8080 'app.exe' $null
+  Assert ($r.code -eq 'exe') "相对路径应被拒，got $($r.code)"
+  $r = Test-SvcInput 'SvcA' 8080 ([IO.Path]::GetTempPath()) $null
+  Assert ($r.code -eq 'exe') "目录应被拒（Test-Path 对目录也返回 true），got $($r.code)"
   Assert ($null -eq (Test-SvcInput 'SvcA' 1 $fakeExe $null)) 'port 1 should pass'
 
   # 重名

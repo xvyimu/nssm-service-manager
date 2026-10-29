@@ -52,6 +52,11 @@ function Get-Service {
     [pscustomobject]@{ Name=`$n; Status=`$st }
   }
 }
+function Invoke-ThrowingSc {
+  # 每次调用都抛，模拟 sc.exe 启动失败（路径失效/EDR 拦子进程/句柄耗尽）。
+  # 用 extraSyncKeys @{ scExe = 'Invoke-ThrowingSc' } 注入，验「单条命令抛异常不许终结轮询」。
+  throw 'simulated sc.exe failure'
+}
 function Invoke-TestSc {
   `$sync.executed.Enqueue([pscustomobject]@{action=`$args[0];name=`$args[1];probes=`$sync.probeCount})
   [void]`$sync.executedReady.Set()

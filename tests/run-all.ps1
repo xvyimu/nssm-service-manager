@@ -47,6 +47,8 @@ $tests = @(
   @{ Name = 'poll commands'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-poll-commands.ps1')) }
   @{ Name = 'per-service timeout'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-per-service-timeout.ps1')) }
   @{ Name = 'svc input'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-svc-input.ps1')) }
+  @{ Name = 'external timeout'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-external-timeout.ps1')) }
+  @{ Name = 'log rotation'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-log-rotation.ps1')) }
   @{ Name = 'service registration'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-add-svc.ps1')) }
   @{ Name = 'config params';     Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-config-params.ps1')) }
   @{ Name = 'remove e2e'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-remove-e2e.ps1')) }

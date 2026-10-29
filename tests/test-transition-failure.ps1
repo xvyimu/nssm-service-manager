@@ -86,6 +86,20 @@ try {
   # ---- 2b. 启停失败回滚后，用户能立刻重试（冷却不得把失败也锁上）----
   Assert ($card.LastToggle -eq [datetime]::MinValue) 'Failed stop left cooldown set (user cannot retry).'
 
+  # ---- 2c. 失败回执的归属：别人命令的失败不许回滚当前过渡态 ----
+  # 双击关闭 → 停止中（PendingEpoch=N）；期间右键「启动」入队（epoch=N+1，不置过渡态、
+  # 不写 PendingEpoch）；后台启动失败 → 回执 e=N+1 ok=false。修前只看「卡片有没有
+  # TransitionAt」，会把别人的停止中过渡态回滚成 PrevST=运行中，而停止命令仍在途。
+  $card.LastToggle=[datetime]::MinValue
+  $card.TransitionAt=[datetime]::MinValue
+  Update-CardData 'TestService' '运行中' '正常'
+  Invoke-CardToggle $card
+  Assert ($card.ST -eq '停止中') "应进入停止中，got $($card.ST)"
+  $pending = $card.PendingEpoch
+  Update-CardData 'TestService' $null $null -e ($pending + 1) -ack -ok $false
+  Assert ($card.ST -eq '停止中') "别人命令的失败回执不该回滚当前过渡态，got $($card.ST)"
+  Assert (-not $card.Btn.IsEnabled) '误回滚后启动键被错误点亮'
+
   # ---- 3. 删除失败：不得永久停在「删除中」----
   $card.LastToggle=[datetime]::MinValue
   Update-CardData 'TestService' '已停止' ''

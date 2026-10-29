@@ -1,10 +1,7 @@
 # lib/tray.ps1 — 可选托盘图标（config.json 的 TrayEnabled 打开才加载 WinForms）
-#
-# 决策（纯函数，只读 config）与副作用（Initialize-Tray 才 Add-Type WinForms）分离。
-# 默认 TrayEnabled=false：最小化进任务栏、关闭即退出。
+# 决策（纯函数，只读 config）与副作用（Initialize-Tray 才 Add-Type WinForms）分离；默认 TrayEnabled=false：最小化进任务栏、关闭即退出。
 
-# 关闭窗口时该做什么：'tray'=收进托盘，'exit'=真正退出（默认）。
-# 两个开关都要开才进托盘——只开 CloseToTray 而不开 TrayEnabled 没有托盘可收，按退出处理。
+# 关闭窗口时该做什么：两个开关都开才进托盘，只开 CloseToTray 而无 TrayEnabled 按退出处理。
 function Get-CloseAction($config){
   if($config -and $config.TrayEnabled -and $config.CloseToTray){ 'tray' } else { 'exit' }
 }
@@ -22,8 +19,7 @@ $script:trayMenu = $null
 # 创建托盘图标（幂等）。WinForms 程序集在此按需加载——未启用托盘的机器不加载。
 function Initialize-Tray($window){
   if($script:trayIcon){ return $script:trayIcon }
-  # 必须存 $script: —— PowerShell scriptblock 非闭包，函数返回后 $window 局部变量脱作用域，
-  # 托盘菜单的「显示主窗口」处理器会解析到 $null（与 xaml.ps1 的 $script:toggleMax 同因）。
+  # 必须存 $script:：scriptblock 非闭包，函数返回后 $window 脱作用域会解析到 $null（同 xaml.ps1 $script:toggleMax）。
   $script:trayWindow = $window
   Add-Type -AssemblyName System.Windows.Forms, System.Drawing
   $ni = [System.Windows.Forms.NotifyIcon]::new()

@@ -1,5 +1,4 @@
-# lib/xaml.ps1 — 卡片主视图：列数由 PerPage 计算，窗口缩放时同步伸展。
-# 自加载 config / tray（测试 dot-source 时未必先加载）。
+# lib/xaml.ps1 — 卡片主视图：列数由 PerPage 计算，窗口缩放时同步伸展。实现细节：docs/IMPLEMENTATION-NOTES.md
 if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
 if (-not (Get-Command Get-CloseAction -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot 'tray.ps1') }
 $script:PER_PAGE = [int]$script:config.PerPage
@@ -66,8 +65,7 @@ function New-MainWindow {
   [void]$toolbar.Children.Add($actions)
   [System.Windows.Controls.DockPanel]::SetDock($toolbar, 'Top')
   [void]$content.Children.Add($toolbar)
-  # UniformGrid 列数 = PER_PAGE 的约数里最接近 2 行排满的那个；默认 3 列 × 2 行（PER_PAGE=6）。
-  # 非 6 时取上取整 sqrt：PER_PAGE=4 → 2×2，PER_PAGE=8 → 3×3（3 行），9 → 3×3。
+  # 列数取上取整 sqrt：PER_PAGE=6 → 3×2，4 → 2×2，8 → 3×3。
   $cols = [math]::Ceiling([math]::Sqrt($script:PER_PAGE))
   $rows = [math]::Ceiling($script:PER_PAGE / $cols)
   $cardPanel = New-Object System.Windows.Controls.Primitives.UniformGrid -Property @{Columns=$cols; Rows=$rows}
@@ -90,9 +88,7 @@ function New-MainWindow {
   $script:lblPage=$lblPage; $script:btnPrev=$btnPrev; $script:btnNext=$btnNext
   $script:serviceSummary=$summary; $script:cards=@{}; $script:curPage=0
 
-  # 最大化/还原共用一个切换（按钮与双击标题栏同逻辑）。
-  # 必须存 $script: —— New-MainWindow return 后局部变量脱作用域，
-  # 双击标题栏处理器里的 & $script:toggleMax 才能解析到（PowerShell scriptblock 非闭包）。
+  # 最大化/还原共用；必须存 $script:，否则局部作用域销毁后处理器解析不到（脚本块非闭包）。
   $script:toggleMax = { $script:window.WindowState = if ($script:window.WindowState -eq 'Maximized') { 'Normal' } else { 'Maximized' } }
   $titleBar.Add_MouseLeftButtonDown({ param($s,$e) if ($e.LeftButton -eq 'Pressed') {
     if ($e.ClickCount -ge 2) {
@@ -110,8 +106,7 @@ function New-MainWindow {
   })
   $btnMax.Add_Click($script:toggleMax)
   $btnClose.Add_Click({ $script:window.Close() })
-  # 关闭策略：CloseToTray 且非托盘「退出」时取消关闭、隐藏到托盘。
-  # trayExitRequested 由托盘菜单「退出」置位——那条路径必须放行，否则退不掉。
+  # 关闭策略：CloseToTray 且非托盘「退出」时隐藏到托盘；trayExitRequested 必须放行。
   $win.Add_Closing({ param($s,$e)
     if ((Get-CloseAction $script:config) -eq 'tray' -and -not $script:trayExitRequested) {
       $e.Cancel = $true
@@ -129,8 +124,7 @@ function New-MainWindow {
   $win
 }
 
-# 加锁读服务名：与后台 runspace 的读路径对称（当前 UI 线程是唯一写者，但锁不对称
-# 后续加后台写入即踩）。测试夹具可能没初始化 $sync（CLI 路径与部分单测），退化成不加锁。
+# 加锁读服务名（与后台 runspace 对称）；$sync 未初始化时退化为不加锁。
 function Get-SvcNames {
   $gate = if ($script:sync -and $script:sync.gate) { $script:sync.gate } else { $null }
   if ($gate) { [Threading.Monitor]::Enter($gate) }
@@ -153,8 +147,7 @@ function Render-Page {
       # 重用卡片，翻页不丢失健康状态、过渡状态或 8 秒冷却。
       $cached = $script:cards.ContainsKey($n)
       $card=if ($cached) { $script:cards[$n] } else { New-Card $n $script:svc[$n] }
-      # 命中缓存时刷新端口/URL/Tag——配置可能已变更（发现 1）。
-      # 新建的卡已在 New-Card 里固化，不重复刷新。
+      # 命中缓存时刷新端口/URL/Tag（配置可能已变）；新建卡已在 New-Card 固化。
       if ($cached) {
         if ($gate) { [Threading.Monitor]::Enter($gate) }
         try { $info = $script:svc[$n] } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }

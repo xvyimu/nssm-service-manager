@@ -1,36 +1,23 @@
 # lib/util.ps1 — 配置持久化（services.json）· UI 工具 · 日志轮转保留 · 安全检查
 #
-# 【作用域约定】函数体直接读调用方作用域里的 $cfg / $logDir（dot-source 后由调用方赋值），
-# 不是模块级变量。故：参数**不得**叫 $cfg / $logDir——变量名大小写不敏感，参数会遮蔽外层
-# 变量、回落逻辑静默失效（Get-LogFiles 曾因此让日志下拉框长期为空）。
+# 函数体直接读调用方作用域的 $cfg / $logDir；参数不得同名，大小写不敏感会遮蔽外层变量。
+# 实现细节：docs/IMPLEMENTATION-NOTES.md
 
 # ---- 配置层（services.json 是 SSOT，services.example.json 是兜底）----
-# 兜底直接读仓里的示例清单，不在源码里再抄一份服务名（避免双源漂移）。
-# 【不要在此初始化 $script:configWarning】config.ps1 可能已写入原因，这里赋 $null 会清掉它。
+# 兜底读示例清单，不在源码里抄服务名；不要在此初始化 $script:configWarning（会清掉 config.ps1 写入的原因）。
 
 function Read-SvcFile([string]$path){
-  # 可选字段写错的收集箱（Load-Svc 读完并入 configNotices 弹给用户）。
-  # 为什么收集而不抛：抛会让 Load-Svc 落到 catch，整份清单退回 services.example.json——
-  # GUI 里显示的是示例服务，用户点一次增删，Save-Svc 就把示例写回真实文件，清单全没。
-  # 一个可选字段写错只该让**那个字段**不生效。
+  # 可选字段写错的收集箱。不能抛：抛会让 Load-Svc 落到 catch，整份清单退回示例并被 Save-Svc 写回。§Read-SvcFile
   $script:svcFieldWarnings = @()
   $j = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
   $o = [ordered]@{}; foreach ($k in $j.Keys) {
     $p = [int]$j[$k].port; $u = [string]$j[$k].url
     if ($p -lt 1 -or $p -gt 65535) { throw "$k 端口非法: $p" }
     $entry = @{ port = $p; url = $u }
-    # 可选 per-service 超时覆盖（缺省回落 config 的全局值）：
-    #   toggleTimeoutMs — 卡片过渡态超时逃生（重服务冷启动一分钟起时调大）
-    #   httpTimeoutMs   — HTTP 健康探测超时
-    #   tcpTimeoutMs    — 端口探测超时
-    # **必须在这里显式带走**：Save-Svc 写的是整份 $script:svc，本函数只挑 port/url 的话，
-    # 用户在 services.json 里写的覆盖字段会在下一次 GUI 增删服务时被静默抹掉。
+    # 可选 per-service 超时覆盖（toggleTimeoutMs/httpTimeoutMs/tcpTimeoutMs），缺省回落全局。
+    # **必须显式带走**：Save-Svc 写整份 $script:svc，只挑 port/url 会让用户的覆盖被静默抹掉。
     foreach ($opt in 'toggleTimeoutMs','httpTimeoutMs','tcpTimeoutMs') {
-      # **不能用 ContainsKey($opt)**：ConvertFrom-Json -AsHashtable 返回的是
-      # System.Management.Automation.OrderedHashtable，它的键**大小写敏感**（实测：
-      # 写 ToggleTimeoutMs 时 ContainsKey('toggleTimeoutMs') 为 False，点访问却能取到值）。
-      # 而 config.json 的覆盖走 [ordered]@{} 的 Contains()，那个不敏感——两处行为不能不一致。
-      # 按 -ieq 找实际键名：用户照 README 表格写 ToggleTimeoutMs 也得生效。
+      # **不能用 ContainsKey**：-AsHashtable 返回的 OrderedHashtable 键大小写敏感，按 -ieq 找实际键名。§Read-SvcFile
       $actual = @($j[$k].Keys | Where-Object { $_ -ieq $opt }) | Select-Object -First 1
       if (-not $actual) { continue }
       $raw = $j[$k][$actual]
@@ -42,31 +29,32 @@ function Read-SvcFile([string]$path){
       }
       $entry[$opt] = $v
     }
+    # 白名单外的键会被 Save-Svc 的全量写回静默抹掉——记一条提示。
+    # 用户把字段名打错一个字母时，原来的表现是「配了但没生效」，且连提示都没有。
+    $known = @('port','url','toggleTimeoutMs','httpTimeoutMs','tcpTimeoutMs')
+    foreach ($key in $j[$k].Keys) {
+      if (-not @($known | Where-Object { $_ -ieq $key }).Count) {
+        $script:svcFieldWarnings += "$k 的字段 $key 不被识别，保存时会被丢弃"
+      }
+    }
     $o[$k] = $entry
   }
   $o
 }
 
 function Load-Svc {
-  # 专用标志：$script:configWarning 有两个写入方（config.ps1 处理 config.json，这里处理
-  # services.json），而两者后果完全不同——config.json 坏了按设计「不阻断，用默认值」。
-  # 调用方（CLI 的 -Add 门闩）要判断的是「服务清单是否回落成了示例」，只能认这个标志。
+  # 专用标志：configWarning 有两个写入方，后果不同——调用方只能认这个判断「是否回落成示例」。§Load-Svc
   $script:svcLoadFailed = $false
   if (Test-Path $cfg) {
     try {
       $loaded = Read-SvcFile $cfg
-      # 可选字段写错：清单照常用，只把原因攒成提示（configNotices），不走 configWarning——
-      # 后者配套的弹框会写「当前使用恢复配置」，而这里并没有用恢复配置。
-      # **必须先判空初始化为 @()**：`$null += "x"` 得到的不是数组而是 String（+= 走字符串
-      # 拼接），后面 -join 就失效，多条提示会粘成一行。注意 `@($null)` 也不是空数组，
-      # 是「含一个 $null 的数组」——只能在确认是 $null 时显式赋 @()。
-      # 这里可以初始化：本变量没有别的模块写入，不存在 configWarning 那种被覆盖的问题。
+      # 可选字段写错只攒提示不走 configWarning（后者弹框写「使用恢复配置」）。
+      # **必须先判空初始化为 @()**：$null += "x" 变成 String，@($null) 也不是空数组。§Load-Svc
       if ($null -eq $script:configNotices) { $script:configNotices = @() }
       foreach ($w in $script:svcFieldWarnings) { $script:configNotices += "services.json：$w" }
       return $loaded
     }
-    # 消息自带文件名：主脚本的弹框用中性前缀（configWarning 可能来自 config.json 或
-    # services.json，调用方无从判断），来源只能由写入方在这里讲清楚。
+    # 消息自带文件名：调用方无从判断来源，由写入方讲清。§Load-Svc
     catch {
       $script:configWarning = "services.json 无效：$($_.Exception.Message)"
       $script:svcLoadFailed = $true
@@ -81,15 +69,16 @@ function Load-Svc {
   [ordered]@{}
 }
 
-# 原子写回：$PID.$guid.tmp → Replace（避免写一半停电留下半截 JSON）
-# 写的是调用方传入的整个对象（`$s | ConvertTo-Json -Depth 5`）。
+# 原子写回：$PID.$guid.tmp → Replace，避免停电留下半截 JSON。§Save-Svc
 function Save-Svc($s) {
+  # 清单解析失败时 $script:svc 是示例清单（Load-Svc 回落的结果），写回会覆盖真实配置。
+  # Save-Svc 没有备份（Replace 第三参为 null），services.json 又不在 git 里，覆盖后无法恢复。
+  if ($script:svcLoadFailed) { throw 'services.json 未能解析，已拒绝写入（请先修复该文件）' }
   $json  = $s | ConvertTo-Json -Depth 5
   $tmp   = "$cfg.$PID.$([guid]::NewGuid()).tmp"
   [IO.File]::WriteAllText($tmp, $json, [Text.UTF8Encoding]::new($false))
   try {
-    # [NullString]::Value 传真正的 CLR null；直接写 $null 会被 PowerShell 绑成空字符串，
-    # 触发 File.Replace「The path is empty」（备份路径被当成非空字符串校验）。
+    # [NullString]::Value 才是真正的 CLR null；$null 会被绑成空串，File.Replace 报「path is empty」。§Save-Svc
     if (Test-Path -LiteralPath $cfg) { [IO.File]::Replace($tmp, $cfg, [NullString]::Value) }
     else { [IO.File]::Move($tmp, $cfg) }
   } finally {
@@ -97,8 +86,7 @@ function Save-Svc($s) {
   }
 }
 
-# 把新服务写进内存清单并落盘——CLI（-Add）与 GUI 对话框共用一份。
-# 返回 $null 表示成功；否则返回错误信息，由调用方决定怎么提示、是否关窗/退出。
+# 写进内存清单并落盘，CLI 与对话框共用。返回 $null 成功，否则错误信息。§Add-SvcEntry
 function Add-SvcEntry([string]$n,[int]$p,[string]$url){
   [Threading.Monitor]::Enter($sync.gate)
   try { $script:svc[$n]=@{port=$p;url=$url} } finally { [Threading.Monitor]::Exit($sync.gate) }
@@ -106,9 +94,7 @@ function Add-SvcEntry([string]$n,[int]$p,[string]$url){
   $null
 }
 
-# 命令纪元：每次 Send-ServiceCommand 递增，随命令对象入队；后台执行完把同一 epoch 跟着
-# 结果回 UI。Update-CardData 据此只认 epoch ≥ 卡片 PendingEpoch 的回执——旧命令的回执
-# 不该解除新命令的过渡态。普通探测不带 epoch，仍按方向匹配收尾（见 card.ps1）。
+# 命令纪元：随命令入队并随结果回 UI；Update-CardData 只认 epoch ≥ PendingEpoch 的回执。§Send-ServiceCommand
 $script:cmdEpoch = 0
 
 # 所有 GUI 命令统一入队并唤醒后台；队列保留 FIFO，事件只负责结束空闲等待。
@@ -120,28 +106,21 @@ function Send-ServiceCommand([string]$name,[string]$action) {
   $e
 }
 
-# 打开面板 URL 的统一入口：包住 Start-Process，URL 非法/无默认浏览器/注册表关联损坏时
-# 只提示不崩 GUI。card.ps1 两处（按钮 Click、右键菜单 open）都走这里——否则 Start-Process
-# 抛异常会经 Dispatcher 冒到 AppDomain，没有 Dispatcher 级兜底就整窗消失。
-# 不记 URL 本身（crashlog 不记配置值），只记异常类型与消息。
+# 打开面板 URL 的统一入口：包住 Start-Process，失败只提示不崩 GUI。§Open-PanelUrl
 function Open-PanelUrl([string]$url){
   if ([string]::IsNullOrWhiteSpace($url)) { return }
+  # 只放行 http/https：提权进程里 Start-Process 一个 file:/// 或自定义协议，等于管理员执行任意程序。
+  if ($url -notmatch '^(?i)https?://') { Set-StatusMessage "只支持 http/https 面板地址：$url"; return }
   try { Start-Process $url -EA Stop }
   catch {
-    # 先给用户可见的提示、再记日志，且各自包住——用户的提示不该被日志写入的失败连累
-    # （Write-CrashLog 自身依赖 $logDir/配置，早期或异常场景下可能抛）。
-    # 走 Set-StatusMessage 而非直接赋 Text：带显示租约，否则用户没在操作时会被下一帧
-    # 自动刷新吞掉（与 T4 修的同类问题：失败提示必须留得住）。
+    # 先提示再记日志，各自包住；走 Set-StatusMessage 带租约，否则会被下一帧自动刷新吞掉。§Open-PanelUrl
     try { Set-StatusMessage "打开面板失败：$($_.Exception.Message)" } catch {}
     try { Write-CrashLog "Open-PanelUrl 失败: $($_.Exception.GetType().FullName): $($_.Exception.Message)" } catch {}
   }
 }
 
 # ---- 状态栏消息与每帧队列处理（DispatcherTimer 的回调体）----
-# 消息带**显示租约**：写入时记 $script:msgUntil，自动刷新在此之前不得覆盖。
-# 没有这条，后台失败消息会被同一 tick 的「状态自动刷新」立刻盖掉，用户永远看不见——
-# 用户没在操作时 $script:lastActionAt 早已超过 4 秒阈值，而 remove 路径的
-# stop + Wait-Stopped 最长 6 秒，失败消息必然跨过门槛。
+# 消息带显示租约（$script:msgUntil）：否则后台失败消息会被同一 tick 的自动刷新盖掉。§状态栏消息
 $script:MSG_LEASE = [TimeSpan]::FromSeconds(5)
 
 function Set-StatusMessage([string]$text){
@@ -150,10 +129,7 @@ function Set-StatusMessage([string]$text){
   $script:msgUntil = [datetime]::Now + $script:MSG_LEASE
 }
 
-# UI 回调抛异常时的状态栏提示（Dispatcher 兜底 handler 调用）。
-# 抽成函数而非内联在 handler 里：handler 由 add_UnhandledException 注册在进程级上下文，
-# 测不了；而「截断到 80 字符 + 带租约」这段才是真正会写错的部分。
-# 只做最低风险的事（字符串处理 + 赋 Text）——此函数本身若抛，会走进程终止路径。
+# UI 回调异常时的状态栏提示。抽成函数才测得了「截断 + 租约」这段。§Set-UiErrorStatus
 function Set-UiErrorStatus([string]$message){
   if (-not $script:statusBar) { return }
   $m = [string]$message
@@ -161,36 +137,28 @@ function Set-UiErrorStatus([string]$message){
   Set-StatusMessage "操作出错：$m"
 }
 
-# Dispatcher 未处理异常的兜底体（注册行在主脚本）。事件参数是私有构造，只能真抛真接验证。
-# 每步各自包住：本函数内再抛会直接终止进程。
+# Dispatcher 未处理异常的兜底体。每步各自包住；必须置 Handled，否则单次异常=整窗消失。§Invoke-DispatcherErrorFallback
 function Invoke-DispatcherErrorFallback($e){
   try { Set-UiErrorStatus ([string]$e.Exception.Message) } catch {}
   try { Write-CrashLog "DispatcherUnhandled: $($e.Exception.GetType().FullName): $($e.Exception.Message)" } catch {}
-  # 必须置位：否则异常继续冒到 AppDomain，单次点击异常=整窗消失。
   $e.Handled = $true
 }
 
-# DispatcherTimer 每帧：排空结果队列（探测结果 / 命令回执）→ 排空消息队列写状态栏
-# → 空闲 4 秒后自动刷新。抽成函数而不内联在 Add_Tick 里，是为了能直接单测：
-# 内联在 Add_Tick 里时测试只能「复刻」这段逻辑，改这里而漏改测试就是静默漂移。
+# 每帧：排空结果队列 → 排空消息队列 → 空闲 4 秒自动刷新。抽成函数才可单测，内联会导致测试复刻逻辑而漂移。§Update-StatusTick
 function Update-StatusTick {
   $item = $null
   while ($script:queue.TryDequeue([ref]$item)) {
     if ($item.done) {
       if ($item.act -eq 'remove') {
         if (-not $item.ok) {
-          # 删除失败（stop 或 nssm remove 抛错/非零）：服务仍在、配置未动，不能走下面的清理
-          # 路径——那会把还活着的服务从 UI 抹掉，用户以为删掉了。回滚卡片过渡态并解封按钮，
-          # 失败原因由后台 msg 队列给出（poll.ps1 已 Enqueue）。
+          # 删除失败：服务仍在、配置未动，不能走清理路径（那会把活着的服务从 UI 抹掉）。§Update-StatusTick
           Set-CardRollback $script:cards[$item.n]
           continue
         }
-        # 删除回执：清 svc 与卡片缓存、落盘配置、刷新分页。
         [Threading.Monitor]::Enter($script:sync.gate)
         try { $script:svc.Remove($item.n) } finally { [Threading.Monitor]::Exit($script:sync.gate) }
         $script:cards.Remove($item.n)
-        # 保存成功/失败只赋一次文案（T6）：原实现在 catch 里写完「保存失败」后又无条件写
-        # 「已删除」，把提示盖掉——services.json 未落盘时重开 GUI 服务会复活，用户却看不到原因。
+        # 保存成败只赋一次文案（T6）：原实现对「保存失败」又被「已删除」盖掉，用户看不到。§Update-StatusTick
         $note = try { Save-Svc $script:svc; "$($item.n) 已删除" }
                 catch { "$($item.n) 已删除但配置保存失败：$($_.Exception.Message)" }
         Set-StatusMessage $note
@@ -205,51 +173,57 @@ function Update-StatusTick {
   }
   $msg = $null
   while ($script:msgQueue.TryDequeue([ref]$msg)) { Set-StatusMessage $msg }
-  # 过渡态超时逃生（T1 的后台死亡分支）：无条件扫描所有卡片，把超时的过渡态放出来。
-  # 不能只靠 Update-CardData 里的超时分支——那条只在**有探测结果到达**时才跑；后台 runspace
-  # 若已异常退出，队列再无生产者，卡片会永久卡在「启动中/停止中/删除中」。这里不依赖队列，
-  # 每帧独立判一次，是逃生口的兜底。卡片缓存未建时（CLI/部分单测）跳过。
+  # 过渡态超时逃生：不依赖队列（后台 runspace 死了也要能逃），每帧独立判一次。§Update-StatusTick
   if ($script:cards -and (Get-Command Invoke-TransitionTimeoutEscape -EA SilentlyContinue)) {
     $now = [datetime]::Now
-    # Invoke-TransitionTimeoutEscape 内部自带 Test-TransitionTimedOut 判据，此处不再预判。
-    # Get-Command 守卫与主脚本的 Dispatcher handler 同款：card.ps1 未加载（CLI/部分单测）
-    # 时该函数不存在，不能让它把整个 tick 带崩。
+    # Get-Command 守卫：card.ps1 未加载（CLI/部分单测）时该函数不存在，不能带崩整个 tick。§Update-StatusTick
     foreach ($card in @($script:cards.Values)) {
       [void](Invoke-TransitionTimeoutEscape $card $now)
-      # 同帧刷新卡片时长（启动/停止过程显示已用多久，运行中显示已运行多久）。
-      # 与逃生口同一处：两者都不依赖队列，后台 runspace 死了也照常走。
+      # 同帧刷新时长：与逃生口一样不依赖队列。§Update-StatusTick
       Update-CardClock $card $now
     }
   }
+  # 后台 runspace 结束 = 探测与命令都没人处理了。不提示的话按钮全灰、卡片停在最后一帧，
+  # 而状态栏还在每 4 秒打「状态自动刷新」，看起来是活的——用户只能杀进程重开。
+  if ($script:bgHandle -and $script:bgHandle.IsCompleted -and -not $script:bgDeathReported) {
+    $script:bgDeathReported = $true
+    try { Write-CrashLog 'Background runspace completed unexpectedly' } catch {}
+    Set-StatusMessage '后台已停止响应，请重启工具'
+    foreach ($card in @($script:cards.Values)) {
+      if ($card.ST -eq '查询中') { Set-CardRollback $card '未知' '' }
+    }
+  }
   # 空闲 4 秒后自动刷新状态文字；消息租约未到期时不覆盖（T4）。
-  if ($script:statusBar -and (-not $script:lastActionAt -or ([datetime]::Now - $script:lastActionAt).TotalSeconds -ge 4)) {
+  # 后台已死时不再自动刷新——那会把「后台已停止响应」那条提示盖掉，又变成「看起来是活的」。
+  if (-not $script:bgDeathReported -and $script:statusBar -and (-not $script:lastActionAt -or ([datetime]::Now - $script:lastActionAt).TotalSeconds -ge 4)) {
     if (-not $script:msgUntil -or [datetime]::Now -ge $script:msgUntil) {
       $script:statusBar.Text = "$(Get-Date -Format 'HH:mm:ss')  状态自动刷新"
     }
   }
 }
 
-# 探测单实例 mutex 是否已被 GUI 持有（CLI -Add 分支与 GUI 都靠它）。
-# $mutexName 形如 'Local\service-manager-gui'。
-# OpenExisting 在 mutex 不存在时抛（无 GUI 常驻）→ 返回 $false，是正常路径。
-# 抢到（WaitOne(0)=true）要立即释放，否则会把所有权留在本线程、影响后续判断。
+# 探测单实例 mutex 是否被 GUI 持有。OpenExisting 抛 = 无 GUI（正常）；抢到要立即释放。§Test-GuiInstanceRunning
 function Test-GuiInstanceRunning([string]$mutexName){
   try {
     $m = [Threading.Mutex]::OpenExisting($mutexName)
-  } catch { return $false }
+  } catch [System.Threading.WaitHandleCannotBeOpenedException] {
+    return $false   # 互斥体不存在 = 没有 GUI 常驻
+  } catch {
+    # 存在但打不开（别的账户/SYSTEM 服务创建的 Global 互斥体 DACL 不允许）：保守判「运行中」，
+    # 宁可让 CLI 让路，也不要覆盖别人的清单。
+    return $true
+  }
   try {
     $held = -not $m.WaitOne(0)
     if (-not $held) { $m.ReleaseMutex() }
     $held
   } catch {
-    # AbandonedMutexException 等：视为「有实例曾持有」——保守判为运行中，宁可让 CLI 让路
+    # AbandonedMutexException 等：保守判为运行中，宁可让 CLI 让路
     $true
   } finally { $m.Dispose() }
 }
 
-# 某服务的日志目录：读注册表 AppStdout 的父目录，读不到回落 $logDir。
-# 手工 nssm 注册的服务（如 ComfyUI）日志在别处，用 $logDir 会看不到也清不到。
-# **名字必须校验**：注册表 provider 会归一化 `..`，坏名字能读到别的服务的目录。
+# 某服务的日志目录：读注册表 AppStdout 父目录，读不到回落 $logDir。**名字必须校验**（注册表会归一化 ..）。§Get-SvcLogDir
 function Get-SvcLogDir([string]$n){
   if (-not $n -or $n -notmatch '^[A-Za-z0-9_.-]+$' -or $n -eq '.' -or $n -eq '..') { return $logDir }
   try {
@@ -260,20 +234,18 @@ function Get-SvcLogDir([string]$n){
   $logDir
 }
 
-# ---- 轮转档保留：NSSM 只改名不删档，只碰轮转档，永不动当前档 ----
-# 按目录各算各的（调用方对 $logDir 与每个服务的 AppStdout 目录逐个调用）。
-# 删除须同时满足「不在该目录前 KeepCount 份」且「早于 KeepDays 天」——
-# 故天数窗口内的档一份不删。参数名不能用 $LogDir（大小写不敏感，会遮蔽外层变量）。
+# ---- 轮转档保留：只碰轮转档，永不动当前档 ----
+# 删除须同时满足「不在前 KeepCount 份」且「早于 KeepDays 天」。参数名不能用 $LogDir（会遮蔽外层变量）。§Remove-RotatedLogs
 function Remove-RotatedLogs([string]$LogPath,[int]$KeepCount=10,[int]$KeepDays=14){
   if (-not $LogPath) { $LogPath = $logDir }
   if (-not $LogPath -or -not (Test-Path -LiteralPath $LogPath)) { return @() }
   $cut = (Get-Date).AddDays(-$KeepDays)
-  # 枚举所有 .log 文件，按 BaseName 过滤轮转档（行首锚定服务名已转义的写法在 Get-LogFiles；
-  # 这里只判「是不是轮转档」通用形态，不绑特定服务名）。
+  # 只判「是不是轮转档」通用形态，不绑特定服务名。
+  # 必须锚到结尾：服务名允许点与横线（`MySvc.err-20260101`），当前档 `MySvc.err-20260101.out.log`
+  # 的 BaseName 里同样含 `.err-20260101`——不锚定就会把当前日志当轮转档删掉。§Remove-RotatedLogs
   $rot = @(Get-ChildItem -LiteralPath $LogPath -File -Filter '*.log' -EA SilentlyContinue |
-    Where-Object { $_.BaseName -match '\.(out|err)-\d{8}' } |
+    Where-Object { $_.BaseName -match '\.(out|err)-\d{8}(T\d{6}\.\d{3})?$' } |
     Sort-Object LastWriteTime -Descending)
-  if ($rot.Count -eq 0) { return @() }
   # 最近 KeepCount 份豁免（按修改时间倒序的前 KeepCount 个）。
   $keep = @($rot | Select-Object -First $KeepCount | ForEach-Object { $_.FullName })
   # 剩下的若早于 cut 也删；晚于 cut 的留（近期高频轮转不应被一刀切）。
@@ -284,8 +256,7 @@ function Remove-RotatedLogs([string]$LogPath,[int]$KeepCount=10,[int]$KeepDays=1
   $del
 }
 
-# ---- 安全检查（借鉴 PSSM：路径引号加固 + 目录 ACL 过宽）----
-# 纯解析：从 Win32_Service PathName 提取 exe 目录与引号状态，不碰 UI 也不抛错。
+# ---- 安全检查（借鉴 PSSM：路径引号加固 + 目录 ACL 过宽）：纯解析，不碰 UI 也不抛错。§Resolve-ServiceExeDir
 function Resolve-ServiceExeDir([string]$path){
   if (-not $path) { return @{ dir = ''; quoted = $false } }
   $quoted = $path.StartsWith('"')
@@ -297,15 +268,10 @@ function Resolve-ServiceExeDir([string]$path){
   @{ dir = $dir; quoted = $quoted }
 }
 
-# 判定目录 ACL 是否「过宽」——本机任意标准用户可写。纯函数，不碰 UI（Show-SecurityCheck 会弹框）。
-# 判据：主体是 Users/Everyone 之一，且权限含 Write/Modify/FullControl。
-# 传入已读到的 ACL 对象（不在此处 Get-Acl），返回 '是' / '否' / '未知（无法读取 ACL）'。
+# 判定目录 ACL 是否「过宽」（本机任意标准用户可写）。返回 '是' / '否' / '未知'。§Test-DirAclPermissive
 function Test-DirAclPermissive($acl){
   if (-not $acl) { return '未知（无法读取 ACL）' }
-  # 「宽泛主体」= 本机任意登录用户即可写。Authenticated Users 是最常见的漏判形态
-  # （目录只对 NT AUTHORITY\Authenticated Users 开放时，任何登录用户可替换 exe → 提权）；
-  # AppContainer 包 SID（S-1-15-3-*）同理。判据与 set-service-params-acl.ps1 的
-  # Test-LeakyAce 概念一致，但这里是文件系统 ACL、权限枚举不同，故不共用函数、只对齐主体清单。
+  # 宽泛主体含 Authenticated Users 与 AppContainer SID（S-1-15-3-*）；判据与 set-service-params-acl.ps1 的 Test-LeakyAce 对齐。§Test-DirAclPermissive
   foreach ($a in $acl.Access) {
     $id = $a.IdentityReference.Value
     $wide = @('BUILTIN\Users','Everyone','Users','NT AUTHORITY\Authenticated Users','Authenticated Users') -contains $id -or $id -like 'S-1-15-3-*'
@@ -315,6 +281,12 @@ function Test-DirAclPermissive($acl){
 }
 
 function Show-SecurityCheck([string]$n){
+  # 名字要拼进 WQL 过滤器：services.json 里的名字没过 Test-SvcInput 的正则，
+  # 带单引号的名字能把过滤器改成别的查询，安全检查就会给出错误的路径与 ACL 结论。
+  if ($n -notmatch '^[A-Za-z0-9_.-]+$') {
+    [System.Windows.MessageBox]::Show("服务名含非法字符，无法安全检查：$n",'错误','OK','Error') | Out-Null
+    return
+  }
   try {
     $ci = Get-CimInstance Win32_Service -Filter "Name='$n'" -EA Stop
   } catch {

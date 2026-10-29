@@ -1,30 +1,19 @@
 # lib/dialogs.ps1 — GUI 对话框：添加服务、删除服务
-#
-# 依赖均为调用时解析，点源顺序不影响正确性。与 card.ps1 双向依赖（右键菜单调 Show-Remove）。
-# $script:svc / $script:cards / $sync.gate / $script:statusBar 等从调用方作用域读。
+# 依赖调用时解析；从调用方作用域读 $script:svc / $script:cards / $sync.gate / $script:statusBar。
+# 实现细节与踩坑记录：docs/IMPLEMENTATION-NOTES.md
 
-# 删除提交体（Show-Remove 的 del_Click 真正执行的部分）。抽出来是为了可直测：
-# 弹模态框的 Click 在测试里够不着，但「入队 remove 命令 + 置卡片过渡态」这段才是会写错的
-# 地方（曾因两处字段集不一致漏了 LastToggle/ReadyToToggle，配合 Update-CardData 守卫缺失
-# 导致删除中卡片被探测结果刷回「已停止」）。
+# 删除提交体（Show-Remove 的 del_Click 执行部分），抽出以便直测。§Submit-RemoveCommand
 function Submit-RemoveCommand([string]$n){
   $script:lastActionAt=[datetime]::Now
   Set-StatusMessage "正在删除 $n ..."
-  # 删除走后台命令队列（act=remove），避免 UI 线程同步等 stop+Wait-Stopped+remove 冻结界面。
-  # 真正的 stop/wait/remove 在 runspace 里执行；这里只入队，回执由 DispatcherTimer 处理。
+  # 删除入队到后台 runspace（stop/wait/remove 不阻塞 UI），回执由 DispatcherTimer 处理。
   $card = $script:cards[$n]
-  if ($card) {
-    # 过渡态设置与启停共用（card.ps1 Set-CardTransition）。
-    $epoch = Send-ServiceCommand $n 'remove'
-    Set-CardTransition $card '删除中' $epoch (Get-Date)
-  } else {
-    # 卡片不在缓存（如翻页外/已重建）：仍要入队删除，但不置过渡态。
-    Send-ServiceCommand $n 'remove' | Out-Null
-  }
+  # 卡片不在缓存（如翻页外/已重建）也照样入队删除，只是不置过渡态。
+  $epoch = Send-ServiceCommand $n 'remove'
+  if ($card) { Set-CardTransition $card '删除中' $epoch (Get-Date) }
 }
 
-# GUI 删除服务（输入服务名确认才点亮删除——借鉴 PSSM，-ceq 区分大小写）
-# OKCancel 太容易误点；NSSM remove 是不可逆操作，要求打全名。
+# GUI 删除服务：输入完整服务名才点亮删除（-ceq 区分大小写），避免不可逆误操作。
 function Show-Remove([string]$n, $owner){
   $f = New-Object System.Windows.Window -Property @{
     Title="删除服务 $n"; Width=420; Height=260; WindowStartupLocation='CenterOwner'
@@ -50,13 +39,11 @@ function Show-Remove([string]$n, $owner){
   [void]$stack.Children.Add($btnPanel)
   $f.Content=$stack
 
-  # 精确匹配（-ceq 区分大小写）才点亮删除按钮
   $input.Add_TextChanged({ $del.IsEnabled = ($input.Text.Trim() -ceq $n) })
   $cancel.Add_Click({ $f.DialogResult=$false; $f.Close() })
 
   $del.Add_Click({
-    # 提交逻辑抽到 Submit-RemoveCommand 以便直测（模态框测不了，但提交体是真正会写错的
-    # 部分——曾因字段集不一致漏了 LastToggle/ReadyToToggle）。这里只负责关弹窗。
+    # 提交逻辑在 Submit-RemoveCommand，这里只负责关弹窗。
     Submit-RemoveCommand $n
     $f.DialogResult=$true; $f.Close()
   })
@@ -65,8 +52,7 @@ function Show-Remove([string]$n, $owner){
   $f.ShowDialog() | Out-Null
 }
 
-# 弹框入口集中两处，便于测试替身（MessageBox 是 WPF 静态调用，测试里会阻塞）。
-# 生产用真 MessageBox；测试 dot-source 后重定义这两个函数即可无头驱动 Submit-AddService。
+# MessageBox 入口集中于此（WPF 静态调用会阻塞，测试 dot-source 后重定义即可无头驱动）。
 function Show-DialogError($owner,[string]$msg){
   [System.Windows.MessageBox]::Show($owner,$msg,'错误','OK','Error') | Out-Null
 }
@@ -77,9 +63,7 @@ function Show-DialogWarning($owner,[string]$msg,[string]$title){
   [System.Windows.MessageBox]::Show($owner,$msg,$title,'OK','Warning') | Out-Null
 }
 
-# 添加提交体（Show-Add 的 ok_Click 执行的部分），$fields 各值已 trim。
-# 返回 $true = 关弹窗（注册成功，或成功但保存失败）；$false = 被拦下，弹窗保持打开。
-# 抽出来是为了可直测（原先全内联在 Click 里，没有测试缝）。
+# 添加提交体（ok_Click 执行部分），$fields 各值已 trim；返回 $true 关弹窗、$false 保持打开。§Submit-AddService
 function Submit-AddService($owner,[hashtable]$fields){
   $n=[string]$fields.n; $p=[int]$fields.p; $exe=[string]$fields.exe
   $url=[string]$fields.url; $dir=[string]$fields.dir; $par=[string]$fields.par; $envRaw=[string]$fields.env
@@ -99,8 +83,7 @@ function Submit-AddService($owner,[hashtable]$fields){
   $envPairs = ConvertTo-EnvPairs $envRaw ','
   $envErr = Test-EnvPairs $envPairs
   if($envErr){ Show-DialogError $owner $envErr; return $false }
-  # 敏感键名提示：明文密钥会进注册表 AppEnvironmentExtra（BUILTIN\Users 可读）。
-  # 不阻断注册（用户可能确有需要），提示改用 *_FILE 让服务本体从密钥文件读。
+  # 敏感键名只提示不阻断：明文会进注册表（BUILTIN\Users 可读），建议改用 *_FILE。
   $sensitive = Find-SensitiveEnvKeys $envPairs
   if($sensitive.Count){
     $tip = "以下环境变量将明文写入注册表（BUILTIN\Users 可读）：`n$($sensitive -join ', ')`n`n推荐改用 *_FILE 路径让服务本体从密钥文件读，文件权限收口到 Administrators+SYSTEM。`n仍要继续注册吗？"
@@ -121,16 +104,13 @@ function Submit-AddService($owner,[hashtable]$fields){
     Show-DialogWarning $owner "服务已注册但配置保存失败：$saveErr`n$n 已在 NSSM 注册，请手动将其加入 services.json。" '保存失败'
     return $true
   }
-  Send-ServiceCommand $n 'start'
+  Send-ServiceCommand $n 'start' | Out-Null   # 返回值是 epoch，函数契约只返回 $true/$false
   $true
 }
 
-# 只搭窗口、不 ShowDialog：给测试留缝。模态框在测试里打不开，但控件搭错、属性名写错
-# 会在这里当场抛——那类错误在生产里表现为「点『添加服务』没反应」，冒烟测试比读代码可靠。
-# 返回几个控件句柄，供测试断言账户下拉的选项与默认项。
+# 只搭窗口不 ShowDialog，给测试留缝；返回控件句柄供断言。§New-AddDialog
 function New-AddDialog(){
-  # 高度跟内容走：折叠时只有 3 个必填项，固定 620 会在下方留一大片空白；
-  # 展开后内容又超过 620。SizeToContent + MaxHeight 两头都对，超长时由 ScrollViewer 接管。
+  # 高度跟内容走：SizeToContent + MaxHeight，超长时由 ScrollViewer 接管。
   $f = New-Object System.Windows.Window -Property @{
     Title='添加服务'; Width=460; MaxHeight=720; SizeToContent='Height'; WindowStartupLocation='CenterOwner'
     Background=[System.Windows.Media.Brushes]::White; ResizeMode='NoResize'
@@ -157,9 +137,7 @@ function New-AddDialog(){
   $advContent.Children.Add((& $mkLabel '启动参数')) | Out-Null; $advContent.Children.Add($inPar) | Out-Null
   $advContent.Children.Add((& $mkLabel '环境变量 KEY=VAL,KEY2=VAL2')) | Out-Null; $advContent.Children.Add($inEnv) | Out-Null
 
-  # 运行账户：列表来自 svc-input.ps1 的 $script:SvcAccounts（白名单与下拉同一份）。
-  # 三个都是内置账户、都不需要密码，故本对话框不碰任何凭据。
-  # 默认 LocalSystem 就是 nssm install 建出来的账户，选它等于不改。
+  # 列表来自 $script:SvcAccounts（白名单与下拉同一份），均为内置账户、无需凭据。§SvcAccounts
   $inAcct=New-Object System.Windows.Controls.ComboBox -Property @{ Margin='0,0,0,8'; FontFamily=$script:cjkFont }
   foreach($a in $script:SvcAccounts){
     [void]$inAcct.Items.Add((New-Object System.Windows.Controls.ComboBoxItem -Property @{Content=$a.Label; Tag=$a.Key}))
@@ -180,21 +158,15 @@ function New-AddDialog(){
   [void]$btnPanel.Children.Add($ok); [void]$btnPanel.Children.Add($cancel)
   [void]$stack.Children.Add($btnPanel)
 
-  # 高级区展开后内容会超过窗口高度（运行账户 + GPU 勾选是后加的）。套一层 ScrollViewer：
-  # 固定高度的窗口里不加滚动，多出来的控件是被裁掉的——用户看不到，也没有任何提示。
+  # 不加滚动，超出窗口高度的控件会被静默裁掉。
   $scroll=New-Object System.Windows.Controls.ScrollViewer -Property @{VerticalScrollBarVisibility='Auto'}
   $scroll.Content=$stack
   $f.Content=$scroll
-  # 两个处理器必须 .GetNewClosure()：PowerShell 脚本块**不是闭包**（同 xaml.ps1 的
-  # $script:toggleMax、logview.ps1 的 $load 那两处），变量在**点击时**按调用点动态解析。
-  # New-AddDialog 返回后它的局部作用域就没了，不建闭包的话 $f / $inName 全是 $null ——
-  # 点「注册并启动」抛 null-valued 异常，Submit-AddService 一次都进不去，界面表现为点了没反应。
+  # 必须 GetNewClosure()：脚本块非闭包，作用域销毁后变量全为 $null，点按钮静默失败。
   $cancel.Add_Click({ $f.DialogResult=$false; $f.Close() }.GetNewClosure())
 
   $ok.Add_Click({
-    # 提交逻辑抽到 Submit-AddService 以便直测（校验顺序、Test-EnvPairs、敏感键 OKCancel
-    # 分支、Save 失败分支原本全内联在 Click 里，没有测试缝）。$f 作 owner 供 MessageBox 用。
-    # 返回 $true 表示注册成功（调用方据此关弹窗）。
+    # 提交逻辑在 Submit-AddService；$f 作 MessageBox owner，返回 $true 表示注册成功。
     if (Submit-AddService $f @{ n=$inName.Text.Trim(); p=$inPort.Text.Trim(); exe=$inExe.Text.Trim()
         url=$inUrl.Text.Trim(); dir=$inDir.Text.Trim(); par=$inPar.Text.Trim(); env=$inEnv.Text.Trim()
         account=[string]$inAcct.SelectedItem.Tag; gpu=[bool]$inGpu.IsChecked }) {
@@ -202,17 +174,14 @@ function New-AddDialog(){
     }
   }.GetNewClosure())
 
-  # 把 OK 按钮与输入框句柄一并给出：测试要能**点真的按钮**走真的处理器，
-  # 否则「处理器引用了已消失的局部变量」这类错误测不出来（本仓已有先例）。
+  # 返回 OK 按钮与输入框句柄：测试要点真按钮走真处理器，才测得出闭包类错误。
   [pscustomobject]@{
     Window = $f; Account = $inAcct; Gpu = $inGpu; Ok = $ok
     Inputs = @{ name=$inName; port=$inPort; exe=$inExe; url=$inUrl; dir=$inDir; par=$inPar; env=$inEnv }
   }
 }
 
-# GUI 添加服务对话框：3 必填 + 高级折叠，注册成功后入队启动命令
-# Owner 只在这里设：WPF 要求 Owner 必须是**已经显示过**的窗口，放进 New-AddDialog 会让
-# 无头构造（测试）直接抛「无法将 Owner 属性设置为之前未显示的 Window」。
+# GUI 添加服务对话框：3 必填 + 高级折叠。Owner 只能这里设（WPF 要求 Owner 已显示过）。§Show-Add
 function Show-Add($owner){
   $d = New-AddDialog
   $d.Window.Owner = $owner

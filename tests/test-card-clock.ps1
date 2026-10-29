@@ -90,5 +90,24 @@ try {
   Update-CardData 'SvcClock' '已停止' ''
   Assert ($c.StateSince -lt [datetime]::Now.AddSeconds(-40)) '同一状态重复到达时 StateSince 不该被重置'
 
+  # 墙钟被回拨（NTP 校正/手改时间）：差值恒为负，两个阈值都判不出来，卡片永久卡在过渡态。
+  # 修前：Test-TransitionTimedOut 直接算差值，回拨期间恒为 false，逃生口永不触发。
+  Update-CardData 'SvcClock' '已停止' ''
+  $c.LastToggle = [datetime]::MinValue
+  Invoke-CardToggle $c
+  Assert ($c.ST -eq '启动中') "应进入启动中，got $($c.ST)"
+  $c.TransitionAt = [datetime]::Now.AddHours(1)          # 模拟墙钟被回拨 1 小时
+  $c.TransitionStartedAt = [datetime]::Now.AddHours(1)
+  Assert (Test-TransitionTimedOut $c ([datetime]::Now)) '墙钟回拨时应判超时（否则卡片永久卡住）'
+
+  # 「未知」是真实状态，不是首帧：从它转进运行中要起算。
+  # 修前：prevST 把 '未知' 和 '查询中' 一样置 MinValue，运行时长永不起算。
+  $c.TransitionAt = [datetime]::MinValue
+  $c.TransitionStartedAt = [datetime]::MinValue
+  $c.ST = '未知'; $c.StateSince = [datetime]::MinValue
+  Update-CardData 'SvcClock' '运行中' '正常'
+  Assert ($c.StateSince -ne [datetime]::MinValue) '从「未知」转进运行中时应起算运行时长'
+
   Write-Output 'PASS: 卡片显示启动/停止已用时长与运行时长；健康正文保留；计时不随探测重置。'
+  Write-Output 'PASS: 墙钟回拨时判超时逃生；「未知」转终态时起算。'
 } finally { $win.Close(); $script:sync.wake.Dispose() }

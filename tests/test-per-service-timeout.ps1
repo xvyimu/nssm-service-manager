@@ -108,6 +108,25 @@ try {
   $null = Load-Svc
   Assert ($script:svcLoadFailed -eq $false) 'config.json 坏不该置 svcLoadFailed（否则 -Add 会被误拦）'
   Assert ($script:configWarning -match 'config\.json') 'config.json 的提示不该被覆盖'
+  # ---- 1d. 清单解析失败时 Save-Svc 必须拒绝落盘 ----
+  # 修前：GUI 在 services.json 解析失败后照常运行（卡片显示的是示例服务），用户点一次「添加」
+  # 就把「示例清单 + 新服务」写回真实文件；Save-Svc 的 Replace 不带备份，services.json 又不在
+  # git 里，原配置永久消失。CLI 分支有门闩，GUI 路径没有。
+  $script:svcLoadFailed = $true
+  [IO.File]::WriteAllText($cfg, '{"Keep":{"port":3000,"url":"http://127.0.0.1:3000"}}', [Text.UTF8Encoding]::new($false))
+  $before = [IO.File]::ReadAllText($cfg)
+  $threw = $false
+  try { Save-Svc ([ordered]@{ Example = @{ port = 1; url = 'u' } }) } catch { $threw = $true }
+  Assert $threw 'svcLoadFailed 时 Save-Svc 必须抛，否则示例清单会覆盖真实配置'
+  Assert ([IO.File]::ReadAllText($cfg) -eq $before) '写入被拒后 services.json 不应变化'
+  # ---- 1e. 白名单外的字段要给提示 ----
+  # 修前：Read-SvcFile 只挑 5 个键，其余静默丢弃；Save-Svc 全量写回时它们被抹掉，
+  # 用户把 toggleTimeoutMs 打成 toggleTimeout 只会看到「配了但没生效」，连提示都没有。
+  $script:svcLoadFailed = $null; $script:configNotices = $null; $script:svcFieldWarnings = @()
+  [IO.File]::WriteAllText($cfg, '{"Typo":{"port":3000,"url":"http://127.0.0.1:3000","toggleTimeout":180000}}', [Text.UTF8Encoding]::new($false))
+  $null = Load-Svc
+  Assert (@($script:configNotices) -match 'toggleTimeout') "拼错的字段名应给提示，got $(@($script:configNotices) -join ' | ')"
+  $script:configNotices = $null
 } finally { Remove-Item -LiteralPath $dir -Recurse -Force -EA SilentlyContinue }
 Write-Output 'PASS: per-service overrides survive read/save round-trip; a bad override is dropped (with a notice) instead of falling back to the example list; svcLoadFailed only tracks services.json.'
 

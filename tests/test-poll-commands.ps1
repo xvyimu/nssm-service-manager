@@ -88,6 +88,27 @@ try {
   Write-Output 'PASS: slow start (StartPending after Start() throws) treated as started, no sc.exe fallback.'
 } finally { Close-FakePoll $worker }
 
+# ---- 单条命令抛异常：不得终结轮询循环，且必须产出失败回执 ----
+# 修前：Invoke-PendingCommands 的 switch 体没有 try/catch（remove 分支有），任何终止性异常
+# 都会穿透到主循环，runspace 直接结束——之后探测与命令全部停摆，卡片冻结在最后一帧，
+# 而状态栏仍每 4 秒打「状态自动刷新」，看起来是活的。
+$worker=Start-FakePoll 1 'Stopped' 0 @{ scExe = 'Invoke-ThrowingSc' }
+try {
+  Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Worker did not start.'
+  $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='stop';e=31})
+  [void]$worker.Sync.wake.Set()
+  $ack1 = Wait-FakePollAck $worker
+  Assert ($null -ne $ack1) '抛异常的 stop 命令没有产出回执。'
+  Assert ($ack1.ok -eq $false) "抛异常应按失败回执，got ok=$($ack1.ok)"
+  Assert (-not $worker.Handle.IsCompleted) '单条命令抛异常后后台循环结束了。'
+  # 第二条命令仍能执行，证明循环存活
+  $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='stop';e=32})
+  [void]$worker.Sync.wake.Set()
+  $ack2 = Wait-FakePollAck $worker
+  Assert ($null -ne $ack2) '异常之后后台不再处理命令（轮询循环已死）。'
+  Write-Output 'PASS: 命令抛异常时产出失败回执，轮询循环继续存活。'
+} finally { Close-FakePoll $worker }
+
 # ---- 全停止但刚下发命令：那一轮之后的睡眠必须用短间隔，不能走空闲长睡眠 ----
 # 修前：$sleepMs 只按「本轮有无运行中服务」判，1 个 Stopped 服务时 $toProbe 为空，
 # 走 ProbeIdleMs——卡片停在「启动中」最长约 15 秒才收到第一份探测结果。

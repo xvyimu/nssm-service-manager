@@ -1,10 +1,9 @@
 # lib/theme.ps1 — 系统字体 · 桌面工具配色 · Mica P/Invoke
-# 图标是仓内静态文件，不运行时生成；字体用 Windows 自带，不枚举额外字体。
+# 图标为仓内静态文件，字体用 Windows 自带。实现细节：docs/IMPLEMENTATION-NOTES.md
 $script:cjkFont = 'Microsoft YaHei UI'
 $script:fontMono = 'Consolas'
 
-# 当前界面使用的主题色；动态状态色由 card.ps1 统一管理。
-# 改色只动这一份——card.ps1 / xaml.ps1 / theme.ps1 按钮模板都从 $script:T 取，不内联硬编码（发现 6）。
+# 界面主题色；改色只动这一份（card/xaml/按钮模板都从 $script:T 取，不内联硬编码）。
 $script:T = @{
   Card    = '#FCFDFE'
   CardBrd = '#D7E0EA'
@@ -14,7 +13,6 @@ $script:T = @{
   PortBg  = '#EDF2F7'     # 卡片端口徽章背景
   Accent  = '#185A9D'     # 打开面板 / 添加服务按钮前景
   Danger  = '#C0392B'     # 破坏性操作（删除服务）：右键菜单项前景 + 删除按钮背景
-  # 按钮模板色（自包含一套，不与卡片色混用）
   BtnBg     = '#FFFFFF'
   BtnFg     = '#263B50'
   BtnBrd    = '#D7E0EA'
@@ -23,8 +21,7 @@ $script:T = @{
   BtnFocus  = '#2469AD'
 }
 
-# 原生 WPF 按钮模板：统一触控区域，保留键盘焦点、禁用与悬停反馈。
-# 色值从 $script:T 取（按钮模板色），不内联硬编码——改色只动 theme.ps1 一份。
+# 原生 WPF 按钮模板：统一触控区域，保留焦点/禁用/悬停反馈；色值从 $script:T 取。
 $btnT = $script:T
 $script:buttonStyle = [System.Windows.Markup.XamlReader]::Parse(@"
 <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -55,9 +52,7 @@ $script:buttonStyle = [System.Windows.Markup.XamlReader]::Parse(@"
 </Style>
 "@)
 
-# ---- Mica 玻璃背景：DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE) ----
-# 官方 API（Win11 22000+），比 SetWindowCompositionAttribute 稳
-# type: 2=Mica(主窗口) 3=Acrylic(瞬时) 4=TabbedMica
+# ---- Mica 玻璃背景（Win11 22000+）：type 2=Mica 3=Acrylic 4=TabbedMica。§Set-Backdrop
 Add-Type -Namespace Win32 -Name Dwm -MemberDefinition @'
 [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
 public static extern int DwmSetWindowAttribute(System.IntPtr hwnd, int attr, ref int val, int sz);

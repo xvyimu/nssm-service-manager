@@ -2,13 +2,7 @@
 #
 # 从 lib/util.ps1（nssm-set）与 lib/add-svc.ps1（Install/Remove）合并抽出。
 # 不含 UI、不含输入校验——纯 NSSM 命令包装，失败抛错。
-#
-# 【作用域约定】读调用方的 $script:nssm（NSSM exe 路径）与 $logDir（日志目录，
-# Install-NssmService 经 Get-NssmSetSpec 拼日志路径）。两者由 service-manager-gui.ps1
-# 或测试夹具在 dot-source 之后赋值。
-#
-# 自加载依赖：Get-NssmSetSpec（svc-input.ps1）、Wait-Stopped（svc-common.ps1）——
-# 本文件单独点源也能工作，不必依赖调用方先加载。两个依赖文件均无反向依赖，无循环。
+# 作用域约定与自加载依赖：docs/IMPLEMENTATION-NOTES.md
 . (Join-Path $PSScriptRoot 'svc-input.ps1')
 . (Join-Path $PSScriptRoot 'svc-common.ps1')
 
@@ -24,17 +18,12 @@ function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$
   $inst = Invoke-ExternalQuiet $script:nssm @('install', $n, $exe)
   $nssmOut = $inst.out
   if($inst.exit -ne 0){ throw "NSSM install 失败($($inst.exit)): $nssmOut" }
-  # install 的退出码同样不可信（实测：提权不足时打印 "Administrator access is needed"
-  # 却返回 0）。若真没装上，后续 set 会全挂，报出的却是 set 的错——误导排查方向。
-  # 以「服务是否真出现」复核一次，失败即抛，错误信息直指根因。
+  # install 退出码不可信（提权不足时打印报错却返回 0），以「服务是否真出现」复核。§Install-NssmService
   if(-not (Test-ServicePresent $n)){
     $why = if(($nssmOut -join ' ') -match 'Administrator access'){ '需要管理员权限' } else { '服务未创建' }
     throw "NSSM install 未生效：$why"
   }
-  # install 成功后服务已进服务数据库；任意 set 失败都会留下配置不全的半注册残骸
-  # （无日志重定向/轮转/AppExit）。失败时尽力 remove 回滚，再抛原始错误。
-  # 日志轮转阈值与停止收尾毫秒从 config 取（默认值与 svc-input.ps1 的形参默认值一致）。
-  # config 可能未加载（单独点源本模块时）——用 $null 判断回落，不靠 [int]$null=0。
+  # set 失败会留半注册残骸，失败时尽力 remove 回滚再抛原始错误；阈值从 config 取，缺则回落形参默认值（不靠 [int]$null=0）。
   $rotateBytes = if ($script:config -and $script:config.AppRotateBytes) { [int]$script:config.AppRotateBytes } else { 5242880 }
   $stopMethod  = if ($script:config -and $script:config.AppStopMethodConsole) { [int]$script:config.AppStopMethodConsole } else { 5000 }
   # 轮转年龄门槛：不设的话「每次启动轮转一次」会把频繁重启的服务的日志堆成几十个档
@@ -42,8 +31,7 @@ function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$
   try {
     foreach($s in Get-NssmSetSpec $n $dir $par $envPairs $rotateBytes $stopMethod $account $rotateSecs){ nssm-set $n $s.k $s.v }
   } catch {
-    # 回滚失败不该盖掉原始错误（$s 未配全才是根因）；但也不能静默——回滚没成功意味着
-    # 残骸服务还留在服务数据库里，用户需要知道。
+    # 回滚失败不盖掉原始错误，但也不能静默——残骸服务还留在服务数据库里，用户需要知道。
     try {
       [void](Invoke-ExternalQuiet $script:nssm @('remove', $n, 'confirm'))
       if(-not (Test-ServiceGone $n)){
@@ -54,9 +42,7 @@ function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$
   }
 }
 
-# 删除 NSSM 服务（同步、失败抛异常）。序列本体在 svc-common.ps1 的 Invoke-ServiceRemove，
-# 与 runspace 共用一份文本。**无生产调用方是有意保留**：它是那条序列的单测入口
-# （tests/test-add-svc.ps1），也是将来 CLI 加 -Remove 的出口——死代码扫描请勿删。
+# 删除 NSSM 服务（同步、失败抛异常）；序列本体在 svc-common.ps1。无生产调用方是有意保留，死代码扫描请勿删。§Remove-NssmService
 function Remove-NssmService([string]$n){
   $r = Invoke-ServiceRemove $n $script:nssm
   if(-not $r.ok){

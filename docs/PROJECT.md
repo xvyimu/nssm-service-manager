@@ -186,11 +186,15 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
   测法有个坑：**不能用「exe 路径不存在」造 1053**——那条路 SCM 立刻返回 2（文件找不到），15~18ms 就结束，走不到管道等待。探针原版就是这么写的，所以一直没产出过有意义的数字。现在改用「存在但非服务程序」的 exe（`cmd.exe` 跑长 ping）。
 - **探测驱动的中间态：卡片按钮不可用，但右键菜单照常下发命令**。卡片过渡态超时逃生只覆盖**命令驱动**的过渡态（用户点了启停/删除）。服务若真的卡在 SCM 的 `StartPending`/`StopPending`（停止回调挂死这类），探测会一直报同一中间态，卡片停在「停止中」、两个按钮都禁用。这是 H1 修复的有意取舍（探测驱动的值必须能被后续探测覆盖，不能按方向丢弃）。但**不是没有出路**：右键菜单的「启动/停止/重启/删除」走的是 `Send-ServiceCommand`，不经卡片的按钮门闩（`card.ps1` 右键 handler），一直可用。
 - **密钥扫描有两层，都有前提**：`.githooks/pre-commit` 要求每个 clone 先 `git config core.hooksPath .githooks`，否则本地那层根本不存在；`gitleaks` 没装时钩子只打警告并放行。CI 侧新增的 `secrets` 任务（`gitleaks-action`）只在**推送 main 或开 PR** 时触发，功能分支推送不跑；已在 PR #7 上首次跑通（12s）。
-- **CLI `-Add` 与 GUI 不能并行**：两者都全量写回 `services.json`（`Save-Svc` 无合并语义），GUI 常驻时 CLI 新增会被 GUI 下一次保存覆盖。故 `-Add` 前检测单实例 mutex（`Test-GuiInstanceRunning`），GUI 在跑则拒绝并提示先关 GUI。
+- **CLI `-Add` 与 GUI 不能并行**：两者都全量写回 `services.json`（`Save-Svc` 无合并语义），GUI 常驻时 CLI 新增会被 GUI 下一次保存覆盖。故 `-Add` 前检测单实例 mutex（`Test-GuiInstanceRunning`），GUI 在跑则拒绝并提示先关 GUI。**2026-10-29 起 mutex 改用 `Global\` 命名空间**——`Local\` 只在当前会话可见，计划任务/SSH 会话里跑 `-Add` 会误判「没有 GUI」。
 - **CLI `-Add` 拒绝在清单损坏时写入**：`Load-Svc` 解析失败会回落到 `services.example.json`，若继续 `-Add`，末尾的 `Save-Svc` 会把「示例清单 + 新服务」写回真实文件，用户条目整份消失且退出码 0。故 `-Add` 前检查 `Load-Svc` 的专用标志 `$script:svcLoadFailed`（**不能**用 `$script:configWarning`——那个也可能是 config.json 坏了写的，而 config.json 坏了按设计不阻断）。非致命提示（per-service 字段写错）打印后继续。
+  **2026-10-29 补**：`Save-Svc` 自身也加了同一门闩——原来只有 CLI 分支拦，GUI 在清单解析失败后点一次「添加」/「删除」同样把示例清单写回真实文件，而 `File.Replace` 不带备份、`services.json` 又不在 git 里。现在 `$script:svcLoadFailed` 为真时 `Save-Svc` 直接抛，调用方按失败处理。
+- **外部命令有 60s 超时（`$sync.extCommandTimeoutMs`）**：2026-10-29 加。原来 `ReadToEnd()` 同步读，`sc.exe` / `nssm.exe` 卡住时后台命令队列永久停摆，且不抛异常、crash log 里没有线索。现在异步读 + `WaitForExit(timeout)`，超时 `Kill(entireProcessTree)` 并返回 `exit=-1`。
+- **后台 runspace 死亡会被检测**：每帧判 `$script:bgHandle.IsCompleted`，完成即写一行 crash log、状态栏提示「后台已停止响应，请重启工具」，并把仍停在「查询中」的卡片收敛到「未知」。
 - **`Show-SecurityCheck` 的 ACL 判定是启发式**：只认 `Users`/`Everyone`/`Authenticated Users`/AppContainer SID 这几类宽泛主体 + `Write|Modify|FullControl`。目录若被改写为其它宽松形态（如某个具体用户账户 FullControl），判定为「否」。不是权威审计。
 - **`NSSM_PATH` 只校验「存在 + 文件名为 nssm.exe」**：不校验签名/路径。该值随后以管理员身份被调用，故文件名校验只为挡住「指向任意 exe」；仍无法防御能改管理员进程环境变量的攻击者（那种场景已超出本工具的信任边界）。**2026-10-28 评估过加 `Get-AuthenticodeSignature`**：实测本机官方 scoop 包的 `nssm.exe` 是 `NotSigned`，加了会对所有正常安装误报，故不加。
-- **`Open-PanelUrl` 直接 `Start-Process` `services.json` 里的 URL**：`services.json` 是用户自己的配置（非特权输入），但若其中含 `file:///` 或自定义协议，提权 GUI 下会以管理员打开。本地单用户工具的设计取舍。
+  **2026-10-29 补**：启动时检查 `nssm.exe` 所在目录的 ACL，若本机普通用户可写（`Test-DirAclPermissive` 判「是」）则在状态栏提示「建议改装到系统目录」并写一行 crash log。不阻断——scoop 默认就装在用户目录。同一天把 `launch.vbs` 的 pwsh 解析顺序改成 Program Files 优先、scoop 次之，理由相同：用户可写目录里的 pwsh 被替换后，下次双击 + UAC 就是管理员权限。
+- **`Open-PanelUrl` 只放行 `http` / `https`**：2026-10-29 改为白名单。原实现直接 `Start-Process` 任意 URI，`file:///` 或自定义协议在提权 GUI 下等于以管理员**执行**任意程序（不只是「打开网页」）。非 http/https 的地址现在只更新状态栏，不启动。
 
 ## 测试
 

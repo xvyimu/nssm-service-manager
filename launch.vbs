@@ -8,16 +8,19 @@ Set sh2 = CreateObject("WScript.Shell")
 here = fso.GetParentFolderName(WScript.ScriptFullName)
 script = here & "\service-manager-gui.ps1"
 
-' Prefer an absolute pwsh path (SCOOP or Program Files) before falling back to PATH
-' (finding 8: a bare "pwsh.exe" relies on PATH, which may not be loaded under wscript).
+' Prefer an absolute pwsh path before falling back to PATH (a bare "pwsh.exe" relies
+' on PATH, which may not be loaded under wscript).
+' Order matters: Program Files first. %USERPROFILE%\scoop is writable by the current
+' user, so a medium-integrity process could plant pwsh.exe there and get it launched
+' elevated on the next double-click + UAC consent.
 ' Environ is a method of WScript.Shell, not a global VBScript function; calling it
 ' bare throws "Type mismatch" and aborts before ShellExecute (no pwsh starts, no log).
-pwsh = "pwsh.exe"  ' PATH fallback: only when scoop/Program Files both miss
-scoopPwsh = sh2.ExpandEnvironmentStrings("%USERPROFILE%") & "\scoop\shims\pwsh.exe"
-If fso.FileExists(scoopPwsh) Then
-  pwsh = scoopPwsh
-ElseIf fso.FileExists("C:\Program Files\PowerShell\7\pwsh.exe") Then
+pwsh = "pwsh.exe"  ' PATH fallback: only when Program Files and scoop both miss
+If fso.FileExists("C:\Program Files\PowerShell\7\pwsh.exe") Then
   pwsh = "C:\Program Files\PowerShell\7\pwsh.exe"
+Else
+  scoopPwsh = sh2.ExpandEnvironmentStrings("%USERPROFILE%") & "\scoop\shims\pwsh.exe"
+  If fso.FileExists(scoopPwsh) Then pwsh = scoopPwsh
 End If
 
 ' ShellExecute(File, Args, Dir, Operation, Show): runas is the fourth argument.

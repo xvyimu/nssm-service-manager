@@ -21,6 +21,18 @@ function Invoke-CardInput($card,[string]$source,[string]$action,[int]$clicks=2) 
 function Assert($condition,[string]$message) { if (-not $condition) { throw $message } }
 $win=New-MainWindow
 try {
+  # ---- 「打开面板」只放行 http/https ----
+  # 提权进程里 Start-Process 一个 file:/// 或自定义协议 = 管理员执行任意程序。
+  $script:startedUrls = @()
+  function Start-Process { [CmdletBinding()]param([Parameter(ValueFromRemainingArguments)]$rest) $script:startedUrls += $rest[0] }
+  try {
+    Open-PanelUrl 'file:///C:/Windows/System32/calc.exe'
+    Assert ($script:startedUrls.Count -eq 0) "非 http/https 不该被 Start-Process 执行：$($script:startedUrls -join ',')"
+    Open-PanelUrl 'http://127.0.0.1:8080'
+    Assert ($script:startedUrls.Count -eq 1) 'http 地址应放行'
+    Open-PanelUrl 'HTTPS://example.com'
+    Assert ($script:startedUrls.Count -eq 2) 'https（大小写不敏感）应放行'
+  } finally { Remove-Item Function:\Start-Process -EA SilentlyContinue }
   $cases=@(
     @{State='已停止';Health='';Action='start'},
     @{State='运行中';Health='正常';Action='stop'},
@@ -72,6 +84,42 @@ try {
       }
     }
   }
+  # 运行中但健康未通过：显示「等待中」+ 橙点，不是「运行中」+ 红点。
+  # 「运行中」这个词会让人以为服务已经可用——冷启动时端口还没监听，红点与文字互相矛盾。
+  $card=New-Card 'TestService' $script:svc.TestService
+  Update-CardData $card.SvcName '运行中' '无响应'
+  Assert ($card.LblSt.Text -eq '等待中') "健康未通过时应显示等待中，got [$($card.LblSt.Text)]"
+  Assert ($card.Dot.Fill.Color -eq [Windows.Media.Colors]::Orange) '等待中应显示橙点'
+  # 等太久（超过 WaitHealthyTimeoutMs）：不是「还在启动」，是卡住了
+  $card.UnhealthySince = [datetime]::Now.AddMilliseconds(-($script:WAIT_HEALTHY_TIMEOUT_MS + 1000))
+  Update-CardData $card.SvcName '运行中' '无响应'
+  Assert ($card.LblSt.Text -eq '无响应') "等待超时后应显示无响应，got [$($card.LblSt.Text)]"
+  Assert ($card.Dot.Fill.Color -eq [Windows.Media.Colors]::Red) '等待超时后应显示红点'
+  # 滞回：一次正常不清零，也不闪回绿（探测抖动时会出现这个序列）
+  Update-CardData $card.SvcName '运行中' '正常'
+  Assert ($card.UnhealthySince -ne [datetime]::MinValue) '一次正常不该清零累计'
+  Assert ($card.LblSt.Text -eq '等待中') "一次正常后仍应显示等待中，got [$($card.LblSt.Text)]"
+  # 连续两次正常才算真恢复
+  Update-CardData $card.SvcName '运行中' '正常'
+  Assert ($card.UnhealthySince -eq [datetime]::MinValue) '连续两次正常应清零 UnhealthySince'
+  Assert ($card.LblSt.Text -eq '运行中') "真恢复后显示运行中，got [$($card.LblSt.Text)]"
+  Assert ($card.Dot.Fill.Color -eq [Windows.Media.Colors]::Green) '真恢复后显示绿点'
+  # 抖动序列：不健康 → 正常 → 不健康，累计起点不重置
+  $card=New-Card 'TestService' $script:svc.TestService
+  Update-CardData $card.SvcName '运行中' '无响应'
+  $t0 = $card.UnhealthySince
+  Update-CardData $card.SvcName '运行中' '正常'
+  Update-CardData $card.SvcName '运行中' '无响应'
+  Assert ($card.UnhealthySince -eq $t0) '抖动序列不该重置累计起点'
+  Assert ($card.LblSt.Text -eq '等待中') '抖动期间保持等待中'
+  # 服务停了立即清零（不等连击），否则下次启动会带着旧的等待时长
+  Update-CardData $card.SvcName '已停止' ''
+  Assert ($card.UnhealthySince -eq [datetime]::MinValue) '离开运行中后应清零 UnhealthySince'
+  # 进入过渡态同样清零
+  $card.UnhealthySince = [datetime]::Now
+  Set-CardTransition $card '启动中' 1 (Get-Date)
+  Assert ($card.UnhealthySince -eq [datetime]::MinValue) '进入过渡态应清零 UnhealthySince'
+
   # 暂停态：两个方向都不该可用（启动对已运行的服务无效、关闭要求健康正常），
   # 副标题要给出可行的恢复路径，否则卡片像卡死了
   $card=New-Card 'TestService' $script:svc.TestService

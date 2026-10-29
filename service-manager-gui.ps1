@@ -1,7 +1,7 @@
 #requires -Version 7.0
 # service-manager-gui.ps1 — NSSM 服务管理 GUI（WPF 重构）
 # 六卡片主视图 · 系统字体 · 双击防抖(8s+健康门闩) · 无黑窗口 · 托盘可选(config.TrayEnabled)
-# 配置: services.json · logs/ · lib/*.ps1
+# 配置: services.json · logs/ · lib/*.ps1 · 实现注记: docs/IMPLEMENTATION-NOTES.md
 #
 # 启动路径（任选其一，都不闪黑窗）：
 #   桌面 lnk → launch.vbs（wscript 无控制台）→ ShellExecute runas pwsh → 管理员 GUI
@@ -14,13 +14,11 @@ param(
 
 $root = $PSScriptRoot
 $cfg = "$root\services.json"
-# 单实例互斥名（GUI 占用 + CLI -Add 前检测是否已有 GUI 常驻）。定义在此供两处共用，
-# 避免 CLI 分支与 GUI 分支各写一份字符串而漂移。
-$script:mutexName = 'Local\service-manager-gui'
-# NSSM 探测：优先 env > Get-Command > scoop 安装路径，避免硬编码 scoop
-# NSSM_PATH 只做「存在 + 文件名是 nssm.exe」两项校验，不校验签名/路径——它随后会以管理员
-# 身份被调用（install/set/remove），只做 Test-Path 会让「指向任意 exe」直接以管理员运行。
-# 文件名校验挡住最直接的滥用，又不破坏 README 明写的「自备 NSSM 后设 NSSM_PATH」用法。
+# 单实例互斥名，CLI 与 GUI 共用一份，免得字符串漂移。
+# 用 Global\ 而不是 Local\：Local 只在当前会话可见，计划任务/SSH 会话里跑 -Add 会误判「没有 GUI」，
+# 写进去的新增随后被 GUI 下一次全量写回覆盖掉。GUI 提权后创建，CLI 只用 OpenExisting。
+$script:mutexName = 'Global\service-manager-gui'
+# NSSM 探测：env > Get-Command > scoop。NSSM_PATH 只校验「存在 + 文件名」，它随后以管理员身份被调用。
 $script:nssm = $null
 if ($env:NSSM_PATH -and (Test-Path -LiteralPath $env:NSSM_PATH) -and (Split-Path -Leaf $env:NSSM_PATH) -ieq 'nssm.exe') {
   $script:nssm = $env:NSSM_PATH
@@ -34,15 +32,10 @@ if ($env:NSSM_PATH -and (Test-Path -LiteralPath $env:NSSM_PATH) -and (Split-Path
   }
 }
 
-# 可调常量最先加载——$logDir 与 Write-CrashLog 都依赖 config（前者取 LogDir 覆盖，
-# 后者取 CrashLogMaxBytes）。Write-CrashLog 首次调用在提权检测处（下方 ~70 行），
-# 早于模块加载区，不提前就会读到未初始化的 $script:config。
+# 可调常量最先加载：$logDir 与 Write-CrashLog 都依赖 config，且首次调用早于模块加载区。
 . "$root\lib\config.ps1"
 
-# 日志根：默认仓内 logs/，可用 config.json 的 LogDir 覆盖。
-# 注意：改 LogDir 只影响**新注册**的服务——已注册服务的 AppStdout/AppStderr 写死在
-# 注册表 HKLM\...\Services\<名>\Parameters 里，仍会写旧路径，而本工具按新 LogDir 读，
-# 那些服务的日志窗口会变「无日志」。迁移须逐个重新注册（改 AppStdout/AppStderr）。
+# 日志根：改 LogDir 只影响**新注册**的服务——已注册服务的 AppStdout 写死在注册表里。
 $logDir = if ($script:config.LogDir) { [string]$script:config.LogDir } else { "$root\logs" }
 
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force $logDir | Out-Null }
@@ -65,23 +58,17 @@ function Write-CrashLog([string]$m){
 }
 
 # ---- CLI 模式：添加服务（不弹 GUI，不提权检测——NSSM 写需管理员，调用方自己提权）----
-# 在加载 WPF 程序集之前处理，快速退出
 if ($Add) {
   Add-Type -AssemblyName PresentationFramework  # MessageBox 需要
   . "$root\lib\util.ps1"
-  # CLI -Add 与 GUI 都全量写回 services.json（Save-Svc 无合并语义，见 PROJECT.md 决策 3）。
-  # 若 GUI 常驻，它的内存副本是启动时读的；CLI 加完服务后 GUI 下一次保存会把这条覆盖掉
-  # ——NSSM 服务仍在跑，但配置里没了、界面也不显示。故 GUI 在跑时拒绝 CLI 写入，让调用方
-  # 改用 GUI「添加」或先关 GUI。判据见 util.ps1 的 Test-GuiInstanceRunning。
+  # CLI 与 GUI 都全量写回 services.json；GUI 常驻时它的内存副本会覆盖本次新增，故先拦。
   if (Test-GuiInstanceRunning $script:mutexName) {
     Write-Host "GUI 正在运行，请先关闭它再用 -Add（否则本次新增会被 GUI 的下一次保存覆盖）。"
     exit 1
   }
   $script:svc = Load-Svc
-  # services.json 解析失败时 Load-Svc 会回落到 services.example.json。GUI 有弹框，CLI 没有——
-  # 若继续执行，Add-SvcFromCli 末尾的 Save-Svc 会把**示例清单 + 新服务**写回真实文件，
-  # 用户的真实条目整份消失，而且退出码还是 0。宁可拒绝执行。
-  # 只认 Load-Svc 的专用标志：config.json 坏了按设计不阻断（用默认值），不该连 -Add 一起拦。
+  # Load-Svc 解析失败会回落示例清单；继续 -Add 会把「示例 + 新服务」写回真实文件。
+  # 只认 svcLoadFailed：config.json 坏了按设计不阻断，不该连 -Add 一起拦。
   if ($script:svcLoadFailed) {
     Write-Host $script:configWarning
     Write-Host "已停止：services.json 未能解析。现在继续 -Add 会把示例清单写回你的配置。请先修复该文件。"
@@ -89,7 +76,6 @@ if ($Add) {
   }
   # config.json 的坏消息是非致命的（已用默认值），但 CLI 原来一声不响，这里补一句。
   if ($script:configWarning) { Write-Host "提示: $($script:configWarning)（已用默认值，不阻断）" }
-  # 非致命提示（per-service 覆盖字段写错之类）：清单本身可用，照常继续，但要让人看见。
   # 用 if 守卫而不是 @($x)：`@($null)` 是「含一个 $null 的数组」，会打印一行空的「提示: 」。
   if ($script:configNotices) { foreach ($notice in $script:configNotices) { Write-Host "提示: $notice" } }
   # CLI 模式没有 runspace，但 add-svc.ps1 用 $sync.gate 加锁——给个本地锁
@@ -121,11 +107,8 @@ if (-not $isAdmin) {
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 Write-CrashLog 'WPF assemblies loaded'
 
-# ---- 单实例互斥：重复双击启动器时只保留第一个窗口 ----
-# Mutex 是进程级的，进程退出 OS 自动释放，不会卡死。放在 Add-Type 之后是因为
-# 命中时要静默退出（不弹窗，重复双击是常见操作）；放在提权之后是为了只让管理员实例占锁。
-# AbandonedMutexException：前一个实例被任务管理器杀掉或崩溃时，OS 把所有权
-# 交给当前进程并抛此异常——不是失败，要当成"已获取"，否则第二个实例也起不来。
+# ---- 单实例互斥：重复双击只保留第一个窗口 ----
+# 放在 Add-Type 之后（命中时静默退出）；AbandonedMutexException 是前一个实例崩溃，要当成已获取。
 $script:appMutex = [System.Threading.Mutex]::new($false, $script:mutexName)
 $owned = $false
 try { $owned = $script:appMutex.WaitOne(0) }
@@ -156,7 +139,6 @@ if (-not (Test-Path -LiteralPath $script:nssm)) {
 })
 
 # ---- Dispatcher 级兜底：UI 线程异常默认会冒到 AppDomain 并终止进程，Handled=$true 才不消失 ----
-# 函数体在 lib/util.ps1 的 Invoke-DispatcherErrorFallback（要真抛一次才能测）。
 [System.Windows.Threading.Dispatcher]::CurrentDispatcher.add_UnhandledException({ param($s,$e)
   if (Get-Command Invoke-DispatcherErrorFallback -EA SilentlyContinue) {
     Invoke-DispatcherErrorFallback $e
@@ -168,8 +150,8 @@ if (-not (Test-Path -LiteralPath $script:nssm)) {
 })
 
 # ---- 加载模块 ----
-# 顺序即依赖：theme → util → svc-input → nssm → add-svc → logview → dialogs → tray →
-# poll → card → xaml。dialogs 与 card 双向依赖，顺序不分先后（函数体符号调用时解析）。
+# 顺序即依赖：theme → util → svc-input → nssm → add-svc → logview → dialogs → tray → poll → card → xaml。
+# dialogs 与 card 双向依赖，顺序不分先后（函数体符号调用时解析）。
 . "$root\lib\theme.ps1"
 . "$root\lib\util.ps1"
 . "$root\lib\svc-input.ps1"
@@ -182,6 +164,19 @@ if (-not (Test-Path -LiteralPath $script:nssm)) {
 . "$root\lib\card.ps1"
 . "$root\lib\xaml.ps1"
 Write-CrashLog 'GUI modules loaded'
+
+# 提权面自检：NSSM 以管理员身份被调用，路径所在目录若对本机普通用户可写，
+# 任何中等完整性进程都能替换它 → 本地提权。不阻断（scoop 默认就装在用户目录），
+# 但要在状态栏说出来。
+if ($script:nssm) {
+  try {
+    $nssmDir = Split-Path $script:nssm -Parent
+    if ((Test-DirAclPermissive (Get-Acl -Path $nssmDir -EA Stop)) -eq '是') {
+      $script:securityNotice = "NSSM 目录可被普通用户写入，建议改装到系统目录：$($script:nssm)"
+      Write-CrashLog "Security: nssm dir is user-writable: $nssmDir"
+    }
+  } catch {}
+}
 
 # ---- 加载服务清单 ----
 $script:svc = Load-Svc
@@ -200,6 +195,7 @@ $script:sync = [hashtable]::Synchronized(@{
   tcpTimeoutMs         = [int]$script:config.TcpTimeoutMs
   httpTimeoutMs        = [int]$script:config.HttpTimeoutMs
   waitStoppedTimeoutMs = [int]$script:config.WaitStoppedTimeoutMs
+  extCommandTimeoutMs  = [int]$script:config.ExtCommandTimeoutMs
   # 节奏与并行度（poll.ps1 / svc-common.ps1 从 $sync 读，config.ps1 集中收口）
   probeThrottleLimit   = [int]$script:config.ProbeThrottleLimit
   probeIntervalMs      = [int]$script:config.ProbeIntervalMs
@@ -214,15 +210,13 @@ $bgRS.Open()
 $bgRS.SessionStateProxy.SetVariable('sync', $script:sync)
 $bgPS = [powershell]::Create().AddScript($script:poll)
 $bgPS.Runspace = $bgRS
-$bgHandle = $bgPS.BeginInvoke()
+$script:bgHandle = $bgPS.BeginInvoke()
 
 # ---- 收尾：停后台 ----
-# 日志清理：读 config 的保留策略并包住异常。两处调用（窗口关闭、首帧后）共用——
-# 策略取值只此一处，改保留口径不必翻调用点。$label 区分日志里的触发时机。
+# 日志清理：两处调用（窗口关闭、首帧后）共用，策略取值只此一处。
 function Invoke-LogCleanup([string]$label) {
   try {
-    # 除了工具自己的 $logDir，还要清理每个服务**实际**的日志目录（读 AppStdout）。
-    # 手工 nssm 注册的服务日志在别处，只清 $logDir 等于没管它们。
+    # 除 $logDir 外还要清每个服务实际的日志目录（读 AppStdout），手工注册的服务日志在别处。
     $dirs = @($logDir)
     foreach ($n in @($script:svc.Keys)) {
       $d = Get-SvcLogDir $n
@@ -237,10 +231,15 @@ function Invoke-LogCleanup([string]$label) {
 function Stop-Background {
   $script:sync.stop = $true
   [void]$script:sync.wake.Set()
-  try { if ($bgHandle.AsyncWaitHandle.WaitOne(1500)) { $bgPS.EndInvoke($bgHandle) } } catch { Write-CrashLog "Background end failed: $($_.Exception.Message)" }
-  try { $bgPS.Stop() } catch { Write-CrashLog "Background stop failed: $($_.Exception.Message)" }
-  $bgRS.Close(); $bgRS.Dispose(); $bgPS.Dispose()
-  $script:sync.wake.Dispose()
+  try { if ($script:bgHandle.AsyncWaitHandle.WaitOne(1500)) { $bgPS.EndInvoke($script:bgHandle) } } catch { Write-CrashLog "Background end failed: $($_.Exception.Message)" }
+  # Stop() 是同步的：后台卡在 $svc.Start()（等满 ServicesPipeTimeout ≈ 30s）或外部命令里时，
+  # UI 线程会被一起拖住，窗口关了进程还在——这段时间 mutex 仍被占，用户再双击是「没反应」。
+  # BeginStop 只发停止请求就返回；资源释放各自包住，管道还在跑时 Dispose 抛错也不该拖住关闭。
+  try { [void]$bgPS.BeginStop($null, $null) } catch { Write-CrashLog "Background stop failed: $($_.Exception.Message)" }
+  try { $bgRS.Close() } catch {}
+  try { $bgRS.Dispose() } catch {}
+  try { $bgPS.Dispose() } catch {}
+  try { $script:sync.wake.Dispose() } catch {}
   # 停收尾时也跑一次日志清理——窗口关闭是自然的维护点，避免常驻时占 UI 线程。
   Invoke-LogCleanup 'Log cleanup on close failed'
 }
@@ -250,8 +249,7 @@ $win = New-MainWindow
 if (Test-Path -LiteralPath $script:iconPath) {
   $win.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create([Uri]$script:iconPath)
 }
-# 托盘图标：仅在 config.TrayEnabled 时创建（按需加载 WinForms，关闭时零成本）。
-# 在窗口构建后初始化——托盘的「显示主窗口」菜单需要 $win 引用。
+# 托盘仅在 config.TrayEnabled 时创建（按需加载 WinForms，关闭时零成本），需窗口已构建。
 if ($script:config.TrayEnabled) {
   Initialize-Tray $win
   Write-CrashLog 'Tray icon initialized'
@@ -267,7 +265,6 @@ Render-Page
 Write-CrashLog "Window constructed: cards=$($script:cardPanel.Children.Count)"
 
 # ---- DispatcherTimer：处理结果队列与状态栏（实现见 lib/util.ps1 Update-StatusTick）----
-# 抽成函数是为了可单测——内联在此处时测试只能复刻这段逻辑，改一处漏一处即静默漂移。
 $timer = New-Object System.Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromMilliseconds([int]$script:config.AckPollIntervalMs)
 $timer.Add_Tick({
@@ -277,17 +274,16 @@ $timer.Add_Tick({
 })
 $timer.Start()
 
+# 提权面自检的提示（若有）：带租约的状态栏消息，避免被下一帧立刻刷掉。
+if ($script:securityNotice) { Set-StatusMessage $script:securityNotice }
+
 # 配置解析失败提示
-# configWarning 由 config.ps1（"config.json 无效：…"）或 Load-Svc（"services.json 无效：…"）
-# 写入，**消息自带文件名**——故此处只加「当前使用恢复配置」的处置说明，不再拼文件名前缀
-# （否则会显示成「配置文件无效：config.json 无效：…」这种重复）。
+# 消息自带文件名，故此处只加处置说明，不再拼文件名前缀（否则会出现「配置文件无效：config.json 无效：…」）。
 if ($script:configWarning) {
   [System.Windows.MessageBox]::Show("$($script:configWarning)`n当前使用恢复配置，保存前请修复该文件。",'配置错误','OK','Warning') | Out-Null
 }
 
-# 配置提示（非致命）：目前唯一的来源是 services.json 里 per-service 可选字段写错
-# （toggleTimeoutMs / httpTimeoutMs / tcpTimeoutMs）。清单照常用，只是那个字段回落全局，
-# 所以单独一条、措辞里不讲「恢复配置」——否则用户会以为整份清单被换掉了。
+# 配置提示（非致命）：per-service 可选字段写错。清单照常用，故措辞不讲「恢复配置」。
 if ($script:configNotices) {
   [System.Windows.MessageBox]::Show(($script:configNotices -join "`n`n"),'配置提示','OK','Warning') | Out-Null
 }
@@ -295,12 +291,8 @@ if ($script:configNotices) {
 # ---- 显示（Application.Run 等价）----
 $win.Add_ContentRendered({
   Write-CrashLog 'Window content rendered'
-  # 启动首帧后异步跑一次日志清理（不占首屏）：轮转档保留策略，见 lib/util.ps1。
-  # 走 Dispatcher.BeginInvoke + Background 优先级，避免在 ContentRendered 回调里阻塞渲染。
-  # 优先级必须写成枚举，不能写 'Background' 字符串：Dispatcher 没有 (Delegate, DispatcherPriority)
-  # 这个重载，PowerShell 会退回绑定 BeginInvoke(Delegate, Object[] args)，把字符串当成
-  # 委托的实参数组——委托在 UI 线程被以 1 个参数调用，抛 TargetParameterCountException，
-  # 清理永远不执行（曾记在 gui-crash.log 的 DispatcherUnhandled 里）。
+  # 首帧后异步跑日志清理。优先级必须写成枚举：写 'Background' 字符串会退回 BeginInvoke(Delegate, Object[]),
+  # 委托被以 1 个参数调用，抛 TargetParameterCountException，清理永远不执行（曾记在 gui-crash.log）。
   $win.Dispatcher.BeginInvoke([Action]{
     Invoke-LogCleanup 'Log cleanup failed'
   }, [System.Windows.Threading.DispatcherPriority]::Background) | Out-Null
