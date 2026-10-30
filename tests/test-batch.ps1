@@ -66,8 +66,32 @@ try {
   $msg = Invoke-BatchCommand 'start'
   Assert ($msg -match '没有可启动') "非终态时应说明没有目标，got [$msg]"
   Assert (@(Drain-Queue).Count -eq 0) '没有目标时不该入队'
+
+  # ---- 5. 状态过期：探测落库太久（后台 runspace 死掉/探测被限流）时不按旧值下发 ----
+  # 朝「其实已经停了」的服务再发 stop，只会刷一串 1056/1062。
+  $script:svcState = @{
+    A = @{ st = '已停止'; h = ''; at = (Get-Date).AddSeconds(-30) }   # 30s 前：过期
+    B = @{ st = '已停止'; h = ''; at = (Get-Date) }                   # 刚探测：新鲜
+  }
+  $msg = Invoke-BatchCommand 'start'
+  $cmd = @(Drain-Queue)
+  Assert ($cmd.Count -eq 1 -and $cmd[0].n -eq 'B') "过期状态应跳过 A，只下发 B，got $($cmd | ForEach-Object { $_.n })"
+  Assert ($msg -match '过期') "状态栏文案应说明「N 个状态过期已跳过」，got [$msg]"
+
+  # ---- 6. 边界：略早于阈值算新鲜、未来时间（时钟回拨）放行、at 为 ISO 字符串也认 ----
+  $interval = [int]$script:config.ProbeIntervalMs
+  $script:svcState = @{
+    A = @{ st = '已停止'; h = ''; at = (Get-Date).AddMilliseconds(-($interval * 2 - 1000)) }
+    B = @{ st = '已停止'; h = ''; at = (Get-Date).AddMinutes(5) }
+  }
+  $msg = Invoke-BatchCommand 'start'
+  Assert (@(Drain-Queue).Count -eq 2) "略早于阈值与未来时间都该放行，got [$msg]"
+  Assert ($msg -notmatch '过期') "没有过期条目时不该提「过期」，got [$msg]"
+  $script:svcState = @{ A = @{ st = '已停止'; h = ''; at = (Get-Date).AddMinutes(-10).ToString('o') } }
+  $msg = Invoke-BatchCommand 'start'
+  Assert (@(Drain-Queue).Count -eq 0 -and $msg -match '过期') "ISO 字符串形式的 at 也要能判过期，got [$msg]"
 } finally {
   try { $win.Close() } catch {}
 }
 
-Write-Output 'PASS: 批量启停按最近探测值筛目标（含翻页外）、只碰终态、停止需确认、无目标不误发。'
+Write-Output 'PASS: 批量启停按最近探测值筛目标（含翻页外）、只碰终态、停止需确认、无目标不误发、过期状态跳过并说明（含阈值内/未来时间/ISO at 边界）。'

@@ -39,7 +39,7 @@ function Invoke-RemoveSeam([bool]$serviceGone, [string]$label) {
     try {
       Render-Page
       $card = $script:cards['Fake0']
-      Assert ($card -ne $null) "${label}: card not created."
+      Assert ($null -ne $card) "${label}: card not created."
       # 先给卡片一个真实稳态（真实流程里它已被探测过），再模拟 del_Click
       Update-CardData 'Fake0' '已停止' ''
       $epoch = Send-ServiceCommand 'Fake0' 'remove'
@@ -60,13 +60,13 @@ function Invoke-RemoveSeam([bool]$serviceGone, [string]$label) {
       if ($serviceGone) {
         Assert (-not $script:svc.Contains('Fake0'))  "${label}: svc not cleared on successful remove."
         Assert (-not $script:cards.Contains('Fake0')) "${label}: cards not cleared on successful remove."
-        Assert ($script:saved -ne $null)             "${label}: Save-Svc not called on successful remove."
+        Assert ($null -ne $script:saved)             "${label}: Save-Svc not called on successful remove."
       } else {
         Assert ($script:svc.Contains('Fake0'))       "${label}: svc wrongly cleared on failed remove."
         Assert ($script:cards.Contains('Fake0'))     "${label}: cards wrongly cleared on failed remove."
         Assert ($card.ST -ne '删除中')                "${label}: card stuck in 删除中: ST=$($card.ST)."
         Assert ($card.Btn.IsEnabled)                 "${label}: button not re-enabled after failed remove."
-        Assert ($script:saved -eq $null)             "${label}: Save-Svc must not run on failed remove."
+        Assert ($null -eq $script:saved)             "${label}: Save-Svc must not run on failed remove."
         # 失败原因由后台 msg 队列给出，Update-StatusTick 在同一帧把它排空写进状态栏
         # （并带显示租约）——所以断言打在状态栏上，那才是用户看到的。
         Assert ($script:statusBar.Text -match '删除失败') "${label}: no failure feedback on status bar: '$($script:statusBar.Text)'"

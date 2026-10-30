@@ -1,4 +1,7 @@
 #requires -Version 7.0
+# $logDir 不在本文件里引用，但 lib/svc-input.ps1 的 Get-NssmSetSpec 直接读调用方作用域（AppStdout/AppStderr），
+# 静态分析看不到这种跨作用域用法。
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments','',Justification='svc-input.ps1 读调用方作用域的 $logDir')]
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference='Stop'
 $cfg=Join-Path $RepoRoot 'services.json'
@@ -86,6 +89,16 @@ $envSetting = @($script:calls | Where-Object { $_[0] -eq 'set' -and $_[2] -eq 'A
 $tokens = @($envSetting[0])[3..(@($envSetting[0]).Count - 1)]
 if ($tokens.Count -ne 2 -or ($tokens -join '|') -ne 'A=1|B=2') {
   throw "逗号分隔的多对 env 未被拆开：$($tokens -join ' | ')"
+}
+
+# B1：CLI 第 4 段写 tcp 是简写——probe=tcp 且 url 为空。数据库/gRPC/纯 socket 不再需要
+# 注册完手改 services.json（不写就只有 HTTP 探测，卡片永远橙点）。
+$script:calls.Clear()
+Add-SvcFromCli "__sm_probe_tcp__,8096,$fakeExe,tcp" 6>&1 | Out-Null
+$tcpEntry = $script:svc['__sm_probe_tcp__']
+if (-not $tcpEntry) { throw 'B1: CLI 的 tcp 简写没有落进清单。' }
+if ($tcpEntry.probe -ne 'tcp' -or $tcpEntry.url -ne '') {
+  throw "B1: tcp 简写应落 probe=tcp / url 空，实际 probe=[$($tcpEntry.probe)] url=[$($tcpEntry.url)]"
 }
 
 # 回滚路径：install 成功后某个 set 失败，应 remove 残骸并抛错。
@@ -214,6 +227,17 @@ if ($script:scMarker -notcontains 'stop NoSuchSvc') {
 }
 if (-not $r.ok) { throw "Invoke-ServiceRemove 在 sc=1060 + nssm=0 时应判成功：$($r.why)" }
 Write-Output 'PASS: sc.exe call sites go through Get-ScExe (injected command name actually invoked), not bare sc.exe.'
+
+# A1 回归：Save-Svc 抛错时内存清单必须原样（copy-on-write）。原实现先写 $script:svc 再保存，
+# 失败后那条服务留在内存——用户以为没加成，下一次任意保存（比如删掉别的服务）会把它写进磁盘。
+$svcBefore = $script:svc
+function Save-Svc($data) { throw 'disk full (A1)' }
+$err = Add-SvcEntry '__sm_cow__' 9097 'http://127.0.0.1:9097'
+if (-not $err -or $err -notmatch 'disk full') { throw "A1: Add-SvcEntry 应把保存错误返回给调用方，got [$err]" }
+if ($script:svc.Contains('__sm_cow__')) { throw 'A1: 保存失败后内存清单不得留着新条目（下一次保存会把它写进磁盘）' }
+if (-not [object]::ReferenceEquals($script:svc, $svcBefore)) { throw 'A1: 保存失败后内存清单对象不该被替换' }
+if ($script:sync.svc) { throw 'A1: 保存失败后不该同步 $sync.svc（后台会探测到没落盘的服务）' }
+Write-Output 'PASS: Add-SvcEntry copy-on-write — a failed save leaves memory, $sync.svc and disk untouched.'
 
 Write-Output 'PASS: CLI registration, NSSM multi-value arguments, rollback on partial set failure, remove flow (stop→wait→remove), persistence/start boundaries (mocked); config unchanged.'
 } finally { Remove-Item -LiteralPath $fakeExe -Force -EA SilentlyContinue }

@@ -72,8 +72,45 @@ try {
   try { Save-Svc ([ordered]@{ A = @{ port = 4321; url = '' } }) } catch { $saved = $false }
   Assert $saved "只读 .bak 不该让保存失败：$($_.Exception.Message)"
   Assert ((Get-Content -LiteralPath $cfg -Raw -Encoding UTF8) -match '4321') '只读 .bak 场景下新内容应写入'
+
+  # ---- 7. 目标 services.json 被标只读：写前清属性，保存仍应成功 ----
+  # 不清属性时 File.Replace 报「无法删除要被替换的文件」，错误里没有「只读」线索，用户无从下手。
+  (Get-Item -LiteralPath $cfg).IsReadOnly = $true
+  $saved = $true; $roErr = ''
+  try { Save-Svc ([ordered]@{ A = @{ port = 5555; url = '' } }) } catch { $saved = $false; $roErr = $_.Exception.Message }
+  Assert $saved "只读 services.json 应在清属性后保存成功：$roErr"
+  Assert (-not (Get-Item -LiteralPath $cfg -Force).IsReadOnly) '保存后不该留着只读属性'
+  Assert ((Get-Content -LiteralPath $cfg -Raw -Encoding UTF8) -match '5555') '只读场景下新内容应写入'
+
+  # ---- 8. 只读属性清不掉时：错误文案必须点明「只读」----
+  # 造法：先置只读，再对当前用户 deny WRITE_ATTRIBUTES（deny 优先，管理员身份也拦得住）。
+  # 不覆盖这条分支的话，用户看到的仍是 File.Replace 的「无法删除要被替换的文件」，无从下手。
+  if (-not ([Security.Principal.WindowsIdentity]::GetCurrent().IsSystem)) {
+    (Get-Item -LiteralPath $cfg).IsReadOnly = $true
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl = Get-Acl -LiteralPath $cfg
+    $deny = [Security.AccessControl.FileSystemAccessRule]::new(
+      $sid, [Security.AccessControl.FileSystemRights]::WriteAttributes, [Security.AccessControl.AccessControlType]::Deny)
+    try {
+      $acl.AddAccessRule($deny)
+      Set-Acl -LiteralPath $cfg -AclObject $acl
+      $threw = $false; $roErr2 = ''
+      try { Save-Svc ([ordered]@{ A = @{ port = 6666; url = '' } }) } catch { $threw = $true; $roErr2 = $_.Exception.Message }
+      Assert $threw '清不掉只读属性时 Save-Svc 必须失败（否则用户以为存进去了）'
+      Assert ($roErr2 -match '只读') "清属性失败的错误文案应点明「只读」，got [$roErr2]"
+      Assert ((Get-Content -LiteralPath $cfg -Raw -Encoding UTF8) -notmatch '6666') '失败时不得改动原文件'
+    } finally {
+      # 还原：拿掉 deny ACE 再清只读，否则外层 Remove-Item -Force 也会被属性写入拒绝绊住
+      $acl2 = Get-Acl -LiteralPath $cfg
+      $acl2.RemoveAccessRule($deny) | Out-Null
+      Set-Acl -LiteralPath $cfg -AclObject $acl2
+      (Get-Item -LiteralPath $cfg -Force).IsReadOnly = $false
+    }
+  } else {
+    Write-Output 'SKIP: 以 SYSTEM 运行，deny ACE 会连清理一起锁死，跳过「清不掉只读」用例。'
+  }
 } finally {
   Remove-Item -LiteralPath $dir -Recurse -Force -EA SilentlyContinue
 }
 
-Write-Output 'PASS: services.json 顶层形状/解析失败/外部修改三道门闩、.bak 备份与只读 .bak 兜底；probe 字段原样保留。'
+Write-Output 'PASS: services.json 顶层形状/解析失败/外部修改三道门闩、.bak 备份、只读 .bak、只读目标与「只读清不掉」兜底；probe 字段原样保留。'

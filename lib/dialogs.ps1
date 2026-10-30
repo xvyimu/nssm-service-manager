@@ -25,8 +25,9 @@ function Show-Remove([string]$n, $owner){
     FontFamily=$script:cjkFont; FontSize=12; TextWrapping='Wrap'
   }
   [void]$stack.Children.Add($warn)
-  $input=New-Object System.Windows.Controls.TextBox -Property @{FontFamily=$script:cjkFont; FontSize=13; Margin='0,8,0,12'}
-  [void]$stack.Children.Add($input)
+  # 不要叫 $input：那是 PowerShell 的自动变量（管道输入枚举器），遮蔽它迟早出怪事。
+  $confirmBox=New-Object System.Windows.Controls.TextBox -Property @{FontFamily=$script:cjkFont; FontSize=13; Margin='0,8,0,12'}
+  [void]$stack.Children.Add($confirmBox)
 
   $btnPanel=New-Object System.Windows.Controls.StackPanel -Property @{Orientation='Horizontal';HorizontalAlignment='Right'}
   $cancel=New-Object System.Windows.Controls.Button -Property @{Content='取消';Padding='16,6';Margin='0,0,8,0'}
@@ -39,7 +40,7 @@ function Show-Remove([string]$n, $owner){
   [void]$stack.Children.Add($btnPanel)
   $f.Content=$stack
 
-  $input.Add_TextChanged({ $del.IsEnabled = ($input.Text.Trim() -ceq $n) })
+  $confirmBox.Add_TextChanged({ $del.IsEnabled = ($confirmBox.Text.Trim() -ceq $n) })
   $cancel.Add_Click({ $f.DialogResult=$false; $f.Close() })
 
   $del.Add_Click({
@@ -80,6 +81,10 @@ function Submit-AddService($owner,[hashtable]$fields){
   if(-not [int]::TryParse([string]$fields.p,[ref]$p)){ Show-DialogError $owner '端口必须是 1-65535 的整数'; return $false }
   $url=[string]$fields.url; $dir=[string]$fields.dir; $par=[string]$fields.par; $envRaw=[string]$fields.env
   $account=[string]$fields.account; $gpu=[bool]$fields.gpu
+  # 探测口径：auto（缺省，TCP 通且 HTTP 200）/ tcp（TCP 通即正常）/ http。
+  # 非 HTTP 服务（数据库、gRPC、纯 socket）必须选 tcp，否则卡片永远不是绿点。§Read-SvcFile
+  $probe=([string]$fields.probe).Trim().ToLowerInvariant()
+  if($probe -notin @('auto','tcp','http')){ $probe='auto' }
   if(-not $n -or -not $exe){ Show-DialogError $owner '服务名和可执行文件必填'; return $false }
   # 校验顺序与 CLI 同（Test-SvcInput）；端口文案 GUI 保留自己的措辞，按 code 覆盖
   $bad = Test-SvcInput $n $p $exe $script:svc
@@ -90,7 +95,8 @@ function Submit-AddService($owner,[hashtable]$fields){
   # 未知账户直接拒——静默回落到 LocalSystem 会让用户以为「按最小权限跑了」。
   $badAcct = Test-SvcAccount $account
   if($badAcct){ Show-DialogError $owner $badAcct.msg; return $false }
-  if(-not $url){ $url="http://127.0.0.1:$p" }
+  # tcp 口径不填 URL：非 HTTP 服务写面板地址只会让人以为探测按 HTTP 走。
+  if($probe -eq 'tcp'){ $url='' } elseif(-not $url){ $url="http://127.0.0.1:$p" }
   # GUI 的 env 以逗号分隔（字段分隔符），且多一层格式校验（CLI 不做）
   $envPairs = ConvertTo-EnvPairs $envRaw ','
   $envErr = Test-EnvPairs $envPairs
@@ -110,11 +116,12 @@ function Submit-AddService($owner,[hashtable]$fields){
   } catch {
     Show-DialogError $owner $_.Exception.Message; return $false
   }
-  $saveErr = Add-SvcEntry $n $p $url
+  $saveErr = Add-SvcEntry $n $p $url $probe
   if ($saveErr) {
-    # 服务已注册但没落盘：不 remove（那会丢掉一个实际可用的服务），提示手动迁移并关窗。
-    Show-DialogWarning $owner "服务已注册但配置保存失败：$saveErr`n$n 已在 NSSM 注册，请手动将其加入 services.json。" '保存失败'
-    return $true
+    # 服务已注册但没落盘：不 remove（那会丢掉一个实际可用的服务）。**保持窗口**：关窗会让人以为
+    # 「没加成」，常见反应是再填一次 → NSSM 报服务已存在，越描越乱。§Submit-AddService
+    Show-DialogError $owner "服务已在 NSSM 注册但没写入清单：$saveErr`n`n修好配置后点「注册并启动」重试保存；若 NSSM 提示服务已存在，先 nssm remove $n confirm 再重来。"
+    return $false
   }
   Send-ServiceCommand $n 'start' | Out-Null   # 返回值是 epoch，函数契约只返回 $true/$false
   $true
@@ -144,6 +151,19 @@ function New-AddDialog(){
 
   $adv=& $mkExp '高级（可选）'
   $advContent=New-Object System.Windows.Controls.StackPanel
+  # 探测方式：默认 auto；数据库/gRPC/纯 socket 选 tcp，否则 HTTP 探测必然失败、卡片永远橙点。
+  $inProbe=New-Object System.Windows.Controls.ComboBox -Property @{ Margin='0,0,0,8'; FontFamily=$script:cjkFont }
+  [void]$inProbe.Items.Add((New-Object System.Windows.Controls.ComboBoxItem -Property @{Content='自动（TCP 通且 HTTP 200）'; Tag='auto'}))
+  [void]$inProbe.Items.Add((New-Object System.Windows.Controls.ComboBoxItem -Property @{Content='只探测 TCP（数据库 / gRPC / 纯 socket）'; Tag='tcp'}))
+  $inProbe.SelectedIndex=0
+  $advContent.Children.Add((& $mkLabel '探测方式')) | Out-Null; $advContent.Children.Add($inProbe) | Out-Null
+  # 选 tcp 时置空并禁用 URL：非 HTTP 服务填了面板地址只会误导（GetNewClosure：闭包要持有 $inUrl）。
+  $inProbe.Add_SelectionChanged({
+    param($sender,$eventArgs)
+    $tcp = ([string]$sender.SelectedItem.Tag -eq 'tcp')
+    if ($tcp) { $inUrl.Text = '' }
+    $inUrl.IsEnabled = -not $tcp
+  }.GetNewClosure())
   $advContent.Children.Add((& $mkLabel '面板URL（默认 http://127.0.0.1:端口）')) | Out-Null; $advContent.Children.Add($inUrl) | Out-Null
   $advContent.Children.Add((& $mkLabel '工作目录')) | Out-Null; $advContent.Children.Add($inDir) | Out-Null
   $advContent.Children.Add((& $mkLabel '启动参数')) | Out-Null; $advContent.Children.Add($inPar) | Out-Null
@@ -181,6 +201,7 @@ function New-AddDialog(){
     # 提交逻辑在 Submit-AddService；$f 作 MessageBox owner，返回 $true 表示注册成功。
     if (Submit-AddService $f @{ n=$inName.Text.Trim(); p=$inPort.Text.Trim(); exe=$inExe.Text.Trim()
         url=$inUrl.Text.Trim(); dir=$inDir.Text.Trim(); par=$inPar.Text.Trim(); env=$inEnv.Text.Trim()
+        probe=[string]$inProbe.SelectedItem.Tag
         account=[string]$inAcct.SelectedItem.Tag; gpu=[bool]$inGpu.IsChecked }) {
       $f.DialogResult=$true; $f.Close()
     }
@@ -188,7 +209,7 @@ function New-AddDialog(){
 
   # 返回 OK 按钮与输入框句柄：测试要点真按钮走真处理器，才测得出闭包类错误。
   [pscustomobject]@{
-    Window = $f; Account = $inAcct; Gpu = $inGpu; Ok = $ok
+    Window = $f; Account = $inAcct; Gpu = $inGpu; Ok = $ok; Probe = $inProbe
     Inputs = @{ name=$inName; port=$inPort; exe=$inExe; url=$inUrl; dir=$inDir; par=$inPar; env=$inEnv }
   }
 }

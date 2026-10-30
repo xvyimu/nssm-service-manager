@@ -151,5 +151,48 @@ try {
   Update-CardData $card.SvcName '已停止' ''
   Invoke-CardInput $card 'DoubleClick' 'start' 1
   Assert ($script:cmdQueue.IsEmpty) 'Single card click must not start a service.'
-  Write-Output 'PASS: both input paths preserve 20 state/guard cases and feedback; paused state disables both buttons with a recovery hint; single-click ignored.'
+  # ---- 右键重启的两段式过渡态（B2）：停止中 → 启动中，期间双击/按钮都不许再下发 ----
+  # 原来 restart 直接入队不置过渡态：重启期间卡片显示「运行中」、按钮可用，双击再发一条
+  # stop 会落在 start 之后，服务被停掉。
+  $script:cmdQueue.Clear()
+  $card=New-Card 'TestService' $script:svc.TestService
+  $script:cards=@{ TestService=$card }
+  Update-CardData 'TestService' '运行中' '正常'
+  Invoke-CardRestart $card
+  $cmd=$null
+  Assert ($script:cmdQueue.TryDequeue([ref]$cmd) -and $cmd.act -eq 'restart') '重启应入队 restart 命令'
+  Assert ($card.ST -eq '停止中' -and -not $card.Btn.IsEnabled -and -not $card.BtnStop.IsEnabled) '重启下发后应按停止处理（过渡态 + 双禁用）'
+  $restartEpoch=$cmd.e
+  Invoke-CardInput $card 'DoubleClick' 'start'
+  Assert ($script:cmdQueue.IsEmpty) '重启（停止阶段）双击不该再入队'
+  # 停止阶段结束：poll 补发的中间回执把过渡态换成「启动中」，按钮仍禁用
+  Update-CardRestartPhase 'TestService' $restartEpoch
+  Assert ($card.ST -eq '启动中' -and $card.LblSt.Text -eq '启动中') "中间回执应把过渡态换成启动中，got [$($card.ST)]"
+  Assert (-not $card.Btn.IsEnabled -and -not $card.BtnStop.IsEnabled) '启动阶段按钮仍应禁用'
+  Invoke-CardInput $card 'DoubleClick' 'stop'
+  Assert ($script:cmdQueue.IsEmpty) '重启（启动阶段）双击不该再入队'
+  # 旧 epoch 的中间回执不许刷掉新一轮的过渡态
+  $card.ST='运行中'
+  Update-CardRestartPhase 'TestService' ($restartEpoch - 1)
+  Assert ($card.ST -eq '运行中') '过期 epoch 的中间回执应被忽略'
+
+  # ---- 重启的两条守卫：删除中不许翻成停止中；探测驱动的卡死态仍可重启（右键是逃生口）----
+  $script:cmdQueue.Clear()
+  $card=New-Card 'TestService' $script:svc.TestService
+  $script:cards=@{ TestService=$card }
+  Update-CardData 'TestService' '运行中' '正常'
+  $card.ST='删除中'; $card.TransitionAt=[datetime]::Now
+  Invoke-CardRestart $card
+  Assert ($card.ST -eq '删除中' -and $script:cmdQueue.IsEmpty) '删除中不该被重启翻成「停止中」'
+  # 探测驱动（TransitionAt=MinValue）的「停止中」= SCM 卡死，右键必须还能踢一脚
+  $card.ST='停止中'; $card.TransitionAt=[datetime]::MinValue; $card.LastToggle=[datetime]::MinValue
+  Invoke-CardRestart $card
+  $cmd=$null
+  Assert ($script:cmdQueue.TryDequeue([ref]$cmd) -and $cmd.act -eq 'restart') '探测驱动的卡死态应仍可重启'
+  # 超时逃生（回滚到未知）后迟到的中间回执不得把卡片重新推进「启动中」
+  $card.ST='未知'; $card.PendingEpoch=0; $card.TransitionAt=[datetime]::MinValue
+  Update-CardRestartPhase 'TestService' $cmd.e
+  Assert ($card.ST -eq '未知') '逃生后迟到的中间回执应被丢弃'
+
+  Write-Output 'PASS: both input paths preserve 20 state/guard cases and feedback; paused state disables both buttons with a recovery hint; single-click ignored; restart dispatches as 停止中, rejects re-entry in both phases, switches to 启动中 on the phase receipt, and refuses to hijack 删除中 / 命令驱动的切换中 while still allowing a probe-stuck card.'
 } finally { $win.Close(); $script:sync.wake.Dispose() }

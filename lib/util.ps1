@@ -109,6 +109,13 @@ function Save-Svc($s) {
   [IO.File]::WriteAllText($tmp, $json, [Text.UTF8Encoding]::new($false))
   try {
     if (Test-Path -LiteralPath $cfg) {
+      # 目标被用户或备份工具标成只读时，File.Replace 报「无法删除要被替换的文件」，错误里没有
+      # 任何「只读」线索。这就是我们自己的配置文件，写前清属性；清不掉再翻译成一句人话。§Save-Svc
+      $target = Get-Item -LiteralPath $cfg -Force
+      if ($target.IsReadOnly) {
+        try { $target.IsReadOnly = $false } catch {}
+        if ((Get-Item -LiteralPath $cfg -Force).IsReadOnly) { throw "services.json 是只读的：$cfg（去掉只读属性后重试）" }
+      }
       # 第三参给备份路径：Replace 顺手把上一版留成 services.json.bak（清单不在 git 里，没有这层就无回滚）。
       # .bak 是自己上一版，被标只读时 File.Replace 会直接失败（「无法删除要被替换的文件」）——先清属性。
       $bak = "$cfg.bak"
@@ -163,11 +170,27 @@ function Invoke-SvcReload {
   $null
 }
 
-# 写进内存清单并落盘，CLI 与对话框共用。返回 $null 成功，否则错误信息。§Add-SvcEntry
-function Add-SvcEntry([string]$n,[int]$p,[string]$url){
+# 写进内存清单并落盘，CLI 与对话框共用。返回 $null 成功，否则错误信息。
+# copy-on-write：先写副本，Save-Svc 成功后才替换 $script:svc。原来先改内存再保存，保存抛错时那条
+# 没落盘的服务仍留在内存里——下一次任意保存（比如删掉别的服务）会把它写进磁盘，用户以为没加成。§Add-SvcEntry
+function Add-SvcEntry([string]$n,[int]$p,[string]$url,[string]$probe){
+  $entry = @{ port = $p; url = $url }
+  # probe 只在非默认口径时落盘：auto（TCP 通且 HTTP 200）是缺省，写出来只是噪声。§Read-SvcFile
+  $pv = ([string]$probe).Trim().ToLowerInvariant()
+  if ($pv -in @('tcp','http')) { $entry['probe'] = $pv }
+  $next = [ordered]@{}
   [Threading.Monitor]::Enter($sync.gate)
-  try { $script:svc[$n]=@{port=$p;url=$url} } finally { [Threading.Monitor]::Exit($sync.gate) }
-  try { Save-Svc $script:svc } catch { return $_.Exception.Message }
+  try {
+    foreach ($k in $script:svc.Keys) { $next[$k] = $script:svc[$k] }
+    $next[$n] = $entry
+  } finally { [Threading.Monitor]::Exit($sync.gate) }
+  try { Save-Svc $next } catch { return $_.Exception.Message }
+  [Threading.Monitor]::Enter($sync.gate)
+  try {
+    $script:svc = $next
+    # 后台每轮重读 $sync.svc；换了对象必须同步这个键，否则探测的还是旧清单（同 Invoke-SvcReload）。
+    if ($script:sync) { $script:sync.svc = $script:svc }
+  } finally { [Threading.Monitor]::Exit($sync.gate) }
   $null
 }
 
@@ -247,12 +270,19 @@ function Update-StatusTick {
         Update-CardData $item.n $null $null -e $item.e -ack -ok ([bool]$item.ok)
       }
     } else {
+      # restart 的中间回执（phase='start'）：停止阶段结束、开始启动。不是探测值，
+      # 不能落 svcState / 健康历史，只把卡片过渡态换成「启动中」。§Update-CardRestartPhase
+      if ($item.phase -eq 'start') {
+        if (Get-Command Update-CardRestartPhase -EA SilentlyContinue) { Update-CardRestartPhase $item.n $item.e }
+        continue
+      }
       # 健康历史：只有「状态或健康值变了」才记一条（4 秒一拍的重复值不落盘，否则一天几万行）。
       # 写盘交给后台 runspace（UI 线程不碰 I/O），这里只入队。
       if ($null -eq $script:healthSeen) { $script:healthSeen = @{} }   # 单测/CLI 直接调 tick 时没有初始化
       if ($null -eq $script:svcState) { $script:svcState = @{} }       # 同上；批量启停也读它
       # 全量记「最近一次探测值」：批量启停按它筛目标，翻页外（没有卡片）的服务也要能全启/全停。
-      $script:svcState[$item.n] = @{ st = $item.st; h = $item.h }
+      # at = 落库时刻，批量据此跳过过期状态（后台 runspace 死掉/探测被限流时 svcState 会停在旧值）。
+      $script:svcState[$item.n] = @{ st = $item.st; h = $item.h; at = [datetime]::Now }
       $prev = $script:healthSeen[$item.n]
       $prevSt = if ($prev) { $prev.st } else { $null }
       $prevH = if ($prev) { $prev.h } else { $null }

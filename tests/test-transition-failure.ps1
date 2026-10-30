@@ -150,6 +150,50 @@ try {
   Assert ($card.ST -eq '已停止') "Probe-driven transition never converged (H1): ST=$($card.ST)."
   Assert ($card.Btn.IsEnabled) 'Probe-driven transition left the button disabled (H1 永久卡死).'
 
+  # ---- 4c. 重启两段式（B2）：停止中 →（phase='start' 中间回执）→ 启动中 ----
+  # 两点在这里才验得到：① 中间回执走真实的 Update-StatusTick 分流（直接调 Update-CardRestartPhase
+  # 会让 util.ps1 里漏掉 phase 分支也照样绿）；② 探测不许从两个方向抢跑过渡态。
+  $script:queue=[Collections.Concurrent.ConcurrentQueue[object]]::new()
+  $script:msgQueue=[Collections.Concurrent.ConcurrentQueue[string]]::new()
+  $script:svcState=@{}
+  $script:healthSeen=@{}
+  $card.LastToggle=[datetime]::MinValue
+  $card.TransitionAt=[datetime]::MinValue
+  Update-CardData 'TestService' '运行中' '正常'
+  Invoke-CardRestart $card
+  Assert ($card.ST -eq '停止中' -and -not $card.Btn.IsEnabled -and -not $card.BtnStop.IsEnabled) '重启应按停止处理（过渡态 + 双禁用）。'
+  # 停止阶段探测仍报「运行中」（stop 还没生效）：方向守卫必须丢弃，否则按钮重新点亮
+  Update-CardData 'TestService' '运行中' '正常'
+  Assert ($card.ST -eq '停止中') "重启停止阶段被探测抢跑：ST=$($card.ST)"
+  Assert (-not $card.Btn.IsEnabled) '重启停止阶段被探测点亮了启动键。'
+  # 中间回执：必须经 Update-StatusTick 才换段
+  $script:queue.Enqueue([pscustomobject]@{n='TestService';st=$null;h=$null;e=$card.PendingEpoch;phase='start'})
+  Update-StatusTick
+  Assert ($card.ST -eq '启动中' -and $card.LblSt.Text -eq '启动中') "中间回执没把过渡态换成启动中：ST=$($card.ST)"
+  Assert (-not $card.Btn.IsEnabled -and -not $card.BtnStop.IsEnabled) '启动阶段按钮应保持禁用。'
+  Assert ($script:svcState.Count -eq 0 -and $script:healthSeen.Count -eq 0) '中间回执不该落 svcState / 健康历史（它不是探测值）。'
+  # 启动阶段探测报「已停止」（迟到的 stop 快照）：同样丢弃，否则卡片闪回停止态、按钮解封
+  Update-CardData 'TestService' '已停止' ''
+  Assert ($card.ST -eq '启动中') "重启启动阶段被滞后探测抢跑：ST=$($card.ST)"
+  # 最终成功回执：不自行结束过渡态（等探测收敛），按钮保持禁用
+  Update-CardData 'TestService' $null $null -e $card.PendingEpoch -ack -ok $true
+  Assert ($card.ST -eq '启动中' -and -not $card.Btn.IsEnabled) "最终回执不该提前结束过渡态：ST=$($card.ST)"
+  # 探测收敛到运行中 + 连续两次健康 → 回到运行中
+  Update-CardData 'TestService' '运行中' '正常'
+  Assert ($card.ST -eq '运行中') "探测收敛后应回到运行中：ST=$($card.ST)"
+  # 第二次重启：启动阶段失败 → 回滚到「未知」而不是谎报某个终态，按钮立刻可用（探测 4 秒内纠正）
+  $card.LastToggle=[datetime]::MinValue
+  Invoke-CardRestart $card
+  $script:queue.Enqueue([pscustomobject]@{n='TestService';st=$null;h=$null;e=$card.PendingEpoch;phase='start'})
+  Update-StatusTick
+  Assert ($card.ST -eq '启动中') "第二次重启应进入启动阶段：ST=$($card.ST)"
+  Update-CardData 'TestService' $null $null -e $card.PendingEpoch -ack -ok $false
+  Assert ($card.ST -eq '未知') "重启失败应回滚到「未知」（不谎报终态），got [$($card.ST)]"
+  # 未知态不给启动键：这时服务到底停没停还没人确认，等下一拍探测（≤4s）再说
+  Assert (-not $card.Btn.IsEnabled) '未知态不该点亮启动键'
+  Update-CardData 'TestService' '已停止' ''
+  Assert ($card.ST -eq '已停止' -and $card.Btn.IsEnabled) '探测确认已停止后启动键应可用'
+
   # ---- 5a. 两个方向的门闩真值表 ----
   Assert (Test-CardCanStart '已停止') '已停止应可启动。'
   Assert (-not (Test-CardCanStart '运行中')) '运行中不可再启动。'
@@ -183,6 +227,6 @@ try {
   Assert ($card.ReadyToToggle) 'Non-transition failure should re-arm a healthy running card.'
   Assert ($card.BtnStop.IsEnabled) 'Non-transition failure left the close button disabled.'
 
-  Write-Output 'PASS: transition states have a failure exit (rollback on ok=false, timeout escape, queue-independent sweep); no permanent card lock.'
+  Write-Output 'PASS: transition states have a failure exit (rollback on ok=false, timeout escape, queue-independent sweep); restart switches 停止中→启动中 on the phase receipt via Update-StatusTick, and probes cannot pre-empt it in either phase; no permanent card lock.'
 } finally { $win.Close(); $script:sync.wake.Dispose() }
 

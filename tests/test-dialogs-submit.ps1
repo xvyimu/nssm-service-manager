@@ -109,6 +109,14 @@ try {
   Assert ($script:installed.Count -eq 0) '账户校验失败仍注册了服务。'
   Assert ($script:dialogErrors[0] -match '不支持的运行账户') "账户错误文案不对：$($script:dialogErrors[0])"
 
+  # ---- T3-k：探测方式 tcp——url 必须为空，probe 落进清单（数据库/gRPC 不再靠手改 services.json）----
+  $script:installed = @(); $script:dialogErrors = @(); $script:dialogWarnings = @()
+  $ok = Submit-AddService $win @{ n='SvcTcp'; p='8088'; exe=$fakeExe; url='http://127.0.0.1:8088'; dir=''; par=''; env=''; probe='tcp' }
+  Assert ($ok) "选 tcp 应能注册：$($script:dialogErrors -join ' / ')"
+  $tcpEntry = $script:svc['SvcTcp']
+  Assert ($tcpEntry -and $tcpEntry.probe -eq 'tcp') "tcp 口径没有落进清单：$($tcpEntry | ConvertTo-Json -Compress)"
+  Assert ($tcpEntry.url -eq '') 'tcp 口径必须置空 url（留着会让人以为探测按 HTTP 走）'
+
   # ---- T4：添加对话框的控件树（模态框在测试里打不开，但搭错了会在这里当场抛）----
   # 生产里这类错的表现是「点『添加服务』没反应」，读代码看不出来。
   $d = New-AddDialog
@@ -121,6 +129,13 @@ try {
   Assert (($tags -join '|') -eq 'LocalSystem|NT AUTHORITY\LocalService|NT AUTHORITY\NetworkService') "账户选项不对：$($tags -join '|')"
   Assert ($d.Account.SelectedItem.Tag -eq 'LocalSystem') "默认账户应是 LocalSystem，got [$($d.Account.SelectedItem.Tag)]"
   Assert ($d.Gpu.IsChecked -eq $false) 'GPU 勾选默认应为未选'
+  Assert ($d.Probe.Items.Count -eq 2 -and (($d.Probe.Items | ForEach-Object { $_.Tag }) -join '|') -eq 'auto|tcp') '探测方式下拉应有 auto/tcp 两项'
+  # 选 tcp：URL 置空并禁用；切回 auto 恢复可用（事件体不 GetNewClosure 会拿到 $null 控件）
+  $d.Inputs.url.Text = 'http://127.0.0.1:1'
+  $d.Probe.SelectedIndex = 1
+  Assert ($d.Inputs.url.Text -eq '' -and -not $d.Inputs.url.IsEnabled) '选 tcp 应置空并禁用 URL'
+  $d.Probe.SelectedIndex = 0
+  Assert ($d.Inputs.url.IsEnabled) '切回 auto 应恢复 URL 输入'
 
   # ---- T5：点真的「注册并启动」按钮——走真处理器，不直调 Submit-AddService ----
   # 直调 Submit 测不出「处理器引用了已返回函数的局部变量」：PowerShell 脚本块不是闭包，
@@ -165,16 +180,18 @@ try {
     Write-Output 'SKIP: 非交互会话，跳过 ShowDialog 模态测试（会永久阻塞）。'
   }
 
-  # ---- T3-f：Save-Svc 失败分支——服务已注册，提示手动迁移，仍关弹窗 ----
-  $script:installed = @(); $script:dialogWarnings = @()
+  # ---- T3-f：Save-Svc 失败分支——服务已注册但没写清单；必须保持窗口并说清处置 ----
+  # 原实现提示完就关窗，用户以为没加成，常见反应是再填一次 → NSSM 报服务已存在。
+  $script:installed = @(); $script:dialogWarnings = @(); $script:dialogErrors = @()
   function Save-Svc($data) { throw '磁盘只读' }
   $ok = Submit-AddService $win @{ n='SvcD'; p='8083'; exe=$fakeExe; url=''; dir=''; par=''; env='' }
-  Assert ($ok) 'Save 失败时服务已注册，仍应关弹窗（与成功一致）。'
-  Assert ($script:installed -contains 'SvcD') 'Save 失败路径未注册服务。'
-  Assert ($script:dialogWarnings.Count -eq 1 -and $script:dialogWarnings[0].msg -match '磁盘只读') 'Save 失败应弹带原因的警告框。'
-  Assert ($script:dialogWarnings[0].title -eq '保存失败') 'Save 失败警告标题不对。'
+  Assert (-not $ok) 'Save 失败时必须保持窗口（返回 $false），否则用户看不到「加没加成」。'
+  Assert ($script:installed -contains 'SvcD') 'Save 失败路径应已注册服务（不回滚 NSSM）。'
+  Assert ($script:dialogErrors.Count -eq 1 -and $script:dialogErrors[0] -match '磁盘只读') 'Save 失败应把原因写进错误正文。'
+  Assert ($script:dialogErrors[0] -match '已.*注册.*没写入清单') '错误正文应说清「已在 NSSM 注册但没写入清单」。'
+  Assert (-not $script:svc.Contains('SvcD')) 'Save 失败后内存清单不得留着 SvcD（下一次保存会把它写进磁盘）。'
 
-  Write-Output 'PASS: Submit-AddService covers required/port/env/account validation, sensitive-key OKCancel (cancel vs continue), account passthrough, GPU hint (non-blocking, suppressed for non-LocalSystem), success enqueue, and Save-failure branch; New-AddDialog builds a scrollable dialog with the 3 built-in accounts and LocalSystem preselected; clicking the real "注册并启动" button reaches Install-NssmService (guards the non-closure trap).'
+  Write-Output 'PASS: Submit-AddService covers required/port/env/account validation, sensitive-key OKCancel (cancel vs continue), account passthrough, GPU hint (non-blocking, suppressed for non-LocalSystem), success enqueue, probe=tcp shape, and Save-failure branch (window stays open); New-AddDialog builds a scrollable dialog with the 3 built-in accounts, LocalSystem preselected and an auto/tcp probe dropdown; clicking the real "注册并启动" button reaches Install-NssmService (guards the non-closure trap).'
 
   # ---- T2：Submit-RemoveCommand ----
   # 卡片在缓存：入队 remove 且置「删除中」过渡态

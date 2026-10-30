@@ -109,6 +109,33 @@ try {
   Write-Output 'PASS: 命令抛异常时产出失败回执，轮询循环继续存活。'
 } finally { Close-FakePoll $worker }
 
+# ---- restart 的中间回执（B2）：停止阶段结束后必须补一条 phase='start' ----
+# 修前只有一条最终回执：整个重启期间卡片写着「停止中」，看不出服务已经开始起来了。
+$worker=Start-FakePoll 1 'Stopped' 0 @{ waitStoppedTimeoutMs = 200; waitStoppedPollMs = 10 }
+try {
+  Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Restart worker did not start.'
+  $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='restart';e=7})
+  [void]$worker.Sync.wake.Set()
+  $items=@(); $deadline=[datetime]::UtcNow.AddSeconds(15)
+  while ([datetime]::UtcNow -lt $deadline) {
+    $it=$null
+    while ($worker.Sync.queue.TryDequeue([ref]$it)) { $items += $it }
+    if (@($items | Where-Object { $_.phase -eq 'start' }).Count -ge 1 -and @($items | Where-Object { $_.done }).Count -ge 1) { break }
+    Start-Sleep -Milliseconds 20
+  }
+  $phase=@($items | Where-Object { $_.phase -eq 'start' })
+  $final=@($items | Where-Object { $_.done })
+  Assert ($phase.Count -eq 1 -and $phase[0].e -eq 7 -and $phase[0].n -eq 'Fake0') "restart 应产出一条 phase=start 中间回执，got $($phase.Count)"
+  Assert ($final.Count -eq 1 -and $final[0].act -eq 'restart' -and $final[0].ok) "最终回执照旧收尾，got $($final.Count)"
+  $pi=-1; $fi=-1
+  for ($i=0; $i -lt $items.Count; $i++) {
+    if ($pi -lt 0 -and $items[$i].phase -eq 'start') { $pi=$i }
+    if ($fi -lt 0 -and $items[$i].done) { $fi=$i }
+  }
+  Assert ($pi -ge 0 -and $fi -gt $pi) "中间回执必须先于最终回执（phase@$pi final@$fi）"
+  Write-Output 'PASS: restart emits a phase=start receipt after the stop phase, then the usual final ack.'
+} finally { Close-FakePoll $worker }
+
 # ---- 全停止但刚下发命令：那一轮之后的睡眠必须用短间隔，不能走空闲长睡眠 ----
 # 修前：$sleepMs 只按「本轮有无运行中服务」判，1 个 Stopped 服务时 $toProbe 为空，
 # 走 ProbeIdleMs——卡片停在「启动中」最长约 15 秒才收到第一份探测结果。

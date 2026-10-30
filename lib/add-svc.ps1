@@ -6,12 +6,17 @@ if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
 function Add-SvcFromCli([string]$spec){
   # 只切前 6 段：第 7 段 Env 里的逗号必须原样保留。
   $parts = $spec -split ',', 7
-  if ($parts.Count -lt 3) { Write-Host "用法: -Add Name,Port,Exe[,Url,Dir,Args,Env]"; exit 1 }
+  if ($parts.Count -lt 3) { Write-Host "用法: -Add Name,Port,Exe[,Url|tcp,Dir,Args,Env]"; exit 1 }
   $n=$parts[0].Trim(); $exe=$parts[2].Trim()
   # 先 TryParse：裸 [int] 强转会让端口写成 `8080ms` 时抛栈，用户看不到用法。
   $p=0
-  if(-not [int]::TryParse($parts[1].Trim(),[ref]$p)){ Write-Host "端口必须是 1-65535 的整数：$($parts[1])"; Write-Host "用法: -Add Name,Port,Exe[,Url,Dir,Args,Env]"; exit 1 }
-  $url=if($parts.Count -gt 3){$parts[3].Trim()}else{"http://127.0.0.1:$p"}
+  if(-not [int]::TryParse($parts[1].Trim(),[ref]$p)){ Write-Host "端口必须是 1-65535 的整数：$($parts[1])"; Write-Host "用法: -Add Name,Port,Exe[,Url|tcp,Dir,Args,Env]"; exit 1 }
+  # 第 4 段写 tcp 是简写：等价于 probe=tcp 且 url 为空。数据库/gRPC/纯 socket 不需要 HTTP 探测，
+  # 不写这条就只能注册完再手改 services.json，否则卡片永远橙点。§Read-SvcFile
+  $urlRaw=if($parts.Count -gt 3){$parts[3].Trim()}else{''}
+  $probe=''
+  if($urlRaw -ieq 'tcp'){ $probe='tcp'; $url='' }
+  else { $url=if($urlRaw){$urlRaw}else{"http://127.0.0.1:$p"} }
   $dir=if($parts.Count -gt 4){$parts[4].Trim()}else{''}
   $par=if($parts.Count -gt 5){$parts[5].Trim()}else{''}
   # 第 7 段往后全属 Env；分号优先，逗号也能分（ConvertTo-EnvPairs 只在 KEY= 处断开）。
@@ -30,7 +35,7 @@ function Add-SvcFromCli([string]$spec){
     Write-Host "提示: 以下环境变量将明文写入注册表（BUILTIN\Users 可读）：$($sensitive -join ', ')"
     Write-Host "      推荐改用 *_FILE 路径让服务本体从密钥文件读，文件权限收口到 Administrators+SYSTEM。"
   }
-  $saveErr = Add-SvcEntry $n $p $url
+  $saveErr = Add-SvcEntry $n $p $url $probe
   if ($saveErr) {
     # 服务已注册但未落盘：不回滚（会丢可用服务），提示手动迁移。
     Write-Host "警告: 服务已注册但配置保存失败：$saveErr"

@@ -7,6 +7,9 @@
 #   桌面 lnk → launch.vbs（wscript 无控制台）→ ShellExecute runas pwsh → 管理员 GUI
 #   pwsh -File service-manager-gui.ps1（管理员下直接跑；非管理员会 VBS 提权）
 
+# $cfg 在本文件里没有引用，但 dot-source 的 lib/util.ps1 直接读调用方作用域的 $cfg（见其文件头），
+# 删掉会让 Save-Svc 找不到配置路径。静态分析看不到这种跨作用域用法，按用途抑制一次。
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments','',Justification='dot-source 的 util.ps1 读调用方作用域的 $cfg')]
 param(
   # CLI 添加服务（agent 友好，不弹 GUI）：-Add Name,Port,Exe[,Url,Dir,Args,Env]
   [string]$Add

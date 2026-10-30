@@ -80,6 +80,9 @@ function Invoke-PendingCommands {
       'restart' {
         if(-not (Invoke-Sc 'stop' $n '停止失败，重启中断')) { $ok=$false; break }
         [void](Wait-Stopped $n)
+        # 中间回执：停止阶段结束、开始启动。UI 收到后把过渡态从「停止中」换成「启动中」，
+        # 否则整个重启期间卡片都写着「停止中」，看不出它已经开始起来了。
+        $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$null;h=$null;e=$e;phase='start'})
         Start-Sleep -Milliseconds 500  # 端口 TIME_WAIT 余量
         $ok=Invoke-ServiceStart $n '重启后启动失败'
       }

@@ -175,6 +175,39 @@ function Invoke-CardToggle($card, [string]$source='DoubleClick') {
   Invoke-CardAction $card $action $source
 }
 
+# 右键「重启」：restart 在后台是 stop → 等 Stopped → start 的串行流程。下发时先按 stop 置
+# 「停止中」，否则卡片仍显示「运行中」、按钮可用，双击会再下发一条反向命令——后到的 stop
+# 落在 start 之后，服务被停掉，卡片却先显示过「运行中」。停止阶段结束后 poll 会补发
+# phase='start' 的中间回执，见 Update-CardRestartPhase。§Invoke-CardRestart
+function Invoke-CardRestart($card, [string]$source='Menu') {
+  if (-not $card) { return }
+  $name = $card.SvcName
+  $now = [datetime]::Now
+  # 删除中不许重启：那条路由 remove 回执决定，把卡片从「删除中」翻成「停止中」会让用户以为
+  # 删除变成了重启。命令驱动的启停中同样拒绝——已有命令在途，再压一条重启只会让前一条的回执
+  # 变成过期回执。探测驱动的卡死态（TransitionAt 仍是 MinValue）依旧放行：右键是那类状态的逃生口。
+  if ($card.ST -eq '删除中' -or ($card.ST -in @('启动中','停止中') -and $card.TransitionAt -ne [datetime]::MinValue)) {
+    Set-StatusMessage "$name 正在切换中，等这条命令结束再重启"
+    return
+  }
+  $script:lastActionAt = $now
+  Set-CardTransition $card '停止中' 0 $now
+  $card.PendingEpoch = (Send-ServiceCommand $name 'restart')
+  Set-StatusMessage "$name 重启中..."
+}
+
+# restart 的中间回执（停止阶段结束、开始启动）：把过渡态从「停止中」换成「启动中」。
+# 只认 epoch ≥ PendingEpoch 的回执，避免上一轮命令把这一轮的过渡态刷掉。§Update-CardRestartPhase
+function Update-CardRestartPhase([string]$n,[int]$e){
+  if (-not $script:cards.ContainsKey($n)) { return }
+  $c = $script:cards[$n]
+  if ($e -lt $c.PendingEpoch) { return }
+  # 只在「停止中」这一段换段：超时逃生（回滚到未知）或探测已经收尾后迟到的中间回执，
+  # 若把卡片重新推进「启动中」，会白等一个超时窗口，而服务其实已经停了。
+  if ($c.ST -ne '停止中' -or $c.TransitionAt -eq [datetime]::MinValue) { return }
+  Set-CardTransition $c '启动中' $e ([datetime]::Now)
+}
+
 # 批量启停（状态栏汇总标签右键）。目标来自「最近一次探测值」$script:svcState——
 # 卡片只在翻到那一页时才建，用 $script:cards 筛会漏掉翻页外的服务。
 # 只处理终态（已停止/运行中）：启动中/停止中/暂停/未安装一律不碰，避免和手动命令打架。
@@ -184,12 +217,21 @@ function Invoke-BatchCommand([string]$act) {
   if ($null -eq $script:svcState) { $script:svcState = @{} }
   $want = if ($act -eq 'start') { '已停止' } else { '运行中' }
   $label = if ($act -eq 'start') { '启动' } else { '停止' }
+  # 状态过期门闩：窗口刚打开、后台 runspace 死掉、或探测被限流时，svcState 可能是很久以前的值。
+  # 朝「其实已经停了」的服务再发 stop 只会刷一串 1056/1062；超过 2 个探测周期就不下发。
+  $maxAgeMs = 2 * $(if ($script:config.ProbeIntervalMs) { [int]$script:config.ProbeIntervalMs } else { 4000 })
+  $now = [datetime]::Now
+  $stale = 0
   $targets = @()
   foreach ($n in @($script:svc.Keys)) {
     $seen = $script:svcState[$n]
-    if ($seen -and $seen.st -eq $want) { $targets += $n }
+    if (-not $seen -or $seen.st -ne $want) { continue }
+    # 没有 at 的条目当作新鲜：旧夹具/外部直接写 svcState 时不该被静默跳过
+    if ($seen.at -and ($now - [datetime]$seen.at).TotalMilliseconds -gt $maxAgeMs) { $stale++; continue }
+    $targets += $n
   }
-  if (-not $targets.Count) { return "没有可$label 的服务（只处理已停止/运行中的终态）" }
+  $staleNote = if ($stale) { "（$stale 个状态过期已跳过）" } else { '' }
+  if (-not $targets.Count) { return "没有可$label 的服务（只处理已停止/运行中的终态）$staleNote" }
   if ($act -eq 'stop') {
     # 停止可逆但仍要一次确认：一次误点会把整台机器的服务全停掉
     $ok = $true
@@ -203,7 +245,7 @@ function Invoke-BatchCommand([string]$act) {
     # 有卡片才置过渡态（省一次探测周期的滞后）；没有卡片的服务靠探测收敛
     if ($c) { Set-CardTransition $c $(if ($act -eq 'start') { '启动中' } else { '停止中' }) $ep $now }
   }
-  "已下发 $($targets.Count) 个${label}命令"
+  "已下发 $($targets.Count) 个${label}命令$staleNote"
 }
 
 function New-Card([string]$name, $info){
@@ -317,7 +359,14 @@ function New-Card([string]$name, $info){
           # 右键是逃生口：绕过卡片按钮的状态门闩，直接下发——服务卡在 StopPending 时
           # 这是唯一还能下命令的入口（PROJECT.md 已知限制里承诺过）。失败回执不会错误
           # 回滚别人的过渡态，那由 Update-CardData 的 epoch 归属判断兜住，不靠这里拦。
-          { $_ -in @('start','stop','restart') } { Send-ServiceCommand $n $act }
+          { $_ -in @('start','stop','restart') } {
+            # 重启走 Invoke-CardRestart：先置「停止中」过渡态，避免重启期间还能再下发一条命令。
+            # 卡片不在缓存（极端：菜单开着时被 Render-Page 换掉）也照样下发，右键是逃生口。
+            if ($act -eq 'restart') {
+              $card = $script:cards[$n]
+              if ($card) { Invoke-CardRestart $card } else { [void](Send-ServiceCommand $n 'restart') }
+            } else { Send-ServiceCommand $n $act }
+          }
           'open'    { Open-PanelUrl $script:svc[$n].url }
           'log'     { Show-Log $n $script:window }
           'health'  { Show-HealthHistory $n $script:window }
