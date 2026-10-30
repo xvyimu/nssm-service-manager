@@ -42,13 +42,17 @@
 
 完整清单与「为什么这样取舍」在 `docs/PROJECT.md` §已知限制（含实测数据）。接手时必须知道的几条：
 
-1. **UAC 链路与重启两段态已实测，其余服务动作仍靠单测**：2026-10-30 从沙箱副本走非管理员入口 →
-   `launch.vbs` → UAC → 提权实例（日志 `Startup: admin=True` / `Window constructed: cards=4` /
-   `ShowDialog returned (normal exit path)`，父进程 `Elevation launcher exited: code=0`）。
-   同一轮用真实 NSSM 临时服务（`pwsh` 监听 59997，`probe=tcp`）验了右键重启：卡片
-   `运行中(绿) → 停止中(橙,双按钮禁用) → 启动中 → 运行中(绿)`，状态条「重启中…」，验完已
-   `nssm remove`（`sc query` 返回 1060）。**仍未被真机覆盖**：批量启停的真实下发、
-   暂停/继续（本机没有可暂停的服务）、删除全链路（单测用替身）。
+1. **真机已验证：UAC 链路、重启两段态、批量启停、删除全链路**（2026-10-30，全部用临时 NSSM 服务，
+   验完 `nssm remove` + `sc query` 1060）：
+   - UAC：非管理员入口 → `launch.vbs` → 提权实例（`admin=True` / `cards=4` / 正常退出码 0）；
+   - 重启：`运行中(绿) → 停止中(橙,双按钮禁用) → 启动中 → 运行中(绿)`，状态条「重启中…」；
+   - 批量：状态栏汇总标签右键 →「全部停止」（MessageBox 确认）→ 两卡「已停止」+ SCM 停；
+     再「全部启动」→ 两卡「运行中」+ SCM 起；
+   - 删除：右键 →「删除」→ 输入完整服务名点亮按钮 → 卡片消失、状态条「已删除」、
+     `services.json` 只剩另一个服务、`sc query` 1060。
+   **仍未被真机覆盖：暂停/继续**——NSSM 服务不接受 `PAUSE` 控制码（`sc pause` 返回 1052），
+   本机无法产生「已暂停」状态；该状态的渲染只有单测覆盖（`test-card-actions` 的 已暂停 用例）。
+   另：`ConsentPromptBehaviorAdmin=0` 的机器上提权是静默的，不会看到 UAC 弹窗。
 2. **全量写回，CLI 与 GUI 不能并行**：`Save-Svc` 无合并语义，GUI 常驻时 CLI 新增会被下一次 GUI
    保存覆盖。故 `-Add` 前用 `Global\` mutex 探测 GUI，在跑就拒绝。
 3. **探测驱动的中间态没有按钮出口**：服务真卡在 `StartPending` / `StopPending` 时卡片按钮禁用，
