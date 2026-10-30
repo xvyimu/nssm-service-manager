@@ -36,6 +36,8 @@ pwsh -NoProfile -File service-manager-gui.ps1
 
 日常用双击 `launch.vbs`（wscript 无控制台，不闪黑窗）→ UAC → 管理员 GUI。非管理员 PowerShell 入口会用它提权。
 
+不想 clone 也可以：从 [Releases](https://github.com/xvyimu/nssm-service-manager/releases) 下载 `service-manager-<版本>.zip`，解压后双击 `launch.vbs` 即可（包内含 `lib/` 与两份 example 配置，不含任何本机清单）。发布包由 `scripts/package-release.ps1` 生成，打 tag `v<版本>` 时由 `.github/workflows/release.yml` 自动发布。
+
 **UAC 与提权后的行为**：UAC 被拒时 `launch.vbs` 弹「需要管理员权限」提示并以退出码 1 结束，非管理员入口原样透传，日志里有 `Elevation launcher exited: code=1`。提权后的 GUI 由管理员进程持有，普通权限的任务管理器**结束不掉**它（UIPI 限制）——退出请用窗口 ✕ 或托盘「退出」。
 
 NSSM 路径按三档探测：`$env:NSSM_PATH` → `Get-Command nssm.exe` → scoop 安装路径。都找不到时弹窗提示安装。进程声明 DPI Aware，高缩放屏下不糊。
@@ -69,7 +71,11 @@ NSSM 路径按三档探测：`$env:NSSM_PATH` → `Get-Command nssm.exe` → sco
 | `services.example.json` | 服务清单示例（复制为 `services.json`；后者已 git 忽略） |
 | `config.example.json` | 可调常量示例（复制为 `config.json`；后者已 git 忽略） |
 | `scripts/set-service-params-acl.ps1` | 收紧 NSSM 服务 `Parameters` 注册表键 ACL（见下） |
+| `scripts/package-release.ps1` | 打发布 zip（`dist/service-manager-<VERSION>.zip`，不含本机清单/配置） |
+| `VERSION` | 当前版本号；打 tag `v<version>` 触发 `.github/workflows/release.yml` |
+| `PSScriptAnalyzerSettings.psd1` | 静态分析规则集与每条豁免的理由（CI 与本地共用） |
 | `tests/run-all.ps1` | 语法检查 + 全部回归测试 |
+| `tests/analyze.ps1` | PSScriptAnalyzer（Error/Warning 必须为 0） |
 | `tests/make-screenshot.ps1` | 离屏渲染主窗口导出 `assets/screenshot.png` |
 | `tests/make-demo.ps1` | 离屏渲染 12 帧 PNG 序列，供 ffmpeg 合成 `assets/demo.gif` |
 | `docs/IMPLEMENTATION-NOTES.md` | 实现注记：代码里的 `§小节名` 指针指向这里（踩坑记录、实测数据、为什么这么写） |
@@ -215,17 +221,17 @@ pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName <服务名
 
 ## 添加新服务
 
-**GUI**：工具栏「添加服务」→ 3 必填（服务名/端口/可执行文件）+ 高级折叠（URL/工作目录/启动参数/环境变量/运行账户/GPU 勾选）。
+**GUI**：工具栏「添加服务」→ 3 必填（服务名/端口/可执行文件）+ 高级折叠（探测方式/URL/工作目录/启动参数/环境变量/运行账户/GPU 勾选）。探测方式默认「自动（TCP 通且 HTTP 200）」；数据库 / gRPC / 纯 socket 选「只探测 TCP」，选了会把 URL 置空并禁用——非 HTTP 服务按 HTTP 探测必然失败，卡片会永远橙点。
 
 运行账户只列三个内置账户——`LocalSystem`（默认）、`LocalService`、`NetworkService`，**都不需要密码**。CLI `-Add` 没有账户参数，注册的即默认 `LocalSystem`；要改走 GUI 或 `nssm set <服务> ObjectName <账户名>`。自定义用户账户不做：nssm 要求密码，而密码只能作为命令行参数传（同机管理员在进程列表里可见），这个暴露面不值得为一次性操作引入。勾选「GPU / 桌面交互程序」且账户仍是 `LocalSystem` 时弹提示（不阻断）：GPU 程序在 LocalSystem 下未必拿得到显卡，视驱动与会话形态而定。
 
 **CLI（agent 友好）**：
 
 ```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,Port,Exe[,Url,Dir,Args,Env]
+pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,Port,Exe[,Url|tcp,Dir,Args,Env]
 ```
 
-不弹 GUI，注册 + 启动后退出。`Env` 多对用分号分隔（`KEY=VAL;KEY2=VAL2`），逗号也认。**值里自带分隔符不会拆坏**：只有「这一段含 `=`」才算新变量，不含 `=` 的片段并回上一个值，所以 `NO_PROXY=127.0.0.1,localhost`、`PATH=C:\a;C:\b` 都按一条处理；变量名不限于字母数字开头（`2FA_TOKEN=x`、`ProgramFiles(x86)=C:\PF` 照样识别）。
+不弹 GUI，注册 + 启动后退出。第 4 段写 `tcp` 是简写：等价于 `"probe": "tcp"` 且 URL 为空（数据库 / gRPC / 纯 socket 不用 HTTP 探测），完整形如 `-Add pg,5432,C:\pgsql\bin\pg_ctl.exe,tcp`。`Env` 多对用分号分隔（`KEY=VAL;KEY2=VAL2`），逗号也认。**值里自带分隔符不会拆坏**：只有「这一段含 `=`」才算新变量，不含 `=` 的片段并回上一个值，所以 `NO_PROXY=127.0.0.1,localhost`、`PATH=C:\a;C:\b` 都按一条处理；变量名不限于字母数字开头（`2FA_TOKEN=x`、`ProgramFiles(x86)=C:\PF` 照样识别）。
 
 `services.json` 解析失败时 `-Add` **直接退出（码 1）**而不是继续——继续会把回落的示例清单写回你的真实配置。GUI 侧也不示弱：`Save-Svc` 在同样的条件下拒绝落盘，免得点一次「添加」就把示例清单覆盖真实文件（写前会把上一版留成 `services.json.bak`，载入后文件被外部改过也拒写）。服务名限 `A-Za-z0-9_.-`；exe 必须是**存在的文件**的**完整本地路径**——UNC（含 `//host/share` 这种正斜杠写法）、目录、相对路径一律拒，因为注册成 LocalSystem 后，UNC 等于把提权面交给共享写者。两条入口共用 `Test-SvcInput`（校验顺序：名称 → exe → 端口 → 重名）；`Test-SvcAccount` 把关账户白名单；`Get-NssmSetSpec` 收口要 set 的全部键值，`Install-NssmService` 只负责执行与失败回滚。
 
@@ -233,9 +239,12 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 
 ```powershell
 pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 自动收集 tests/test-*.ps1（当前 20 项）
+pwsh -NoProfile -File tests/analyze.ps1              # PSScriptAnalyzer（Error/Warning 必须为 0）
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-tmp/，已 git 忽略）
 ```
+
+`tests/analyze.ps1` 需要 `Install-Module PSScriptAnalyzer -Scope CurrentUser`；规则集与每条豁免的理由在 `PSScriptAnalyzerSettings.psd1`（CI 的 `static-analysis` 任务跑同一条命令）。
 
 `run-all.ps1` 用通配收集 `tests/test-*.ps1`（`test-helpers.ps1` 除外），新增用例不需要登记；每个用例必须至少打出一行 `PASS:`，否则判失败——否则一个「零断言但退出码 0」的脚本会让 CI 静默变绿。
 

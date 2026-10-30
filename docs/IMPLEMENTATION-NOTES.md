@@ -97,10 +97,27 @@ epoch 只过滤**命令回执**：旧命令的回执不解除新命令的过渡�
 卡片还停在过渡态文字上，而后续探测会被上面的过渡态守卫按「期望终态」永久丢弃
 （启动失败时服务恒为已停止，永远等不到运行中）。故先回滚到命令前的终态，按钮恢复可用。
 
-右键菜单的启停直接 Send-ServiceCommand、不置过渡态（TransitionAt 仍为 MinValue）。
+右键菜单的启停（start / stop）直接 Send-ServiceCommand、不置过渡态（TransitionAt 仍为 MinValue）。
 失败回执只按 **epoch 归属** 决定回不回滚：`$e -ne $c.PendingEpoch` 时（右键命令的 epoch
 恒大于卡片当前那条）只重算按钮，不动别人的过渡态。原来的判据是「卡片有没有 TransitionAt」，
 会把双击建立的「停止中」刷回「运行中」，而那条停止命令其实还在途。
+
+**重启（restart）是两段式**（2026-10-30）：右键「重启」不再直接入队，而是走 `Invoke-CardRestart`
+——先按停止处理置「停止中」（双按钮禁用、双击被状态门闩拒掉），停止阶段结束后 poll 补发一条
+`phase='start'` 的中间回执（不带 st/h），`Update-StatusTick` 收到后换成「启动中」，最终回执照旧
+按 epoch 收尾。修前 restart 不置过渡态：卡片仍显示「运行中」、按钮可用，双击会再下发一条反向
+命令——后到的 stop 落在 start 之后，服务被停掉而卡片先显示过「运行中」。
+
+中间回执不是探测值，不写 `svcState` / 健康历史；`$e -lt PendingEpoch` 的旧回执被忽略。
+两个阶段都受方向守卫保护（停止中只认已停止、启动中只认运行中），所以 stop 未生效时的「运行中」
+或迟到的「已停止」都不会抢跑过渡态。失败时回滚到「未知」而不是谎报终态（两段交互后 PrevST
+可能是中间态，`Set-CardRollback` 会把它过滤掉），下一拍探测（≤4s）纠正。
+
+两条额外守卫（实测补的）：① **删除中、命令驱动的切换中拒绝重启**——删除的终态只能由 remove
+回执决定，把卡片从「删除中」翻成「停止中」会让用户以为删除变成了重启；命令驱动的切换中再压一条
+重启，只会让前一条的回执变成过期回执。② 探测驱动的卡死态（`TransitionAt = MinValue`，SCM 卡在
+`StopPending`）**仍允许**重启——右键是那类状态的唯一逃生口。另外 `Update-CardRestartPhase` 只在
+卡片仍处「停止中」且命令驱动时才换段，超时逃生后迟到的中间回执不会再把卡片推进「启动中」。
 
 成功回执：解封按钮 + 起冷却，但门闩必须按**当前**状态重算——不能无条件置 $true。
 右键菜单的启停不经 Invoke-CardToggle，故回执到达时卡片可能仍停在「已停止」而没进过渡态；
@@ -196,6 +213,10 @@ services.json，调用方无从判断），来源只能由写入方在这里讲�
 `.bak` 只读会在写前自动清属性（它本来就是我们自己的上一版）；被其它进程占用时 Replace 失败，
 整次保存报错——宁可让用户看到失败，也不静默丢掉备份。
 
+**目标文件只读**（2026-10-30 加）：`File.Replace` 要求目标可写，被用户或备份工具标成只读后每次保存
+都报「无法删除要被替换的文件」，而错误里没有任何「只读」线索。写前对 `$cfg` 做同样的属性清理
+（它就是我们的配置文件），清不掉再抛一句「services.json 是只读的：<path>」。
+
 ### 只读 Web 视图（webview.ps1 / webview-core.ps1 / webview-server.ps1）
 
 三个文件不是拆着玩：runspace 里不能 dot-source，只能把**文本**拼进去。core 是纯函数（无顶层语句），
@@ -229,6 +250,11 @@ server 是顶层循环；拼的是这两份。第一版把 `webview.ps1` 全文�
 每个目标都走 `Send-ServiceCommand`（同一条队列、同一套 epoch），有卡片的再 `Set-CardTransition`：
 省掉一个探测周期的滞后和这期间的双击窗口；没卡片的就靠探测收敛，不额外造状态。
 
+**过期状态门闩**（2026-10-30）：`$script:svcState[$n]` 除 `st/h` 外还落一个 `at`（探测落库时刻）。
+批量跳过 `at` 早于 `2 × ProbeIntervalMs` 的条目，并在返回文案里说明「N 个状态过期已跳过」——
+窗口刚打开、后台 runspace 死掉或探测被限流时，旧值会让批量朝「其实已经停了」的服务再发 stop，
+刷一串 1056/1062。`at` 缺失的条目当新鲜处理（旧夹具/外部直接写 `svcState` 时不该被静默跳过）。
+
 ### 健康历史（health.ps1 + poll.ps1 + util.ps1）
 
 事件形状 `{ts,n,st,h}`，一天一个 `health-YYYYMMDD.ndjson`。`Test-HealthChanged` 只放行变化：
@@ -242,6 +268,19 @@ server 是顶层循环；拼的是这两份。第一版把 `webview.ps1` 全文�
 读取从最新文件、最新行往前读，坏行跳过；清理只认标准文件名 `health-\d{8}`，按 `HealthKeepDays`
 删整个文件——不做行级裁剪，文件本身就是一天的量。`HealthHistory=false` 时队列为 `$null`，
 后台 `if ($sync.healthQ)` 整段跳过，不留「写空目录」的路径。
+
+**只读尾部**（2026-10-30）：`Get-HealthEvents` 原来 `ReadAllLines` 把每个文件整份读进来，再逐行
+`ConvertFrom-Json`，按天增长后点一次「健康历史」就卡 UI（与日志窗口同类的旧问题）。
+
+现在的读法是 `Invoke-HealthTailScan`：从文件末尾按 64 KiB 块反向扫，块内找 0x0A 切行、再按行解码
+（字节级切行，多字节字符不会被截断；跨块的行用 `carry` 拼回），边扫边判、凑够 `Limit` 就停。
+`Read-HealthTailLines` 是它的「按行收集」封装，`$Days` 只决定最多看几个文件。
+
+两层预筛（服务名是 ASCII，落盘用的是 `ConvertTo-Json -Compress`，所以 `"n":"<name>"` 可直接子串匹配）：
+**块级**——整块（及遗留的 `carry`）都不含目标就只留块首半行、跳过块内所有行；**行级**——不命中的行
+不付 UTF-8 解码与回调的钱。没有块级预筛时，稀疏服务（一天只变化一次、却在 20MB 文件头）要逐行
+扫完，实测 8.8s；只加行级预筛是 1.9s；两层都加后 22MB/30 万行里捞 1 条是 237ms，密集场景（尾部 200
+条）55ms。`test-health` 固定两条断言：20MB 尾部 200 条 < 500ms、4.5MB 稀疏 1 条 < 500ms。
 
 ### Test-SvcFileChanged / Invoke-SvcReload（util.ps1）
 
@@ -259,6 +298,13 @@ F5 走 `Invoke-SvcReload` 重新 `Load-Svc`，把 `$script:sync.svc` 指向新�
 
 把新服务写进内存清单并落盘——CLI（-Add）与 GUI 对话框共用一份。
 返回 $null 表示成功；否则返回错误信息，由调用方决定怎么提示、是否关窗/退出。
+
+**copy-on-write**（2026-10-30）：先按当前清单复制一份 `$next`，把新条目写进副本，`Save-Svc $next`
+成功后才替换 `$script:svc` 并同步 `$sync.svc`（后台每轮重读这个键）。原来先改 `$script:svc` 再保存，
+保存抛错时那条服务留在内存里——用户以为没加成，下一次任意保存（比如删掉别的服务）会把它写进磁盘。
+失败路径因此变成「要么都在，要么都不在」。
+
+`$probe` 只在非默认口径时落盘（`tcp` / `http`），`auto` 不写：它是缺省值，写出来只是噪声。
 
 ### Send-ServiceCommand
 
@@ -775,7 +821,8 @@ config 可能未加载（单独点源本模块时）——用 $null 判断回落
 ### Add-SvcFromCli
 
 CLI 模式：解析逗号分隔参数，注册 NSSM 服务并启动，不弹 GUI
-用法：-Add Name,Port,Exe[,Url,Dir,Args,Env]
+用法：-Add Name,Port,Exe[,Url|tcp,Dir,Args,Env]
+  第 4 段写 tcp 是简写：等价于 probe=tcp 且 url 为空（数据库/gRPC/纯 socket 不走 HTTP 探测）
   Env 多对用分号分隔：KEY=VAL;KEY2=VAL2；逗号分隔也认（只在 KEY= 处断开，值里的逗号不算）
 
 Env：第 7 段往后全部属于 Env（Args 可能含逗号的情况不处理——Args 不应含逗号）
