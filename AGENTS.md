@@ -8,6 +8,12 @@
 # 回归测试（不需要管理员；CI 的 regression 任务跑这个）
 pwsh -NoProfile -File tests/run-all.ps1
 
+# 静态分析（CI 的 static-analysis 任务跑这个；首次需 Install-Module PSScriptAnalyzer -Scope CurrentUser）
+pwsh -NoProfile -File tests/analyze.ps1
+
+# 打发布 zip（dist/，不含本机清单）；发布靠打 tag v<version> 触发 release workflow
+pwsh -NoProfile -File scripts/package-release.ps1
+
 # 启动 GUI（会弹 UAC；NSSM/sc.exe 需要管理员）
 pwsh -NoProfile -File service-manager-gui.ps1
 
@@ -15,7 +21,7 @@ pwsh -NoProfile -File service-manager-gui.ps1
 scoop install nssm
 ```
 
-改动后：**跑 `pwsh -NoProfile -File tests/run-all.ps1`**，全绿才算完。测试是 WPF/STA，需 Windows。
+改动后：**跑 `pwsh -NoProfile -File tests/run-all.ps1` 和 `tests/analyze.ps1`**，两条全绿才算完。测试是 WPF/STA，需 Windows。
 
 ## 项目结构
 
@@ -23,7 +29,7 @@ scoop install nssm
 service-manager-gui.ps1   # 主入口：CLI 分支 + 提权 + 模块加载 + 窗口启动
 launch.vbs                # 双击入口（wscript 无控制台 → runas pwsh → 管理员 GUI）
 lib/                      # 模块（config/theme/util/poll/svc-common/svc-input/nssm/add-svc/dialogs/logview/tray/card）
-scripts/                  # 独立脚本（set-service-params-acl.ps1）
+scripts/                  # 独立脚本（set-service-params-acl.ps1 / package-release.ps1）
 tests/                    # 回归测试（run-all.ps1 汇总；test-*.ps1 单项）
 docs/                     # PROJECT.md（架构与决策）/ CHANGELOG.md / HANDOFF.md
 config.example.json       # 配置示例（实配 config.json 已 gitignore）

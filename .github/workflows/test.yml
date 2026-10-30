@@ -16,6 +16,19 @@ jobs:
         shell: pwsh
         run: ./tests/run-all.ps1
 
+  static-analysis:
+    # 只报 Error/Warning；豁免规则与理由在 PSScriptAnalyzerSettings.psd1。
+    # 先装模块再跑，本地复现命令相同：pwsh -NoProfile -File tests/analyze.ps1
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: ./tests/analyze.ps1
+
   secrets:
     # 本地有 .githooks/pre-commit 兜底，但那要每个 clone 手动 git config core.hooksPath
     # 才生效，也覆盖不到「网页直接提交 / fork 后提 PR」。CI 这一层是独立的。
