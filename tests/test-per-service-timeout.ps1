@@ -53,7 +53,10 @@ try {
     Assert ($script:svcFieldWarnings.Count -eq 1) "toggleTimeoutMs=$bad 应记一条提示，got $($script:svcFieldWarnings.Count)"
     Assert ($script:svcFieldWarnings[0] -match 'toggleTimeoutMs') "提示应点名字段，got $($script:svcFieldWarnings[0])"
   }
-} finally { Remove-Item -LiteralPath $tmp -Force -EA SilentlyContinue }
+} finally {
+  # Save-Svc 会把上一版留成 $tmp.bak，不删就每天在 %TEMP% 攒一个
+  Remove-Item -LiteralPath @($tmp, "$tmp.bak") -Force -EA SilentlyContinue
+}
 
 # ---- 1a. 键名大小写不敏感 ----
 # README 表格与 config.json 用的都是大驼峰 ToggleTimeoutMs，而 ConvertFrom-Json -AsHashtable

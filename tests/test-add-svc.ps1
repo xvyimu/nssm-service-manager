@@ -159,7 +159,9 @@ function sc.exe {
   if ($args[0] -eq 'start') { $global:LASTEXITCODE = 1053; return }
   $global:LASTEXITCODE = 0
 }
-Add-SvcFromCli "__sm_start_fail__,9092,$fakeExe3"
+# 子进程 exit 也会跑 finally：不删的话每跑一次测试就在 %TEMP% 留一个 0.2 KB 的空壳
+try { Add-SvcFromCli "__sm_start_fail__,9092,$fakeExe3" }
+finally { Remove-Item -LiteralPath $fakeExe3 -Force -EA SilentlyContinue }
 '@
 [IO.File]::WriteAllText($probeStart, $probeStartBody, [Text.UTF8Encoding]::new($false))
 try {
@@ -187,7 +189,9 @@ $fakeExe2 = Join-Path ([IO.Path]::GetTempPath()) "sm-save-fail-$([guid]::NewGuid
 [IO.File]::WriteAllText($fakeExe2, 'placeholder', [Text.UTF8Encoding]::new($false))
 function Invoke-Ok { $global:LASTEXITCODE = 0 }
 function Save-Svc($data) { throw "disk full" }
-Add-SvcFromCli "__sm_save_fail__,9091,$fakeExe2"
+# 同上：Add-SvcFromCli 在这里会 exit 1，finally 仍会执行
+try { Add-SvcFromCli "__sm_save_fail__,9091,$fakeExe2" }
+finally { Remove-Item -LiteralPath $fakeExe2 -Force -EA SilentlyContinue }
 '@
 [IO.File]::WriteAllText($probe, $probeBody, [Text.UTF8Encoding]::new($false))
 try {
