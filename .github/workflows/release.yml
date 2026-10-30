@@ -1,0 +1,41 @@
+name: release
+
+# 打 tag（如 v0.9.0）即发布：VERSION 必须与 tag 一致，否则先修再发。
+# 产物是 scripts/package-release.ps1 生成的 zip（脚本 + example 配置 + README，不含本机清单）。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check VERSION matches tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $version = (Get-Content ./VERSION -Raw -Encoding UTF8).Trim()
+          $tag = '${{ github.ref_name }}'.TrimStart('v')
+          if ($version -ne $tag) { throw "VERSION ($version) 与 tag ($tag) 不一致" }
+
+      - name: Regression tests
+        shell: pwsh
+        run: ./tests/run-all.ps1
+
+      - name: Build zip
+        shell: pwsh
+        run: ./scripts/package-release.ps1
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $zip = (Get-ChildItem ./dist/service-manager-*.zip | Sort-Object LastWriteTime | Select-Object -Last 1).FullName
+          gh release create '${{ github.ref_name }}' $zip --title '${{ github.ref_name }}' --generate-notes

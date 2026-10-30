@@ -26,5 +26,9 @@ config.json.*.tmp
 # 演示 GIF 帧序列临时目录（make-demo.ps1 产物，合成完即删）
 .demo-tmp/
 
+# 发布产物（scripts/package-release.ps1）与本仓临时脚本
+dist/
+.tmp/
+
 # PowerShell
 *.ps1.bak
