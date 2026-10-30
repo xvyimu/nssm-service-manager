@@ -1,11 +1,19 @@
 # 运行时产物：服务日志（NSSM AppStdout/Stderr 指向此处）
 logs/*.log
 
+# 健康历史（按天 NDJSON，HealthHistory=true 时写入）
+logs/health/
+
 # 本机实配（服务清单）——仓里只放 services.example.json
 services.json
 
 # 本机实配（可调常量覆盖）——仓里只放 config.example.json
 config.json
+
+# Save-Svc 每次写前留下的上一版（含本机服务名/端口，绝不入仓）
+services.json.bak*
+config.json.bak*
+tests/config.json.bak
 
 # Save-Svc 原子写的临时文件（services.json.$PID.$guid.tmp）——崩溃可能残留，别让它入仓
 services.json.*.tmp

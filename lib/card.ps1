@@ -85,16 +85,17 @@ function Test-TransitionTimedOut($card, [datetime]$now){
   ($now - $card.TransitionAt).TotalMilliseconds -ge $limit
 }
 
-# 两个动作各自的门闩：启动只看状态；关闭额外要求健康正常（把不健康的服务关掉通常不是用户本意）
+# 两个动作各自的门闩：启动只看状态；关闭也只看状态——健康探测的失败原因很多（非 HTTP 服务、
+# 面板返回 401、探测抖动），把它接进按钮可用性会让服务正常却关不掉。健康只影响双击。
 function Test-CardCanStart([string]$state){ $state -eq '已停止' }
-function Test-CardCanStop([string]$state, [string]$health){
-  $state -eq '运行中' -and $health -eq '正常'
+function Test-CardCanStop([string]$state){
+  $state -eq '运行中'
 }
 
 # 按状态/健康算按钮可用性。三处共用一份，免得某条路径只更新了一个按钮。
 function Update-CardButtons($card){
   if (-not $card) { return }
-  $card.ReadyToToggle = Test-CardCanStop $card.ST $card.H
+  $card.ReadyToToggle = Test-CardCanStop $card.ST
   $card.Btn.IsEnabled = Test-CardCanStart $card.ST
   if ($card.BtnStop) { $card.BtnStop.IsEnabled = $card.ReadyToToggle }
 }
@@ -150,9 +151,14 @@ function Invoke-CardAction($card, [string]$action, [string]$source='Button') {
     Set-StatusMessage "$name 状态尚未就绪"
     return
   }
-  if ($action -eq 'stop' -and -not (Test-CardCanStop $state $card.H)) {
-    $detail=if ($detailed) { '（健康非正常）' } else { '' }
-    Set-StatusMessage "$name 服务未就绪$detail，暂不能关闭"
+  if ($action -eq 'stop' -and -not (Test-CardCanStop $state)) {
+    Set-StatusMessage "$name 状态尚未就绪"
+    return
+  }
+  # 双击保留健康门闩（按钮不设）：探测没过时双击很容易变成误关，而按钮是显式动作。
+  if ($detailed -and $action -eq 'stop' -and $card.H -ne '正常') {
+    $why = if ($card.H) { $card.H } else { '未就绪' }
+    Set-StatusMessage "$name 健康探测未通过（$why），要关闭请用「关闭」按钮或右键菜单"
     return
   }
 
@@ -167,6 +173,37 @@ function Invoke-CardAction($card, [string]$action, [string]$source='Button') {
 function Invoke-CardToggle($card, [string]$source='DoubleClick') {
   $action = if ($card.ST -eq '运行中') { 'stop' } else { 'start' }
   Invoke-CardAction $card $action $source
+}
+
+# 批量启停（状态栏汇总标签右键）。目标来自「最近一次探测值」$script:svcState——
+# 卡片只在翻到那一页时才建，用 $script:cards 筛会漏掉翻页外的服务。
+# 只处理终态（已停止/运行中）：启动中/停止中/暂停/未安装一律不碰，避免和手动命令打架。
+# 返回一句给状态栏的话。§Invoke-BatchCommand
+function Invoke-BatchCommand([string]$act) {
+  # 单测/早期调用可能没初始化；没有探测值时按「无目标」处理，不抛
+  if ($null -eq $script:svcState) { $script:svcState = @{} }
+  $want = if ($act -eq 'start') { '已停止' } else { '运行中' }
+  $label = if ($act -eq 'start') { '启动' } else { '停止' }
+  $targets = @()
+  foreach ($n in @($script:svc.Keys)) {
+    $seen = $script:svcState[$n]
+    if ($seen -and $seen.st -eq $want) { $targets += $n }
+  }
+  if (-not $targets.Count) { return "没有可$label 的服务（只处理已停止/运行中的终态）" }
+  if ($act -eq 'stop') {
+    # 停止可逆但仍要一次确认：一次误点会把整台机器的服务全停掉
+    $ok = $true
+    try { $ok = Confirm-BatchStop $script:window $targets.Count } catch { $ok = $false }
+    if (-not $ok) { return '已取消' }
+  }
+  $now = [datetime]::Now
+  foreach ($n in $targets) {
+    $ep = Send-ServiceCommand $n $act
+    $c = $script:cards[$n]
+    # 有卡片才置过渡态（省一次探测周期的滞后）；没有卡片的服务靠探测收敛
+    if ($c) { Set-CardTransition $c $(if ($act -eq 'start') { '启动中' } else { '停止中' }) $ep $now }
+  }
+  "已下发 $($targets.Count) 个${label}命令"
 }
 
 function New-Card([string]$name, $info){
@@ -268,7 +305,7 @@ function New-Card([string]$name, $info){
     param($s,$e)
     $n = $s.SvcName
     $ctx = New-Object System.Windows.Controls.ContextMenu
-    $items = @(@('启动','start'),@('停止','stop'),@('重启','restart'),@('面板','open'),@('日志','log'),@('安全检查','security'),@('删除','remove'))
+    $items = @(@('启动','start'),@('停止','stop'),@('重启','restart'),@('面板','open'),@('日志','log'),@('健康历史','health'),@('安全检查','security'),@('删除','remove'))
     foreach ($d in $items) {
       # Tag 存结构而不是 'act|name' 拼串：服务名允许的字符集不含 |，但配置是手写的，
       # 名字里带 | 时拼串会把右键动作打偏到截断后的另一个服务上。
@@ -283,6 +320,7 @@ function New-Card([string]$name, $info){
           { $_ -in @('start','stop','restart') } { Send-ServiceCommand $n $act }
           'open'    { Open-PanelUrl $script:svc[$n].url }
           'log'     { Show-Log $n $script:window }
+          'health'  { Show-HealthHistory $n $script:window }
           'security'{ Show-SecurityCheck $n }
           'remove'  { Show-Remove $n $script:window; Render-Page }
         }

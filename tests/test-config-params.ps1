@@ -94,6 +94,20 @@ try {
   [int]$script:config.TcpTimeoutMs | Out-Null   # 主脚本这步强转不该抛
   Assert (-not $script:configWarning) '类型问题是提示，不是「config.json 无效」'
 
+  # ---- 2c. 数值越界：-1 会让 WaitOne/CTS 无限等待，0 会让分页除零 → 回落默认 + 提示 ----
+  $script:config = $null; $script:configWarning = $null; $script:configNotices = $null
+  [IO.File]::WriteAllText((Join-Path $RepoRoot 'config.json'),
+    '{"TcpTimeoutMs":-1,"PerPage":0,"HttpTimeoutMs":9999999,"BogusKey":1}', [Text.UTF8Encoding]::new($false))
+  . (Join-Path $RepoRoot 'lib/config.ps1')
+  Assert ($script:config.TcpTimeoutMs -eq 200) "负超时应回落 200，got $($script:config.TcpTimeoutMs)"
+  Assert ($script:config.PerPage -eq 6) "PerPage=0 应回落 6，got $($script:config.PerPage)"
+  Assert ($script:config.HttpTimeoutMs -eq 3000) "超过上限应回落 3000，got $($script:config.HttpTimeoutMs)"
+  $notices = @($script:configNotices)
+  Assert ($notices.Count -eq 4) "3 个越界 + 1 个未知键应给 4 条提示，got $($notices -join ' | ')"
+  Assert (@($notices | Where-Object { $_ -match 'TcpTimeoutMs=-1' }).Count -eq 1) '越界提示应带实际值'
+  Assert (@($notices | Where-Object { $_ -match '未知键 BogusKey' }).Count -eq 1) '未知键应提示'
+  $null = [math]::Sqrt($script:config.PerPage)   # 分页这步不该因除零抛出
+
   # ---- 3. mock restart：Wait-Stopped 用 $sync 注入的 waitMs=50——
   # 若误用默认 6000，restart 会卡在轮询直到 6s，executed 里只有 stop；
   # 用 50 则 ~550ms 内 stop+start 都到，是「注入值确实生效」的判别。

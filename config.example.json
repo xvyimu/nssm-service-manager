@@ -11,6 +11,8 @@
   "ExtCommandTimeoutMs":  60000,
   "LogKeepCount":         10,
   "LogKeepDays":          14,
+  "HealthHistory":        true,
+  "HealthKeepDays":       30,
   "LogDir":               "",
   "ProbeThrottleLimit":   8,
   "ProbeIntervalMs":      4000,
@@ -21,6 +23,8 @@
   "AppRotateSeconds":     86400,
   "AppStopMethodConsole": 5000,
   "AckPollIntervalMs":    400,
+  "WebView":              false,
+  "WebViewPort":          0,
   "TrayEnabled":          false,
   "MinimizeToTray":       false,
   "CloseToTray":          false

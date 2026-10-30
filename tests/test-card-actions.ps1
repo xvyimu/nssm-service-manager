@@ -47,6 +47,9 @@ try {
   )
   foreach ($source in 'Button','DoubleClick') {
     foreach ($case in $cases) {
+      # 健康门闩只保留在双击路径；按钮对「运行中但不健康」必须放行（否则非 HTTP 服务永远关不掉）。
+      # 按钮侧的放行单独在下面断言。
+      if ($case.Error -eq 'health' -and $source -eq 'Button') { continue }
       $card=New-Card 'TestService' $script:svc.TestService
       $script:cmdQueue=[Collections.Concurrent.ConcurrentQueue[object]]::new()
       Update-CardData $card.SvcName $case.State $case.Health
@@ -71,7 +74,7 @@ try {
         Assert (-not $script:sync.wake.WaitOne(0)) 'Rejected command woke worker.'
         Assert ($script:cmdQueue.IsEmpty -and $card.ST -eq $case.State -and $card.LastToggle -eq $lastToggle) "$source guard changed state or queued an action."
         $expected=switch ($case.Error) {
-          'health' { if ($source -eq 'Button') {'TestService 服务未就绪，暂不能关闭'} else {'TestService 服务未就绪（健康非正常），暂不能关闭'} }
+          'health' {"TestService 健康探测未通过（$($case.Health)），要关闭请用「关闭」按钮或右键菜单"}
           'busy' { if ($source -eq 'Button') {'TestService 正在切换中'} else {'TestService 正在切换中，请稍候'} }
           'unknown' {'TestService 状态尚未就绪'}
           'cooldown' { $null }
@@ -84,6 +87,15 @@ try {
       }
     }
   }
+  # 按钮对「运行中但不健康」必须放行：这是非 HTTP 服务的唯一出口（P0-1）。
+  $card=New-Card 'TestService' $script:svc.TestService
+  $script:cmdQueue=[Collections.Concurrent.ConcurrentQueue[object]]::new()
+  Update-CardData $card.SvcName '运行中' '超时'
+  Assert ($card.BtnStop.IsEnabled) '健康未通过时关闭按钮仍应可用'
+  Invoke-CardInput $card 'Button' 'stop'
+  $cmd=$null
+  Assert ($script:cmdQueue.TryDequeue([ref]$cmd)) '按钮应放行关闭命令'
+  Assert ($cmd.act -eq 'stop' -and $card.ST -eq '停止中') '按钮关闭未进入过渡态'
   # 运行中但健康未通过：显示「等待中」+ 橙点，不是「运行中」+ 红点。
   # 「运行中」这个词会让人以为服务已经可用——冷启动时端口还没监听，红点与文字互相矛盾。
   $card=New-Card 'TestService' $script:svc.TestService

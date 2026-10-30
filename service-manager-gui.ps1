@@ -153,11 +153,13 @@ if (-not (Test-Path -LiteralPath $script:nssm)) {
 # 顺序即依赖：theme → util → svc-input → nssm → add-svc → logview → dialogs → tray → poll → card → xaml。
 # dialogs 与 card 双向依赖，顺序不分先后（函数体符号调用时解析）。
 . "$root\lib\theme.ps1"
+. "$root\lib\health.ps1"   # 纯函数（历史落盘/读取），必须早于 util（Update-StatusTick 用它）
 . "$root\lib\util.ps1"
 . "$root\lib\svc-input.ps1"
 . "$root\lib\nssm.ps1"
 . "$root\lib\add-svc.ps1"
 . "$root\lib\logview.ps1"
+. "$root\lib\webview.ps1"   # 只读 Web 视图（可选，默认关）
 . "$root\lib\dialogs.ps1"
 . "$root\lib\tray.ps1"   # 可选托盘：只定义纯函数与惰性初始化，未启用不加载 WinForms
 . "$root\lib\poll.ps1"
@@ -186,8 +188,18 @@ $script:queue = [System.Collections.Concurrent.ConcurrentQueue[object]]::new()
 $script:cmdQueue = [System.Collections.Concurrent.ConcurrentQueue[object]]::new()
 # 命令失败反馈：后台 sc.exe 失败时把一句话塞进来，UI 线程取出显示到状态栏
 $script:msgQueue = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+# 健康历史：只在状态变化时入队，落盘由后台 runspace 做（UI 线程不碰 I/O）。开关关掉就不给队列。
+$script:healthSeen = @{}
+# 最近一次探测值（全量服务，不只当前页）：批量启停按它筛目标；Web 视图也从这里读。
+# Synchronized：UI 线程写、Web runspace 读，普通 hashtable 跨线程读写不安全。
+$script:svcState = [hashtable]::Synchronized(@{})
+$script:healthHistoryDir = if ($script:config.HealthHistory) { Join-Path $logDir 'health' } else { $null }
+$script:healthQueue = if ($script:healthHistoryDir) { [System.Collections.Concurrent.ConcurrentQueue[object]]::new() } else { $null }
 $script:sync = [hashtable]::Synchronized(@{
   svc = $script:svc; queue = $script:queue; cmd = $script:cmdQueue; msg = $script:msgQueue
+  # healthQ 为 $null 时后台跳过整段——关开关不等于留一条写空目录的路径
+  healthQ = $script:healthQueue; healthDir = $script:healthHistoryDir
+  svcState = $script:svcState
   stop = $false; gate = [object]::new()
   wake = [Threading.AutoResetEvent]::new($false)
   nssm = $script:nssm
@@ -225,12 +237,18 @@ function Invoke-LogCleanup([string]$label) {
     foreach ($d in $dirs) {
       Remove-RotatedLogs $d ([int]$script:config.LogKeepCount) ([int]$script:config.LogKeepDays) | Out-Null
     }
+    # 健康历史按天分文件，用天数而不是份数控制体量
+    if ($script:healthHistoryDir) {
+      Remove-OldHealthFiles $script:healthHistoryDir ([int]$script:config.HealthKeepDays) | Out-Null
+    }
   } catch { Write-CrashLog "$label`: $($_.Exception.Message)" }
 }
 
 function Stop-Background {
   $script:sync.stop = $true
   [void]$script:sync.wake.Set()
+  # Web 视图自己的 runspace：先置停止标志（循环 200ms 内自己退出），再兜底停管道
+  if ($script:web) { $script:sync.webStop = $true; Stop-WebView $script:web; $script:web = $null }
   try { if ($script:bgHandle.AsyncWaitHandle.WaitOne(1500)) { $bgPS.EndInvoke($script:bgHandle) } } catch { Write-CrashLog "Background end failed: $($_.Exception.Message)" }
   # Stop() 是同步的：后台卡在 $svc.Start()（等满 ServicesPipeTimeout ≈ 30s）或外部命令里时，
   # UI 线程会被一起拖住，窗口关了进程还在——这段时间 mutex 仍被占，用户再双击是「没反应」。
@@ -246,6 +264,38 @@ function Stop-Background {
 
 # ---- 构建主窗口 + 应用 Mica ----
 $win = New-MainWindow
+# F5 重载清单：手改 services.json 后不必重启 GUI（Save-Svc 的 mtime 门闩会拒绝写，重载即同步）。
+$win.Add_KeyDown({ param($s,$e)
+  if ($e.Key -ne 'F5') { return }
+  $e.Handled = $true
+  $err = $null
+  try { $err = Invoke-SvcReload } catch { $err = $_.Exception.Message }
+  if ($err) { Set-StatusMessage $err }
+  else { Set-StatusMessage "已重新加载 services.json：$($script:svc.Count) 个服务" }
+})
+
+# 状态栏「N 个本地服务」右键 = 批量启停：低频操作，不占卡片上的位置；日志/删除这类危险动作不进批量。
+$batchMenu = New-Object System.Windows.Controls.ContextMenu
+foreach ($spec in @(@('全部启动','start'), @('全部停止','stop'), @('复制 Web 视图地址','weburl'))) {
+  $mi = New-Object System.Windows.Controls.MenuItem -Property @{ Header = $spec[0]; Tag = $spec[1] }
+  $mi.Add_Click({
+    try {
+      # 状态栏那条带 token 的地址只有 5 秒租约，错过就得重启——这里给个取回入口
+      if ($this.Tag -eq 'weburl') {
+        if (-not $script:web) { Set-StatusMessage 'Web 视图未开启（config.json 里设 WebView=true）'; return }
+        $u = "http://127.0.0.1:$($script:sync.webPort)/?t=$($script:webToken)"
+        [System.Windows.Clipboard]::SetText($u)
+        Set-StatusMessage "已复制 Web 视图地址：$u"
+        return
+      }
+      Set-StatusMessage (Invoke-BatchCommand $this.Tag)
+    }
+    catch { Set-StatusMessage $_.Exception.Message }
+  })
+  [void]$batchMenu.Items.Add($mi)
+}
+$script:serviceSummary.ContextMenu = $batchMenu
+$script:serviceSummary.ToolTip = '右键：全部启动 / 全部停止（按最近一次探测状态筛，含翻页外的服务）'
 if (Test-Path -LiteralPath $script:iconPath) {
   $win.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create([Uri]$script:iconPath)
 }
@@ -261,16 +311,44 @@ $win.Add_SourceInitialized({
 })
 
 # ---- 渲染分页卡片 ----
+# 只读 Web 视图（可选，默认关）：loopback + token，局域网访问请走 SSH 端口转发，不监听外部网卡。
+if ($script:config.WebView) {
+  $script:webToken = [guid]::NewGuid().ToString('N')
+  $script:web = Start-WebView ([int]$script:config.WebViewPort) $script:webToken $script:sync
+  $deadline = [datetime]::Now.AddSeconds(3)
+  while (-not $script:sync.webPort -and -not $script:sync.webError -and [datetime]::Now -lt $deadline) {
+    Start-Sleep -Milliseconds 50
+  }
+  if ($script:sync.webError) {
+    Write-CrashLog "WebView start failed: $($script:sync.webError)"
+    Set-StatusMessage "Web 视图启动失败：$($script:sync.webError)"
+  } else {
+    Write-CrashLog "WebView listening on 127.0.0.1:$($script:sync.webPort)"
+    Set-StatusMessage "Web 只读视图：http://127.0.0.1:$($script:sync.webPort)/?t=$($script:webToken)"
+  }
+}
 Render-Page
 Write-CrashLog "Window constructed: cards=$($script:cardPanel.Children.Count)"
 
 # ---- DispatcherTimer：处理结果队列与状态栏（实现见 lib/util.ps1 Update-StatusTick）----
 $timer = New-Object System.Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromMilliseconds([int]$script:config.AckPollIntervalMs)
+# 轮转日志保留的下次时间：首帧那次清理由 ContentRendered 触发，这里管常驻期间。
+$script:lastLogCleanup = Get-Date
 $timer.Add_Tick({
   # 单帧内的异常不许冒到 Dispatcher 层终止循环：一次坏数据不该让界面停止刷新。
   try { Update-StatusTick }
   catch { Write-CrashLog "Tick failed: $($_.Exception.GetType().FullName): $($_.Exception.Message)" }
+  # 托盘常驻时窗口几天不关，只在启动/关闭跑清理会一直堆积。文件 I/O 不能进 400ms 热路径，
+  # 单独按 6 小时间隔做一次（几毫秒，和首帧那次同一份实现）。§Invoke-LogCleanup
+  if (((Get-Date) - $script:lastLogCleanup) -ge [TimeSpan]::FromHours(6)) {
+    $script:lastLogCleanup = Get-Date
+    try { Invoke-LogCleanup 'Periodic log cleanup failed' }
+    catch { Write-CrashLog "Periodic log cleanup failed: $($_.Exception.Message)" }
+  }
+  # 清单被外部改过（手改/另一个会话）：一次 stat，提示一次；按 F5 重载。
+  try { if (Test-SvcFileChanged) { Set-StatusMessage 'services.json 已被外部修改，按 F5 重新加载' } }
+  catch { Write-CrashLog "Change check failed: $($_.Exception.Message)" }
 })
 $timer.Start()
 

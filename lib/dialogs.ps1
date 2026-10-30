@@ -43,8 +43,10 @@ function Show-Remove([string]$n, $owner){
   $cancel.Add_Click({ $f.DialogResult=$false; $f.Close() })
 
   $del.Add_Click({
-    # 提交逻辑在 Submit-RemoveCommand，这里只负责关弹窗。
-    Submit-RemoveCommand $n
+    # 提交逻辑在 Submit-RemoveCommand，这里只负责关弹窗。抛错时不要关窗：状态栏被模态窗口
+    # 盖住，用户只会看到「点了没反应」，然后反复点。
+    try { Submit-RemoveCommand $n }
+    catch { Show-DialogError $f $_.Exception.Message; return }
     $f.DialogResult=$true; $f.Close()
   })
 
@@ -63,9 +65,19 @@ function Show-DialogWarning($owner,[string]$msg,[string]$title){
   [System.Windows.MessageBox]::Show($owner,$msg,$title,'OK','Warning') | Out-Null
 }
 
+# 批量停止的二次确认。停止可逆，但一次误点会停掉整台机器的服务，所以给一次 OKCancel。
+# 单独成函数是为了让无头测试能重定义它（MessageBox 会真弹窗）。
+function Confirm-BatchStop($owner,[int]$count){
+  ([System.Windows.MessageBox]::Show($owner,"将停止 $count 个正在运行的服务，继续？",'全部停止','OKCancel','Warning')) -eq 'OK'
+}
+
 # 添加提交体（ok_Click 执行部分），$fields 各值已 trim；返回 $true 关弹窗、$false 保持打开。§Submit-AddService
 function Submit-AddService($owner,[hashtable]$fields){
-  $n=[string]$fields.n; $p=[int]$fields.p; $exe=[string]$fields.exe
+  $n=[string]$fields.n; $exe=[string]$fields.exe
+  # 端口先 TryParse 再进 Test-SvcInput：原来直接 [int] 强转，输入 "3000ms" 会在校验之前抛异常，
+  # 异常冒到 Dispatcher 兜底只写状态栏（被模态窗盖住）= 点了什么都没发生。
+  $p=0
+  if(-not [int]::TryParse([string]$fields.p,[ref]$p)){ Show-DialogError $owner '端口必须是 1-65535 的整数'; return $false }
   $url=[string]$fields.url; $dir=[string]$fields.dir; $par=[string]$fields.par; $envRaw=[string]$fields.env
   $account=[string]$fields.account; $gpu=[bool]$fields.gpu
   if(-not $n -or -not $exe){ Show-DialogError $owner '服务名和可执行文件必填'; return $false }

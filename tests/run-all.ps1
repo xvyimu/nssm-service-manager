@@ -9,17 +9,25 @@ $script:failures = @()
 
 function Invoke-Check([string]$label, [scriptblock]$action) {
   Write-Output "== $label =="
+  $out = @()
   try {
-    & $action
+    $out = @(& $action)
   } catch {
     if ($label -eq 'PowerShell parser') { throw }
     $script:failures += @{ Label=$label; Error=$_.Exception.Message }
     Write-Output "FAIL: $label — $($_.Exception.Message)"
     return
   }
+  foreach ($line in $out) { Write-Output $line }
   if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
     $script:failures += @{ Label=$label; Error="exit code $LASTEXITCODE" }
     Write-Output "FAIL: $label — exit code $LASTEXITCODE"
+    return
+  }
+  # 零 PASS 行 = 这个脚本没断言任何东西（被跳过/被注释掉）。只看退出码会把它当绿。
+  if (-not @($out | Where-Object { ("$_").StartsWith('PASS') }).Count) {
+    $script:failures += @{ Label=$label; Error='没有任何 PASS 行（零断言/静默跳过）' }
+    Write-Output "FAIL: $label — 没有任何 PASS 行（零断言/静默跳过）"
   }
 }
 
@@ -39,21 +47,15 @@ Invoke-Check 'PowerShell parser' {
   Write-Output "PASS: parsed $($powershellFiles.Count) PowerShell files."
 }
 
-$tests = @(
-  @{ Name = 'dispatcher priority'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-dispatcher-priority.ps1')) }
-  @{ Name = 'card actions'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-card-actions.ps1')) }
-  @{ Name = 'card clock'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-card-clock.ps1')) }
-  @{ Name = 'transition failure'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-transition-failure.ps1')) }
-  @{ Name = 'poll commands'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-poll-commands.ps1')) }
-  @{ Name = 'per-service timeout'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-per-service-timeout.ps1')) }
-  @{ Name = 'svc input'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-svc-input.ps1')) }
-  @{ Name = 'external timeout'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-external-timeout.ps1')) }
-  @{ Name = 'log rotation'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-log-rotation.ps1')) }
-  @{ Name = 'service registration'; Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-add-svc.ps1')) }
-  @{ Name = 'config params';     Args = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-config-params.ps1')) }
-  @{ Name = 'remove e2e'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-remove-e2e.ps1')) }
-  @{ Name = 'dialogs submit'; Args = @('-NoProfile', '-STA', '-File', (Join-Path $PSScriptRoot 'test-dialogs-submit.ps1')) }
-)
+# 自动收集 tests/test-*.ps1：手写清单漏登记 = 新用例静默不进 CI。
+# 统一 -STA（WPF 用例必需，纯函数用例加了也无害）；test-helpers.ps1 是被 dot-source 的夹具。
+$tests = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter 'test-*.ps1' -File |
+  Where-Object { $_.Name -ne 'test-helpers.ps1' } |
+  Sort-Object Name |
+  ForEach-Object {
+    @{ Name = [IO.Path]::GetFileNameWithoutExtension($_.Name)
+       Args = @('-NoProfile', '-STA', '-File', $_.FullName) }
+  })
 
 foreach ($test in $tests) {
   $arguments = $test.Args

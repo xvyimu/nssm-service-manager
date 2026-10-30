@@ -7,7 +7,10 @@ function Add-SvcFromCli([string]$spec){
   # 只切前 6 段：第 7 段 Env 里的逗号必须原样保留。
   $parts = $spec -split ',', 7
   if ($parts.Count -lt 3) { Write-Host "用法: -Add Name,Port,Exe[,Url,Dir,Args,Env]"; exit 1 }
-  $n=$parts[0].Trim(); $p=[int]$parts[1].Trim(); $exe=$parts[2].Trim()
+  $n=$parts[0].Trim(); $exe=$parts[2].Trim()
+  # 先 TryParse：裸 [int] 强转会让端口写成 `8080ms` 时抛栈，用户看不到用法。
+  $p=0
+  if(-not [int]::TryParse($parts[1].Trim(),[ref]$p)){ Write-Host "端口必须是 1-65535 的整数：$($parts[1])"; Write-Host "用法: -Add Name,Port,Exe[,Url,Dir,Args,Env]"; exit 1 }
   $url=if($parts.Count -gt 3){$parts[3].Trim()}else{"http://127.0.0.1:$p"}
   $dir=if($parts.Count -gt 4){$parts[4].Trim()}else{''}
   $par=if($parts.Count -gt 5){$parts[5].Trim()}else{''}

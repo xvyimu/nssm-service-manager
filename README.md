@@ -56,7 +56,11 @@ NSSM 路径按三档探测：`$env:NSSM_PATH` → `Get-Command nssm.exe` → sco
 | `lib/nssm.ps1` | NSSM 注册/删除：`nssm-set` / `Install-NssmService` / `Remove-NssmService` |
 | `lib/add-svc.ps1` | CLI 添加服务入口（`Add-SvcFromCli`，agent 友好，不弹 GUI） |
 | `lib/dialogs.ps1` | GUI 对话框：`Show-Add` / `New-AddDialog`（只搭控件，留给无头测试）+ `Show-Remove` |
-| `lib/logview.ps1` | 日志窗口：`Get-LogFiles` / `Show-Log` |
+| `lib/logview.ps1` | 日志窗口：`Get-LogFiles` / `Show-Log`；健康历史窗口 `Show-HealthHistory` |
+| `lib/health.ps1` | 健康历史纯函数：按天 NDJSON 追加/读取/清理（后台 runspace 前置其文本；UI 只入队） |
+| `lib/webview.ps1` | 只读 Web 视图生命周期：runspace 启停、把 core+server 拼成 runspace 脚本 |
+| `lib/webview-core.ps1` | 纯函数：token 校验、快照、HTML（无顶层语句，可被前置进 runspace） |
+| `lib/webview-server.ps1` | 服务器端循环：loopback TcpListener、GET only、token 门禁 |
 | `lib/config.ps1` | 可调常量集中收口，默认值内嵌，`config.json` 覆盖 |
 | `lib/tray.ps1` | 可选托盘图标（`TrayEnabled` 打开才加载 WinForms）+ 关闭/最小化策略纯函数 |
 | `lib/card.ps1` | 卡片构建 + 启停门闩与冷却 + 过渡态保护 + 右键菜单 |
@@ -75,9 +79,9 @@ NSSM 路径按三档探测：`$env:NSSM_PATH` → `Get-Command nssm.exe` → sco
 
 - 卡片网格填满主区域（默认 3 列 × 2 行六张，`PerPage` 可调），窗口缩放同步伸展；单页隐藏分页按钮
 - 每张卡：服务名、端口、URL、状态圆点、健康说明、运行时长、打开面板、「关闭」「启动」两个按钮（关闭在左）
-- 健康三档：`正常` / `超时`（服务在但响应慢）/ `无响应`（端口未监听或连接被拒）。进程在但探测没过时先显示「等待中」，超过 `WaitHealthyTimeoutMs`（默认 2 分钟）才升级为「无响应」——冷启动不给红点，真卡死也不会一直挂着等待中。恢复要连续两次探测正常，单次抖动不算
+- 健康三档：`正常` / `超时`（服务在但响应慢）/ `无响应`（端口未监听或连接被拒）。进程在但探测没过时先显示「等待中」，超过 `WaitHealthyTimeoutMs`（默认 2 分钟）才升级为「无响应」——冷启动不给红点，真卡死也不会一直挂着等待中。恢复要连续两次探测正常，单次抖动不算。**非 HTTP 服务**（数据库、gRPC、纯 socket）在清单里写 `"probe": "tcp"`，TCP 通即算正常
 - 状态覆盖 SCM 全部取值：`已停止` / `启动中` / `运行中` / `停止中` / `已暂停` / `暂停中` / `继续中` / `未安装`。暂停态两个按钮都禁用，副标题提示用右键「重启」**尝试**恢复——这条未实测：本机没有可暂停的服务，且暂停/恢复需管理员；能否接受 STOP 控制码由各服务自己的控制处理函数决定
-- 按钮各管一个方向（启动只在未运行时可点、关闭只在运行中可点，过渡态两个都禁用）；双击卡片仍是切换（8 秒冷却 + 健康门闩：只有运行中且健康正常才允许关闭）
+- 按钮各管一个方向（启动只在未运行时可点、关闭只在运行中可点，过渡态两个都禁用，**不看健康**——非 HTTP 服务也要能关）；双击卡片仍是切换（8 秒冷却 + 健康门闩：只有运行中且健康正常才允许双击关闭，健康未过时提示改用按钮或右键）
 - 过渡态保护：启动中/停止中时，在途的旧探测不覆盖用户刚触发的过渡态，直到同方向终态探测到达才收尾
 - 右键卡片 = 启动/停止/重启/面板/日志/安全检查/删除（删除需输入完整服务名；走后台命令队列，UI 不冻结）
 - 后台 runspace 探测（批量 `Get-Service` + 并行 TCP/HTTP），UI 线程只取结果刷卡片；命令入队并唤醒后台，每次探测之间优先处理
@@ -87,6 +91,10 @@ NSSM 路径按三档探测：`$env:NSSM_PATH` → `Get-Command nssm.exe` → sco
 - 日志查看器支持轮转历史（`*.out-*.log` / `*.err-*.log`）下拉切换
 - 单实例互斥：重复启动只保留第一个窗口；互斥体用 `Global\` 命名空间，计划任务/SSH 会话里跑 CLI 也能看到 GUI 正在运行。重启走 stop→轮询 Stopped（≤6s）→start，避免端口未释放导致 bind 失败
 - 删除后卡片缓存清零，同名重建显示新端口/URL；配置变更后翻页命中缓存也刷新
+- **清单热重载**：手改 `services.json` 后按 F5 立即生效（新增/删除/改端口都不用重启），已有卡片复用、不丢健康值与冷却；有在途命令（启动中/停止中/删除中）时拒绝重载并提示稍后再试
+- **健康历史**：状态或健康值变化时落一条到 `logs/health/health-YYYYMMDD.ndjson`（默认保留 30 天，重复值不记），右键卡片「健康历史」看最近 200 条——用来回答「昨晚它什么时候挂的」。写盘在后台 runspace，UI 线程不碰 I/O
+- **批量启停**：状态栏左边「N 个本地服务」右键 →「全部启动 / 全部停止」。目标按**最近一次探测值**筛（翻页外的服务也算），只碰「已停止 / 运行中」两种终态；停止会先确认一次
+- **只读 Web 视图**（可选，默认关）：`config.json` 打开 `WebView` 后，状态栏给出 `http://127.0.0.1:<port>/?t=<token>`，浏览器里每 5 秒自动刷新服务健康。**只监听 loopback、只接受 GET、必须带 token**；局域网访问走 SSH 端口转发，不监听外部网卡
 - 浅色高对比 + 系统 Mica 背景；主题色统一收口在 `lib/theme.ps1` 的 `$script:T`，改色只动一份
 - 默认关闭即退出、最小化进任务栏；需要常驻可开托盘（见 `TrayEnabled` / `MinimizeToTray` / `CloseToTray`）
 
@@ -107,7 +115,7 @@ Copy-Item services.example.json services.json
 | ProxyA | 8317 | http://127.0.0.1:8317/management.html |
 | ServiceF | 9000 | http://127.0.0.1:9000/health |
 
-**`services.json` 是 SSOT**：GUI 运行时增删服务会原子写回（`$PID.$guid.tmp` → `Replace`）。`Load-Svc` 有回落链 `services.json` → `services.example.json` → 空清单，前者缺失或 JSON 坏时读示例并弹框说明原因，首次运行不会一片空白。**新增服务请走 GUI「添加」或 CLI `-Add`**——NSSM 注册必须由脚本完成（stdout/stderr/停止超时/启动类型/日志轮转一并设置）。
+**`services.json` 是 SSOT**：GUI 运行时增删服务会原子写回（`$PID.$guid.tmp` → `Replace`，上一版顺手留成 `services.json.bak`）；载入后文件又被外部改过（手改、另一个会话抢先写）时拒绝写并提示按 **F5** 重载，避免全量写回把别人的改动抹掉。`Load-Svc` 有回落链 `services.json` → `services.example.json` → 空清单，前者缺失或 JSON 坏时读示例并弹框说明原因，首次运行不会一片空白。**新增服务请走 GUI「添加」或 CLI `-Add`**——NSSM 注册必须由脚本完成（stdout/stderr/停止超时/启动类型/日志轮转一并设置）。
 
 ### 重服务（冷启动慢）的单服务覆盖
 
@@ -133,6 +141,24 @@ Copy-Item services.example.json services.json
 
 字段名大小写不敏感，必须是正整数毫秒。写错（`0` / 负数 / 非数字）时**只有该字段失效、回落全局**，服务条目照常保留，启动时弹一条提示说明是哪个服务的哪个字段——不会因为一个数字写错就把整份清单换成示例。这些字段由 `Read-SvcFile` 显式保留，GUI 增删别的服务不会抹掉。
 
+### 非 HTTP 服务（数据库 / gRPC / 纯 socket 守护）
+
+健康探测默认是「TCP 通 + HTTP 200」两档。端口上跑的不是 HTTP 时，HTTP 那一档必然失败，卡片会一直显示「超时」或「无响应」。这类服务在条目里加 `"probe": "tcp"`——端口通即算正常，不再发 HTTP 请求；`url` 留空也是同一效果：
+
+```json
+{
+  "PostgreSQL": { "port": 5432, "url": "", "probe": "tcp" }
+}
+```
+
+| 值 | 判定 |
+|----|------|
+| `auto`（默认） | TCP 通后再要求 HTTP 200 |
+| `tcp` | TCP 通即正常 |
+| `http` | 同 `auto`（显式写法，便于对照） |
+
+健康值只影响圆点颜色与双击切换；「关闭」按钮只看服务状态，不会因为探测不过而锁死。
+
 > **环境变量与注册表暴露面：** NSSM 把 `AppEnvironmentExtra` 明文写进 `HKLM\SYSTEM\CurrentControlSet\Services\<服务名>\Parameters`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出明文。**含密钥的变量（`*_API_KEY` / `*_TOKEN` / `*SECRET` / `*PASSWORD` / `*ACCESS_KEY` / `*CREDENTIAL` / `*PRIVATE_KEY` / `*PASSPHRASE`）不要直接填环境变量框**，改为让服务本体从独立密钥文件读（仅 Administrators+SYSTEM 可读），路径不进注册表。GUI 与 CLI 在填此类键名时会提示；`*_FILE` 后缀仅在值看起来像路径时才跳过提示。要彻底收紧键 ACL 用下面的脚本。
 
 ### 收紧 Parameters 注册表键 ACL（可选，深度防御）
@@ -146,7 +172,7 @@ pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName <服务名
 
 ## 可调常量（config.json）
 
-所有阈值收口在 `lib/config.ps1`，默认值内嵌、开箱即用。`config.json` 已 git 忽略；未知键忽略，覆盖值按默认值的类型校验——`"TcpTimeoutMs": "200ms"` 这种写法保留默认并给一条提示，不会让窗口起不来；解析失败同样不阻断启动，回落默认值并弹框。
+所有阈值收口在 `lib/config.ps1`，默认值内嵌、开箱即用。`config.json` 已 git 忽略；覆盖值按默认值的**类型与区间**校验——`"TcpTimeoutMs": "200ms"` 这种类型不符，或 `-1` 这种越界值（会让 `WaitOne` 无限等待、后台探测永久停摆），都保留默认并给一条提示，不会让窗口起不来；未知键也会提示（拼错 `TcpTimeout` 不会静默失效）；解析失败同样不阻断启动，回落默认值并弹框。
 
 | 键 | 默认 | 作用 |
 |------|------|------|
@@ -162,6 +188,10 @@ pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName <服务名
 | `ExtCommandTimeoutMs` | 60000 | 外部命令（`sc.exe` / `nssm.exe`）超时：超时即 `Kill` 整棵进程树并返回 `exit=-1`，不让一条挂住的命令拖死后台 |
 | `LogKeepCount` | 10 | 轮转日志保留份数，**按日志目录**各留前 N 份：共用 `LogDir` 的服务算一个目录，有独立 `AppStdout` 目录的各算一份配额 |
 | `LogKeepDays` | 14 | 轮转日志保留天数：删除须同时满足「不在前 N 份」且「早于 N 天」，故窗口内高频轮转的档一份不删 |
+| `HealthHistory` | true | 健康历史开关：状态或健康值变化时往 `logs/health/health-YYYYMMDD.ndjson` 记一条（重复值不记）。关掉则后台不写、右键「健康历史」显示无记录 |
+| `HealthKeepDays` | 30 | 健康历史保留天数（按天分文件，删更早的；`Invoke-LogCleanup` 里顺带清） |
+| `WebView` | false | 只读 Web 视图开关。开着时状态栏给出带 token 的地址；只听 `127.0.0.1`，只接受 GET |
+| `WebViewPort` | 0 | Web 视图端口；`0` = 每次启动随机（避免和别的工具抢固定端口） |
 | `LogDir` | `''` | 日志根覆盖；空 = 仓内 `logs/`。只影响新注册的服务——已注册服务的 AppStdout 写死在注册表。日志窗口与保留策略按每个服务实际的 AppStdout 目录走，`LogDir` 只在读不到时兜底（手工 `nssm install` 的服务也能被看到和清理） |
 | `ProbeThrottleLimit` | 8 | 并行探测的 ThrottleLimit |
 | `ProbeIntervalMs` | 4000 | 有运行中服务、或本轮执行过命令时的轮询间隔，也用作健康探测的最小间隔 |
@@ -197,15 +227,17 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 
 不弹 GUI，注册 + 启动后退出。`Env` 多对用分号分隔（`KEY=VAL;KEY2=VAL2`），逗号也认。**值里自带分隔符不会拆坏**：只有「这一段含 `=`」才算新变量，不含 `=` 的片段并回上一个值，所以 `NO_PROXY=127.0.0.1,localhost`、`PATH=C:\a;C:\b` 都按一条处理；变量名不限于字母数字开头（`2FA_TOKEN=x`、`ProgramFiles(x86)=C:\PF` 照样识别）。
 
-`services.json` 解析失败时 `-Add` **直接退出（码 1）**而不是继续——继续会把回落的示例清单写回你的真实配置。GUI 侧也不示弱：`Save-Svc` 在同样的条件下拒绝落盘，免得点一次「添加」就把示例清单覆盖真实文件（`Replace` 不带备份，`services.json` 又不在 git 里）。服务名限 `A-Za-z0-9_.-`；exe 必须是**存在的文件**的**完整本地路径**——UNC（含 `//host/share` 这种正斜杠写法）、目录、相对路径一律拒，因为注册成 LocalSystem 后，UNC 等于把提权面交给共享写者。两条入口共用 `Test-SvcInput`（校验顺序：名称 → exe → 端口 → 重名）；`Test-SvcAccount` 把关账户白名单；`Get-NssmSetSpec` 收口要 set 的全部键值，`Install-NssmService` 只负责执行与失败回滚。
+`services.json` 解析失败时 `-Add` **直接退出（码 1）**而不是继续——继续会把回落的示例清单写回你的真实配置。GUI 侧也不示弱：`Save-Svc` 在同样的条件下拒绝落盘，免得点一次「添加」就把示例清单覆盖真实文件（写前会把上一版留成 `services.json.bak`，载入后文件被外部改过也拒写）。服务名限 `A-Za-z0-9_.-`；exe 必须是**存在的文件**的**完整本地路径**——UNC（含 `//host/share` 这种正斜杠写法）、目录、相对路径一律拒，因为注册成 LocalSystem 后，UNC 等于把提权面交给共享写者。两条入口共用 `Test-SvcInput`（校验顺序：名称 → exe → 端口 → 重名）；`Test-SvcAccount` 把关账户白名单；`Get-NssmSetSpec` 收口要 set 的全部键值，`Install-NssmService` 只负责执行与失败回滚。
 
 ## 测试与截图
 
 ```powershell
-pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 13 项回归
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 自动收集 tests/test-*.ps1（当前 20 项）
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-tmp/，已 git 忽略）
 ```
+
+`run-all.ps1` 用通配收集 `tests/test-*.ps1`（`test-helpers.ps1` 除外），新增用例不需要登记；每个用例必须至少打出一行 `PASS:`，否则判失败——否则一个「零断言但退出码 0」的脚本会让 CI 静默变绿。
 
 | 测试 | 守什么 |
 |------|--------|
@@ -217,11 +249,18 @@ pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-t
 | `test-per-service-timeout` | per-service 超时字段保留与 round-trip、坏值只丢字段、并行块 `$using:` 静态扫描 |
 | `test-svc-input` | 输入校验四类拒绝、env 解析、账户白名单、`Get-NssmSetSpec` 参数组装 |
 | `test-add-svc` | `sc.exe` 走 `Get-ScExe` 解析、CLI 注册、失败回滚、删除流程 |
-| `test-config-params` | `config.json` 覆盖、坏 JSON 回落、runspace 注入值 |
+| `test-config-params` | `config.json` 覆盖、类型/区间/未知键校验、坏 JSON 回落、runspace 注入值 |
 | `test-remove-e2e` | 真 runspace 回执 → 真 UI tick 消费，成功/失败两向 |
 | `test-dialogs-submit` | 两个提交体全分支；真弹一次「添加服务」并点击 |
 | `test-external-timeout` | 外部命令挂住时被 Kill、返回失败；正常命令的退出码与输出不受影响 |
 | `test-log-rotation` | 只删轮转档、当前档永不误删；NSSM 的 `T…` 时间戳格式能识别；保留窗口生效 |
+| `test-probe-mode` | `probe=tcp` / 空 `url` 只做 TCP 判定（不发 HTTP）、健康为「正常」 |
+| `test-read-shape` | 清单顶层形状、解析失败拒写、外部修改拒写、`.bak` 备份、`probe` 字段保留 |
+| `test-logview-tail` | 日志只读尾部 256KB / 500 行；小文件原样；缺失与目录返回 `$null` |
+| `test-reload` | F5 重载：检测外部改动、复用缓存卡、增删差异；过渡态与坏清单拒绝重载 |
+| `test-health` | 只在变化时落一条、按天分文件、最新在前、坏行跳过、按天清理、后台 runspace 消费队列落盘 |
+| `test-batch` | 批量启停按最近探测值筛目标（含翻页外）、只碰终态、停止需确认、无目标不误发 |
+| `test-webview` | token 校验、快照/HTML 转义、loopback 服务器 200/403、非 GET 拒绝、端口占用报错 |
 
 NSSM、服务启停、配置保存及菜单的外部操作都用替身，不会注册测试服务或改 `services.json`。真实 UAC、Mica 效果与 NSSM 生命周期需本机交互验证。
 
@@ -249,10 +288,8 @@ ffmpeg -y -framerate 3 -i .demo-tmp/frame-%02d.png -vf "scale=640:-1:flags=lancz
 
 按「最可能先做」排序，不承诺时间：
 
-- **健康状态持久化**——目前刷新即弃，服务挂了只看当前页；计划落一份历史，打开即见「最近一次异常是什么时候」
 - **分页再宽松**——`PerPage` 可调，但跨页过滤/排序还欠
 - **服务配置差异对比**——`services.json` 换机器迁移时一键 diff 出不一致项
-- **Web 只读视图**——局域网里不动 GUI 也能看健康（NSSM 常驻机器一般不接显示器）
 
 提新方向用「功能请求」模板开 issue，修 bug 用「Bug 报告」模板（`.github/ISSUE_TEMPLATE/`）。
 

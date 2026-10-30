@@ -3,8 +3,9 @@
 # 内存取舍：TcpClient + 共享 HttpClient（Get-NetTCPConnection 常驻 +10MB，IWR 每次新建整套 cmdlet）。
 
 # 后台探测脚本块（字符串，在 runspace 里执行）。runspace 不能 dot-source，故把 svc-common.ps1
-# 的文本前置进 $script:poll——UI 与后台引用同一份源码。实现细节：docs/IMPLEMENTATION-NOTES.md
-$script:poll = (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'svc-common.ps1')) + @'
+# 与 health.ps1 的文本前置进 $script:poll——UI 与后台引用同一份源码。实现细节：docs/IMPLEMENTATION-NOTES.md
+$script:poll = (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'svc-common.ps1')) +
+               (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'health.ps1')) + @'
 # runspace 内构造一次、复用到退出——HttpClient 本身线程安全
 $http = [System.Net.Http.HttpClient]::new()
 # 超时从 $sync 读（UI 线程从 config 注入），未设时回落默认；生效值写回同一键供测试断言。
@@ -115,6 +116,12 @@ $lastProbeAt = [long]0
 $lastHealth = @{}
 while(-not $sync.stop){
   $executedCmd = (Invoke-PendingCommands) -gt 0  # 本轮是否执行过命令：影响轮询间隔，见循环尾
+  # 健康历史落盘：UI 线程只把「状态/健康变了」的事件塞进队列，写盘在这里（UI 线程不碰 I/O）。
+  # Add-HealthEvent 自己吞异常——历史写不进去不该影响探测，更不该让后台循环停摆。
+  if ($sync.healthQ) {
+    $hev = $null
+    while ($sync.healthQ.TryDequeue([ref]$hev)) { $null = Add-HealthEvent $sync.healthDir $hev }
+  }
   # 拷快照（加锁，避免枚举期间 UI 侧增删）
   [Threading.Monitor]::Enter($sync.gate)
   try { $snap = @($sync.svc.Keys) } finally { [Threading.Monitor]::Exit($sync.gate) }
@@ -158,6 +165,7 @@ while(-not $sync.stop){
       # per-service 探测超时随探测项带给并行块；缺省是 0，并行块回落到全局值
       $toProbe.Add([pscustomobject]@{
         n=$n; port=[int]$info.port; url=[string]$info.url
+        probe=[string]$info.probe
         tcpMs=[int]$info.tcpTimeoutMs; httpMs=[int]$info.httpTimeoutMs
       })
     } else {
@@ -183,7 +191,7 @@ while(-not $sync.stop){
   if ($toProbe.Count -and -not $sync.stop -and $probeDue) {
     $lastProbeAt = [Environment]::TickCount64
     $results = $toProbe | ForEach-Object -Parallel {
-      $n=$_.n; $p=$_.port; $url=$_.url
+      $n=$_.n; $p=$_.port; $url=$_.url; $probeLocal=[string]$_.probe
       # 每项的生效超时：per-service 覆盖优先，缺省回落经 $using: 传入的全局值
       $tcpMsLocal  = if ($_.tcpMs)  { [int]$_.tcpMs }  else { $using:tcpMs }
       $httpMsLocal = if ($_.httpMs) { [int]$_.httpMs } else { $using:httpMs }
@@ -198,6 +206,11 @@ while(-not $sync.stop){
       } finally { try{$tcp.Close()}catch{} }
 
       if(-not $listen){ return [pscustomobject]@{n=$n;h='无响应'} }
+      # probe=tcp 或没填 url：TCP 通即正常。非 HTTP 服务（数据库/gRPC/纯 socket 守护）走 HTTP
+      # 探测必然失败，旧实现让这类卡永远不是绿点，还会把「关闭」按钮一起锁死。§probe
+      if ($probeLocal -eq 'tcp' -or [string]::IsNullOrWhiteSpace($url)) {
+        return [pscustomobject]@{n=$n;h='正常'}
+      }
       # HTTP 探测。响应和 CTS 都必须 Dispose——每轮每服务各泄漏一份缓冲与 WaitHandle。
       $cts = [System.Threading.CancellationTokenSource]::new($httpMsLocal)
       try {

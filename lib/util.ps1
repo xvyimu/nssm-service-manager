@@ -3,6 +3,9 @@
 # 函数体直接读调用方作用域的 $cfg / $logDir；参数不得同名，大小写不敏感会遮蔽外层变量。
 # 实现细节：docs/IMPLEMENTATION-NOTES.md
 
+# 健康历史是纯函数族，Update-StatusTick 依赖它；单独 dot-source util 的脚本（含单测）也要能用。
+if (-not (Get-Command Test-HealthChanged -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot 'health.ps1') }
+
 # ---- 配置层（services.json 是 SSOT，services.example.json 是兜底）----
 # 兜底读示例清单，不在源码里抄服务名；不要在此初始化 $script:configWarning（会清掉 config.ps1 写入的原因）。
 
@@ -10,6 +13,13 @@ function Read-SvcFile([string]$path){
   # 可选字段写错的收集箱。不能抛：抛会让 Load-Svc 落到 catch，整份清单退回示例并被 Save-Svc 写回。§Read-SvcFile
   $script:svcFieldWarnings = @()
   $j = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
+  # 顶层形状必须校验：`[]` / `"x"` 是合法 JSON 但取不到 .Keys，旧代码返回空清单且当成功，
+  # 之后一次保存就把原文件整份覆盖成 `{}`（svcLoadFailed 那条门闩只管「解析失败」）。§Read-SvcFile
+  if ($j -isnot [System.Collections.IDictionary]) {
+    # 顶层是 JSON null 时 $j 为 $null，直接取 .GetType() 会二次抛空引用——用户就看不到这句原因了
+    $kind = if ($null -eq $j) { 'null' } else { $j.GetType().Name }
+    throw "顶层必须是对象（服务名 → {port,url[,probe,...]}），实际是 $kind"
+  }
   $o = [ordered]@{}; foreach ($k in $j.Keys) {
     $p = [int]$j[$k].port; $u = [string]$j[$k].url
     if ($p -lt 1 -or $p -gt 65535) { throw "$k 端口非法: $p" }
@@ -29,9 +39,19 @@ function Read-SvcFile([string]$path){
       }
       $entry[$opt] = $v
     }
+    # 探测口径：auto（默认，TCP 通后还要求 HTTP 200）/ tcp（TCP 通即正常）。
+    # 非 HTTP 服务（数据库、gRPC、纯 socket 守护）必须写 tcp：HTTP 探测对它必然失败，
+    # 卡片会永远不是绿点。§Read-SvcFile
+    $actualProbe = @($j[$k].Keys | Where-Object { $_ -ieq 'probe' }) | Select-Object -First 1
+    if ($actualProbe) {
+      $rawProbe = [string]$j[$k][$actualProbe]
+      $pv = $rawProbe.Trim().ToLowerInvariant()
+      if ($pv -in @('auto','tcp','http')) { $entry['probe'] = $pv }
+      else { $script:svcFieldWarnings += "$k 的 probe 无效（$rawProbe），已回落 auto（TCP 通且 HTTP 200）" }
+    }
     # 白名单外的键会被 Save-Svc 的全量写回静默抹掉——记一条提示。
     # 用户把字段名打错一个字母时，原来的表现是「配了但没生效」，且连提示都没有。
-    $known = @('port','url','toggleTimeoutMs','httpTimeoutMs','tcpTimeoutMs')
+    $known = @('port','url','probe','toggleTimeoutMs','httpTimeoutMs','tcpTimeoutMs')
     foreach ($key in $j[$k].Keys) {
       if (-not @($known | Where-Object { $_ -ieq $key }).Count) {
         $script:svcFieldWarnings += "$k 的字段 $key 不被识别，保存时会被丢弃"
@@ -52,6 +72,9 @@ function Load-Svc {
       # **必须先判空初始化为 @()**：$null += "x" 变成 String，@($null) 也不是空数组。§Load-Svc
       if ($null -eq $script:configNotices) { $script:configNotices = @() }
       foreach ($w in $script:svcFieldWarnings) { $script:configNotices += "services.json：$w" }
+      # 记下 mtime：Save-Svc 写前比对，挡住「手改后 GUI 全量写回」的覆盖。§Save-Svc
+      $script:svcFileStamp = (Get-Item -LiteralPath $cfg).LastWriteTimeUtc.Ticks
+      $script:svcFileHintShown = $false
       return $loaded
     }
     # 消息自带文件名：调用方无从判断来源，由写入方讲清。§Load-Svc
@@ -72,18 +95,72 @@ function Load-Svc {
 # 原子写回：$PID.$guid.tmp → Replace，避免停电留下半截 JSON。§Save-Svc
 function Save-Svc($s) {
   # 清单解析失败时 $script:svc 是示例清单（Load-Svc 回落的结果），写回会覆盖真实配置。
-  # Save-Svc 没有备份（Replace 第三参为 null），services.json 又不在 git 里，覆盖后无法恢复。
   if ($script:svcLoadFailed) { throw 'services.json 未能解析，已拒绝写入（请先修复该文件）' }
+  # 外部修改检测：载入时记下 mtime，写前再取一次。GUI 常驻期间有人手改（或另一个会话抢先写），
+  # 全量写回会把对方改动整份抹掉——拒绝写，让用户先按 F5 重载再改。§Save-Svc
+  if (Test-Path -LiteralPath $cfg) {
+    $nowStamp = (Get-Item -LiteralPath $cfg).LastWriteTimeUtc.Ticks
+    if ($script:svcFileStamp -and $nowStamp -ne $script:svcFileStamp) {
+      throw 'services.json 在载入后被外部修改，已拒绝写入（GUI 按 F5 重载后再试）'
+    }
+  }
   $json  = $s | ConvertTo-Json -Depth 5
   $tmp   = "$cfg.$PID.$([guid]::NewGuid()).tmp"
   [IO.File]::WriteAllText($tmp, $json, [Text.UTF8Encoding]::new($false))
   try {
-    # [NullString]::Value 才是真正的 CLR null；$null 会被绑成空串，File.Replace 报「path is empty」。§Save-Svc
-    if (Test-Path -LiteralPath $cfg) { [IO.File]::Replace($tmp, $cfg, [NullString]::Value) }
-    else { [IO.File]::Move($tmp, $cfg) }
+    if (Test-Path -LiteralPath $cfg) {
+      # 第三参给备份路径：Replace 顺手把上一版留成 services.json.bak（清单不在 git 里，没有这层就无回滚）。
+      # .bak 是自己上一版，被标只读时 File.Replace 会直接失败（「无法删除要被替换的文件」）——先清属性。
+      $bak = "$cfg.bak"
+      if (Test-Path -LiteralPath $bak) { try { (Get-Item -LiteralPath $bak).IsReadOnly = $false } catch {} }
+      [IO.File]::Replace($tmp, $cfg, $bak)
+    } else { [IO.File]::Move($tmp, $cfg) }
   } finally {
     if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -EA SilentlyContinue }
   }
+  # 自己写完同步刷新，否则下一次保存会被自己的 mtime 判成「外部修改」。
+  $script:svcFileStamp = (Get-Item -LiteralPath $cfg).LastWriteTimeUtc.Ticks
+  $script:svcFileHintShown = $false
+}
+
+# 清单是否被外部改过（GUI 常驻时手改、或另一个会话抢先写）：只做一次 stat，不读文件。
+# Save-Svc 自己写完会刷新 stamp 并清提示标记，所以自己的保存不会触发。§Test-SvcFileChanged
+function Test-SvcFileChanged {
+  if (-not $script:svcFileStamp -or $script:svcFileHintShown) { return $false }
+  try {
+    if (-not (Test-Path -LiteralPath $cfg)) { return $false }
+    if ((Get-Item -LiteralPath $cfg).LastWriteTimeUtc.Ticks -ne $script:svcFileStamp) {
+      $script:svcFileHintShown = $true
+      return $true
+    }
+  } catch {}
+  $false
+}
+
+# F5 重新加载清单：保留卡片缓存（不丢健康值、冷却、过渡态），只增删差异卡片。
+# 返回 $null 成功，否则一句原因（调用方塞状态栏）。§Invoke-SvcReload
+function Invoke-SvcReload {
+  # 有在途命令时拒绝：卡片被重建/丢弃后回执会落在不存在的卡上，而删除成功路径还会把旧内存
+  # 清单写回磁盘（$script:svc.Remove + Save-Svc）。
+  foreach ($c in @($script:cards.Values)) {
+    if ($c.ST -in @('启动中','停止中','暂停中','继续中','删除中')) {
+      return "$($c.SvcName) 正在切换中，稍后重载"
+    }
+  }
+  $script:svcLoadFailed = $false
+  $script:configWarning = $null
+  $new = Load-Svc
+  if ($script:svcLoadFailed) { return 'services.json 解析失败，未重载（原清单保持不变）' }
+  $script:svc = $new
+  # 后台每轮重读 $sync.svc；换了对象必须同步这个键，否则探测的还是旧清单。
+  if ($script:sync) { $script:sync.svc = $script:svc }
+  foreach ($n in @($script:cards.Keys)) {
+    if (-not $script:svc.Contains($n)) { $script:cards.Remove($n) }
+  }
+  $script:curPage = 0
+  $script:svcFileHintShown = $false
+  Render-Page
+  $null
 }
 
 # 写进内存清单并落盘，CLI 与对话框共用。返回 $null 成功，否则错误信息。§Add-SvcEntry
@@ -158,6 +235,8 @@ function Update-StatusTick {
         [Threading.Monitor]::Enter($script:sync.gate)
         try { $script:svc.Remove($item.n) } finally { [Threading.Monitor]::Exit($script:sync.gate) }
         $script:cards.Remove($item.n)
+        if ($script:healthSeen) { $script:healthSeen.Remove($item.n) }   # 同名重建时重记「首次观测」
+        if ($script:svcState) { $script:svcState.Remove($item.n) }
         # 保存成败只赋一次文案（T6）：原实现对「保存失败」又被「已删除」盖掉，用户看不到。§Update-StatusTick
         $note = try { Save-Svc $script:svc; "$($item.n) 已删除" }
                 catch { "$($item.n) 已删除但配置保存失败：$($_.Exception.Message)" }
@@ -168,6 +247,19 @@ function Update-StatusTick {
         Update-CardData $item.n $null $null -e $item.e -ack -ok ([bool]$item.ok)
       }
     } else {
+      # 健康历史：只有「状态或健康值变了」才记一条（4 秒一拍的重复值不落盘，否则一天几万行）。
+      # 写盘交给后台 runspace（UI 线程不碰 I/O），这里只入队。
+      if ($null -eq $script:healthSeen) { $script:healthSeen = @{} }   # 单测/CLI 直接调 tick 时没有初始化
+      if ($null -eq $script:svcState) { $script:svcState = @{} }       # 同上；批量启停也读它
+      # 全量记「最近一次探测值」：批量启停按它筛目标，翻页外（没有卡片）的服务也要能全启/全停。
+      $script:svcState[$item.n] = @{ st = $item.st; h = $item.h }
+      $prev = $script:healthSeen[$item.n]
+      $prevSt = if ($prev) { $prev.st } else { $null }
+      $prevH = if ($prev) { $prev.h } else { $null }
+      if (Test-HealthChanged $prevSt $prevH $item.st $item.h) {
+        $script:healthSeen[$item.n] = @{ st = $item.st; h = $item.h }
+        if ($script:healthQueue) { $script:healthQueue.Enqueue((New-HealthEvent $item.n $item.st $item.h)) }
+      }
       Update-CardData $item.n $item.st $item.h
     }
   }

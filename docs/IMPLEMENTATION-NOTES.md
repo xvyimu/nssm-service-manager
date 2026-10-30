@@ -102,9 +102,11 @@ epoch 只过滤**命令回执**：旧命令的回执不解除新命令的过渡�
 恒大于卡片当前那条）只重算按钮，不动别人的过渡态。原来的判据是「卡片有没有 TransitionAt」，
 会把双击建立的「停止中」刷回「运行中」，而那条停止命令其实还在途。
 
-成功回执：解封按钮 + 起冷却，但门闩必须按**当前**状态/健康重算——不能无条件置 $true。
-右键菜单的启停不经 Invoke-CardToggle，故回执到达时卡片可能仍停在「运行中/无响应」而没进过渡态；
-硬置 ReadyToToggle=$true 会绕过健康门闩，用户此刻能双击关掉一个本不该关闭的服务。
+成功回执：解封按钮 + 起冷却，但门闩必须按**当前**状态重算——不能无条件置 $true。
+右键菜单的启停不经 Invoke-CardToggle，故回执到达时卡片可能仍停在「已停止」而没进过渡态；
+硬置 ReadyToToggle=$true 会让一个已经停下的服务点亮「关闭」按钮。
+健康**不**参与按钮门闩（2026-10-30 改）：ReadyToToggle 只看状态，双击的健康检查在
+Invoke-CardAction 里按 `$detailed` 分支单独做，理由见「健康口径 auto / tcp」。
 
 删除中：终态由 remove 回执决定，没有「期望终态」可等。期间探测必然先报「已停止」、
 随后可能报「未安装」，都只是过程态——一律丢弃，否则卡片会闪回并重新点亮按钮。
@@ -184,10 +186,74 @@ services.json，调用方无从判断），来源只能由写入方在这里讲�
 
 ### Save-Svc
 
-原子写回：$PID.$guid.tmp → Replace（避免写一半停电留下半截 JSON）。
+原子写回：$PID.$guid.tmp → Replace（避免写一半停电留下半截 JSON）。第三参给 `services.json.bak`：
+清单不在 git 里，没有备份等于没有回滚（2026-10-30 加，修前传的是 `[NullString]::Value`）。
 
-[NullString]::Value 传真正的 CLR null；直接写 $null 会被 PowerShell 绑成空字符串，
-触发 File.Replace「The path is empty」（备份路径被当成非空字符串校验）。
+写前比对 mtime（Load-Svc 成功时记进 `$script:svcFileStamp`）：GUI 常驻期间有人手改、或另一个
+会话抢先写，全量写回会把对方改动整份抹掉——直接拒写，让用户按 F5 重载后再改。写完刷新 stamp，
+否则自己第二次保存会被判成外部修改。stamp 为 `$null`（没走 Load-Svc 的测试/首次无文件）时不校验。
+
+`.bak` 只读会在写前自动清属性（它本来就是我们自己的上一版）；被其它进程占用时 Replace 失败，
+整次保存报错——宁可让用户看到失败，也不静默丢掉备份。
+
+### 只读 Web 视图（webview.ps1 / webview-core.ps1 / webview-server.ps1）
+
+三个文件不是拆着玩：runspace 里不能 dot-source，只能把**文本**拼进去。core 是纯函数（无顶层语句），
+server 是顶层循环；拼的是这两份。第一版把 `webview.ps1` 全文拼进去，里面正好有 `Start-WebView` 和
+那段 `$script:webScript = ...` 赋值——进 runspace 后 `$PSCommandPath` 为空，赋值报错但脚本继续跑，
+于是「能工作，但每次启动都带一条隐藏异常」。`test-webview` 现在断言 `$ps.Streams.Error.Count -eq 0`
+把这条路封住。
+
+三层取舍：
+
+- **不用 `HttpListener`**：非管理员注册 URL 前缀要 `netsh urlacl`，便携运行和测试都多一道环境依赖；
+  `TcpListener` + 60 行解析够用，代价是只支持 GET。
+- **只听 127.0.0.1**：进程是管理员权限，监听 0.0.0.0 等于把「管理员工具的读接口」放到局域网。
+  要看就 SSH 端口转发，鉴权交给 SSH，不自己写登录/会话。
+- **token 走 query 而不是 Header**：目的只是挡住本机其它进程/页面的顺手访问（浏览器历史会留，
+  所以每次启动换新的）。比较做成长度+逐字符，避免早退泄露前缀。
+
+数据只读 `$sync.svc` / `$sync.svcState`，不碰卡片、不发命令；端口 0 = 随机，绑定失败写进
+`$sync.webError` 由状态栏报出来（不静默）。
+
+### 批量启停（card.ps1）
+
+入口是状态栏汇总标签的右键菜单，目标由 `$script:svcState` 决定——这个表在 `Update-StatusTick` 里
+对**每个**探测结果写一条（不只是有卡片的），所以翻页外、甚至从没翻到过的服务也能被全启/全停。
+用 `$script:cards` 筛会漏：卡片只在翻到那一页时才建。
+
+只处理「已停止 / 运行中」两种终态。启动中/停止中/暂停/未安装一律跳过——批量命令和手动命令
+抢同一张卡时，过渡态是最容易打架的地方。停止前走 `Confirm-BatchStop`（MessageBox OKCancel），
+单独成函数是为了无头测试能重定义。
+
+每个目标都走 `Send-ServiceCommand`（同一条队列、同一套 epoch），有卡片的再 `Set-CardTransition`：
+省掉一个探测周期的滞后和这期间的双击窗口；没卡片的就靠探测收敛，不额外造状态。
+
+### 健康历史（health.ps1 + poll.ps1 + util.ps1）
+
+事件形状 `{ts,n,st,h}`，一天一个 `health-YYYYMMDD.ndjson`。`Test-HealthChanged` 只放行变化：
+首次观测（prev 都为 `$null`）算变化，之后按 `"$prevState|$prevHealth"` 字符串比对——用对象比较
+会把 `$null` 与 `''` 当成反复变化。
+
+写入路径：UI 线程只 `$script:healthQueue.Enqueue((New-HealthEvent ...))`，落盘在 poll 循环开头
+（`Add-HealthEvent` 自己吞异常：历史写不进去不该影响探测）。因此 `lib/health.ps1` 要像 svc-common
+一样被前置进 runspace 文本；util.ps1 另外按需 self-load 一次，让「只 dot-source util」的单测也能用。
+
+读取从最新文件、最新行往前读，坏行跳过；清理只认标准文件名 `health-\d{8}`，按 `HealthKeepDays`
+删整个文件——不做行级裁剪，文件本身就是一天的量。`HealthHistory=false` 时队列为 `$null`，
+后台 `if ($sync.healthQ)` 整段跳过，不留「写空目录」的路径。
+
+### Test-SvcFileChanged / Invoke-SvcReload（util.ps1）
+
+mtime 门闩挡住「手改后全量写回」，但原来只把用户挡在「关闭重开 GUI」。补的出口是 F5：
+tick 里一次 `stat`（不读文件）判外部改动，命中就提示一次并置 `$script:svcFileHintShown`；
+F5 走 `Invoke-SvcReload` 重新 `Load-Svc`，把 `$script:sync.svc` 指向新对象（后台每轮重读这个键，
+不换就等于探测旧清单），再按名字差异摘掉消失的卡、由 `Render-Page` 复用/新建——所以健康值、
+冷却、过渡态都不丢。
+
+两个拒绝条件：有在途命令（`启动中/停止中/暂停中/继续中/删除中`）时拒绝——回执会落在不存在的
+卡上，删除成功路径还会 `$script:svc.Remove` + `Save-Svc` 把旧内存清单写回磁盘；清单解析失败时
+拒绝，原清单保持不变（`svcLoadFailed` 同时让后续保存也拒写）。
 
 ### Add-SvcEntry
 
@@ -805,14 +871,28 @@ AppRotateFiles=1 会在**每次服务启动**时轮转一次：频繁重启的�
 ### 清单解析失败时拒绝写盘（util.ps1）
 
 `Save-Svc` 开头判 `$script:svcLoadFailed`，为真直接抛。修前只有 CLI 分支有门闩，
-GUI 在清单解析失败后点一次增删，就把「示例清单 + 新服务」写回真实文件——`File.Replace`
-不带备份，services.json 又不在 git 里，覆盖后无法恢复。
+GUI 在清单解析失败后点一次增删，就把「示例清单 + 新服务」写回真实文件——当时 `File.Replace`
+不带备份、services.json 又不在 git 里，覆盖后无法恢复（2026-10-30 起有 `.bak` + 载入后 mtime 拒写）。
 
 ### 配置覆盖值按类型校验（config.ps1）
 
 覆盖时按默认值的类型 `TryParse`，失败保留默认并追加一条 `configNotices`。
 修前原样赋值：`"TcpTimeoutMs": "200ms"` 会一路传到主脚本的 `[int]` 强转，
 在 `$ErrorActionPreference='Stop'` 下抛 RuntimeException，窗口根本不出现。
+
+2026-10-30 补区间：`$script:configRanges` 表给每个数值键 `min..max`。`TryParse` 只证明「是整数」，
+`TcpTimeoutMs: -1` 会让 `WaitOne` / `CancellationTokenSource` 变成无限等待（后台 runspace
+从此不返回），`PerPage: 0` 会让分页做除零（窗口起不来，只留一行 crash log）。
+未知键也从静默忽略改成提示——拼错 `TcpTimeout` 时原来毫无反馈。
+
+### 健康口径 auto / tcp（poll.ps1 + util.ps1）
+
+`services.json` 每服务可选 `probe`: `auto`（缺省）/ `tcp` / `http`。`tcp` 或 `url` 为空时
+TCP 通即「正常」，不发 HTTP；其余照旧 TCP 通后 `GET url` 要 200。
+
+修前只有 HTTP 一条路，非 HTTP 服务（数据库、gRPC、纯 socket 守护）永远不是绿点；更糟的是
+`Test-CardCanStop` 当时把健康一起判进去，这类服务的「关闭」按钮被永久禁用，只剩右键菜单。
+现在按钮只看状态，健康只影响双击（误关保护），`Invoke-CardAction` 的 `$detailed` 分支负责。
 
 ### 路径形态校验（svc-input.ps1）
 

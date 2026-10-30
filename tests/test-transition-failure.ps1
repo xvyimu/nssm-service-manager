@@ -153,22 +153,24 @@ try {
   # ---- 5a. 两个方向的门闩真值表 ----
   Assert (Test-CardCanStart '已停止') '已停止应可启动。'
   Assert (-not (Test-CardCanStart '运行中')) '运行中不可再启动。'
-  Assert (Test-CardCanStop '运行中' '正常') '运行中+正常应可关闭。'
-  Assert (-not (Test-CardCanStop '运行中' '无响应')) '运行中+无响应不可关闭（健康门闩）。'
-  Assert (-not (Test-CardCanStop '运行中' '超时')) '运行中+超时不可关闭。'
-  Assert (-not (Test-CardCanStop '运行中' '')) '运行中+空健康不可关闭。'
-  Assert (-not (Test-CardCanStop '已停止' '正常')) '已停止不可关闭。'
+  # 关闭只看状态：健康探测的失败原因太多（非 HTTP 服务、面板 401、抖动），接进按钮会锁死出口。
+  # 健康门闩只保留在双击路径（Invoke-CardAction 的 $detailed 分支）。
+  Assert (Test-CardCanStop '运行中') '运行中应可关闭（健康不参与按钮门闩）。'
+  Assert (-not (Test-CardCanStop '已停止')) '已停止不可关闭。'
+  Assert (-not (Test-CardCanStop '暂停中')) '暂停中不可关闭。'
 
-  # ---- 5. ack 门闩按当前状态/健康重算，不无条件点亮 ----
-  # 右键菜单的启停直接 Send-ServiceCommand、不置过渡态，回执到达时卡片可能仍是
-  # 「运行中/无响应」。成功回执若硬置 ReadyToToggle=$true，用户能双击关掉一个本不该
-  # 关闭的服务（健康门闩被绕过）。
+  # ---- 5. ack 门闩按当前状态重算，不无条件点亮 ----
+  # 右键菜单的启停直接 Send-ServiceCommand、不置过渡态，回执到达时卡片可能仍是终态。
+  # 成功回执若硬置 ReadyToToggle=$true，一个已停止的服务会被点亮关闭按钮。
   $card.LastToggle=[datetime]::MinValue
-  Update-CardData 'TestService' '运行中' '无响应'
-  Assert (-not $card.ReadyToToggle) 'Unhealthy running card should not be toggle-ready.'
+  Update-CardData 'TestService' '已停止' ''
+  Assert (-not $card.ReadyToToggle) 'Stopped card should not be toggle-ready.'
   Update-CardData 'TestService' $null $null -e 0 -ack -ok $true
-  Assert (-not $card.ReadyToToggle) "Success ack bypassed the health gate: ReadyToToggle=$($card.ReadyToToggle)."
-  Assert (-not $card.BtnStop.IsEnabled) 'Success ack enabled the close button on an unhealthy service.'
+  Assert (-not $card.ReadyToToggle) "Success ack armed a stopped card: ReadyToToggle=$($card.ReadyToToggle)."
+  Assert (-not $card.BtnStop.IsEnabled) 'Success ack enabled the close button on a stopped service.'
+  # 运行中但健康未过：关闭按钮必须可用（这是 P0-1 的修复点，健康只管双击）
+  Update-CardData 'TestService' '运行中' '无响应'
+  Assert ($card.ReadyToToggle -and $card.BtnStop.IsEnabled) 'Unhealthy running card must stay closable from the button.'
 
   # ---- 6. 非过渡态的失败回执不得回滚（右键启停路径）----
   # 右键启停不置过渡态（TransitionAt 仍 MinValue），PrevST/PrevH 还是 New-Card 初值。

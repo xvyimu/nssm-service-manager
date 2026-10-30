@@ -35,6 +35,12 @@ service-manager-gui.ps1（主入口：CLI 分支 + 提权 + 模块加载 + 窗�
 │                     NSSM set 规格（Get-NssmSetSpec，含 ObjectName）
 ├─ lib/nssm.ps1       NSSM 操作：nssm-set / Install-NssmService / Remove-NssmService
 ├─ lib/logview.ps1    日志查看器：Get-LogFiles（当前+轮转枚举）+ Show-Log（WPF 窗口）
+│                     + Show-HealthHistory（健康历史窗口）
+├─ lib/health.ps1     健康历史纯函数：New-HealthEvent / Test-HealthChanged / Add-HealthEvent /
+│                     Get-HealthEvents / Remove-OldHealthFiles（按天 NDJSON；poll 前置其文本写盘）
+├─ lib/webview.ps1    只读 Web 视图生命周期：Start-WebView / Stop-WebView（独立 runspace）
+├─ lib/webview-core.ps1   纯函数：Test-WebToken / Get-WebSnapshot / Get-WebPageHtml（无顶层语句）
+├─ lib/webview-server.ps1 服务器循环：loopback TcpListener、GET only、token 门禁（拼进 runspace）
 ├─ lib/dialogs.ps1    GUI 对话框：Show-Add / New-AddDialog（添加服务；后者只搭控件，
 │                     留给无头测试）+ Show-Remove（删除确认）
 ├─ lib/svc-common.ps1 UI 与 runspace 共用的服务操作原语：Wait-Stopped、退出码/状态中文映射、
@@ -75,6 +81,8 @@ PowerShell 函数体内符号是**调用时**解析，只要全部模块加载�
 UI DispatcherTimer 400ms tick → TryDequeue → Update-CardData
 ```
 
+并行探测每服务一档：`probe` 为 `tcp`（或 `url` 为空）时只看端口是否 listen（通 =「正常」）；`auto` / `http` 时 TCP 通后还要 `GET url` 拿 200，否则按异常文案归到「超时」/「无响应」。健康值只影响圆点与双击切换，按钮可用性只看服务状态。
+
 ### 命令流（UI → 后台）
 
 ```
@@ -112,6 +120,8 @@ UI DispatcherTimer → ack 分支 → 解封按钮 + 冷却
 ### 3. Save-Svc 全量写回
 
 `Save-Svc` 写的是调用方传入的整个对象——`$s | ConvertTo-Json -Depth 5` 全量序列化，不做字段筛选。`Read-SvcFile` 读入什么形状，就原样写回什么形状。
+
+全量写回意味着「GUI 内存里的清单」是唯一事实，所以写前要比 mtime：载入后文件被人手改或另一个会话抢先写过，就拒绝写。对应的出口是 **F5 重载**（`Invoke-SvcReload`）——重新读盘、复用已有卡片、只增删差异；有在途命令时拒绝（回执会落在不存在的卡上，删除成功路径还会把旧内存清单写回磁盘）。选 F5 而不是自动重载：自动重载会在用户正操作时把卡片换掉，而改清单是低频动作，一个显式手势够用。
 
 ### 4. 配置层示例+实配分离
 
@@ -195,9 +205,15 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 - **`NSSM_PATH` 只校验「存在 + 文件名为 nssm.exe」**：不校验签名/路径。该值随后以管理员身份被调用，故文件名校验只为挡住「指向任意 exe」；仍无法防御能改管理员进程环境变量的攻击者（那种场景已超出本工具的信任边界）。**2026-10-28 评估过加 `Get-AuthenticodeSignature`**：实测本机官方 scoop 包的 `nssm.exe` 是 `NotSigned`，加了会对所有正常安装误报，故不加。
   **2026-10-29 补**：启动时检查 `nssm.exe` 所在目录的 ACL，若本机普通用户可写（`Test-DirAclPermissive` 判「是」）则在状态栏提示「建议改装到系统目录」并写一行 crash log。不阻断——scoop 默认就装在用户目录。同一天把 `launch.vbs` 的 pwsh 解析顺序改成 Program Files 优先、scoop 次之，理由相同：用户可写目录里的 pwsh 被替换后，下次双击 + UAC 就是管理员权限。
 - **`Open-PanelUrl` 只放行 `http` / `https`**：2026-10-29 改为白名单。原实现直接 `Start-Process` 任意 URI，`file:///` 或自定义协议在提权 GUI 下等于以管理员**执行**任意程序（不只是「打开网页」）。非 http/https 的地址现在只更新状态栏，不启动。
+- **健康探测有 `probe` 口径（`auto` / `tcp` / `http`），关闭按钮不再看健康**：2026-10-30 加。原实现只有「TCP 通 + HTTP 200」一条路，非 HTTP 服务（数据库、gRPC、纯 socket）永远不是绿点；更糟的是 `Test-CardCanStop` 把健康一起判进去，这类服务的「关闭」按钮被永久禁用，只剩右键菜单。现在 `probe: tcp`（或 `url` 为空）时 TCP 通即正常，健康门闩只留在双击路径。
+- **`services.json` 的三道写入门闩**：解析失败拒写（原有）、顶层形状必须是对象（2026-10-30 加：`[]` / `"x"` 这类合法 JSON 取不到键，旧实现返回空清单并当成功，下一次保存把原文件覆盖成 `{}`）、载入后 mtime 变化拒写（手改或另一个会话抢先写时不让全量写回抹掉别人的改动）。写前顺手把上一版留成 `services.json.bak`。
+- **`config.json` 数值有区间校验**：2026-10-30 加。`TryParse` 只证明是整数，`TcpTimeoutMs: -1` 会让 `WaitOne` / `CancellationTokenSource` 变成无限等待（后台 runspace 从此不返回），`PerPage: 0` 会让分页做除零（窗口根本起不来）。越界回落默认值 + 弹提示。
+- **健康历史只在「变化」时记一条**：`logs/health/health-YYYYMMDD.ndjson`，没有心跳/采样点，所以「一直平稳」在历史里是空白而不是一行行「正常」。这是刻意的——4 秒一拍全记一天几万行，读的时候全是噪声。写入在后台 runspace（UI 线程不碰 I/O），`HealthHistory=false` 时连队列都不建。保留天数用 `HealthKeepDays` 按天删文件。
+- **Web 只读视图的信任边界**：默认关。开时只 `127.0.0.1` 监听、只接受 `GET`、必须带 `?t=<128 位随机 token>`（状态栏显示一次），没有任何写入口。局域网访问走 SSH 端口转发——**不**监听外部网卡，也**不**自己写登录/会话。端口 0 = 随机，避免和别的工具抢固定端口；端口被占用时状态栏报错，不静默。
+- **批量启停只处理终态**：只挑「已停止 / 运行中」，启动中/停止中/暂停/未安装都不碰——批量命令和手动命令抢同一张卡时，过渡态最容易打架。目标来自全量探测结果 `$script:svcState`，不只当前页。
 
 ## 测试
 
-`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 11 项回归测试。详见 README「测试与截图」节。
+`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 自动收集的 `tests/test-*.ps1`（当前 20 项；`test-helpers.ps1` 是夹具）。详见 README「测试与截图」节。
 
 CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）。

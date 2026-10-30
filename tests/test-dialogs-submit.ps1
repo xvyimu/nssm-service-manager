@@ -47,6 +47,12 @@ try {
   Assert (-not $ok) '端口越界应被拦下。'
   Assert ($script:dialogErrors[0] -eq '端口必须是 1-65535') "端口文案错误：$($script:dialogErrors[0])"
 
+  # ---- T3-b2：端口不是数字 —— 原来在 Test-SvcInput 之前就 [int] 强转，抛异常只写状态栏 ----
+  $script:dialogErrors = @()
+  $ok = Submit-AddService $win @{ n='SvcA'; p='3000ms'; exe=$fakeExe; url=''; dir=''; par=''; env='' }
+  Assert (-not $ok) '非数字端口应被拦下（而不是抛异常）。'
+  Assert ($script:dialogErrors[0] -eq '端口必须是 1-65535 的整数') "非数字端口文案错误：$($script:dialogErrors[0])"
+
   # ---- T3-c：env 格式错误被拦下（GUI 比 CLI 多一层校验）----
   $script:dialogErrors = @()
   $ok = Submit-AddService $win @{ n='SvcA'; p='8080'; exe=$fakeExe; url=''; dir=''; par=''; env='NOVALUE' }

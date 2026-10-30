@@ -26,6 +26,52 @@ function Get-LogFiles([string]$n, [string]$LogPath){
   @($current) + @($rotated)
 }
 
+# 读日志尾部：只读最后 $MaxBytes，取其中最后 $Keep 行。整文件读会卡住 UI 线程（NSSM 日志没有上限），
+# 而用户只看最后几百行。抽成无 WPF 依赖的函数，才能在没有界面的情况下单测。§Read-LogTail
+function Read-LogTail([string]$path, [int]$Keep = 500, [int]$MaxBytes = 262144) {
+  if (-not $path -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+  $fs = [IO.File]::Open($path, 'Open', 'Read', [IO.FileShare]::ReadWrite)
+  try {
+    $truncated = $fs.Length -gt $MaxBytes
+    if ($truncated) { [void]$fs.Seek(-$MaxBytes, 'End') }
+    $sr = [IO.StreamReader]::new($fs, [Text.UTF8Encoding]::new($false))
+    try { $text = $sr.ReadToEnd() } finally { $sr.Dispose() }
+  } finally { $fs.Dispose() }
+  $lines = @($text -split "`r?`n")
+  # 从中间切进来时第一行是残片，丢掉（否则会显示半行乱码）
+  if ($truncated -and $lines.Count -gt 1) { $lines = $lines[1..($lines.Count - 1)] }
+  (@($lines) | Select-Object -Last $Keep) -join "`r`n"
+}
+
+# 健康历史窗口：最近 200 条（最新在前）。和日志窗口同款只读文本框，不做表格。§Show-HealthHistory
+function Show-HealthHistory([string]$n, $owner){
+  # 目录来源与写入侧一致（$script:healthHistoryDir 由主脚本按 HealthHistory 开关算）
+  $dir = if ($script:healthHistoryDir) { $script:healthHistoryDir }
+         elseif ($logDir) { Join-Path $logDir 'health' }
+         else { $null }
+  $events = @(Get-HealthEvents $dir $n 200 ([int]$script:config.HealthKeepDays))
+  $text = if (-not $events.Count) {
+    '还没有历史记录。健康历史只在「状态或健康值变化」时落一条，服务一直平稳就没有内容。'
+  } else {
+    ($events | ForEach-Object {
+      $ts = if ($_.ts) { ([datetime]$_.ts).ToString('MM-dd HH:mm:ss') } else { '?' }
+      '{0}  {1,-8} {2}' -f $ts, $_.st, $_.h
+    }) -join "`r`n"
+  }
+  $w = New-Object System.Windows.Window -Property @{
+    Title="$n 健康历史"; Width=620; Height=460; WindowStartupLocation='CenterOwner'
+    Background=[System.Windows.Media.Brushes]::White
+  }
+  $box = New-Object System.Windows.Controls.TextBox -Property @{
+    IsReadOnly=$true; Text=$text; AcceptsReturn=$true; TextWrapping='NoWrap'
+    FontFamily=$script:cjkFont; FontSize=11; Margin='10'; BorderThickness='0'
+    VerticalScrollBarVisibility='Auto'; HorizontalScrollBarVisibility='Auto'
+  }
+  $w.Content = $box
+  if ($owner) { $w.Owner = $owner }
+  $w.ShowDialog() | Out-Null
+}
+
 # 日志查看器（闭包 hashtable 持久切换状态）。§Show-Log
 function Show-Log([string]$n, $owner){
   $f2 = New-Object System.Windows.Window -Property @{
@@ -45,15 +91,14 @@ function Show-Log([string]$n, $owner){
 
   $load = {
     $box.Clear()
-    $f3 = $state.File
-    if (-not $f3 -or -not (Test-Path -LiteralPath $f3)) { $box.Text = "无日志"; return }
-    # 逐行读，固定容量队列只留最后 500 行——避免把整个大日志物化到内存
-    $tail = [System.Collections.Generic.Queue[string]]::new(500)
-    foreach ($l in [System.IO.File]::ReadLines($f3)) {
-      if ($tail.Count -ge 500) { [void]$tail.Dequeue() }
-      $tail.Enqueue($l)
+    # 读失败（被占用/无权限）只显示原因：这个闭包原来无 catch，异常会冒到 Dispatcher 兜底，
+    # 日志窗留着上一次的内容，用户以为文件没变。
+    try {
+      $text = Read-LogTail $state.File 500
+      $box.Text = if ($null -eq $text) { '无日志' } else { $text }
+    } catch {
+      $box.Text = "读取日志失败：$($_.Exception.Message)"
     }
-    $box.Text = ($tail -join "`r`n")
     $box.ScrollToEnd()
   }.GetNewClosure()
 
