@@ -2,7 +2,7 @@
 param([string]$RepoRoot=(Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Xaml
-foreach ($module in 'theme','util','card','xaml') { . (Join-Path $RepoRoot "lib/$module.ps1") }
+foreach ($module in 'theme','util','card','xaml','dialogs') { . (Join-Path $RepoRoot "lib/$module.ps1") }
 $script:sync=@{wake=[Threading.AutoResetEvent]::new($false)}
 $script:svc=[ordered]@{TestService=@{port=8080;url='http://127.0.0.1:8080'}}
 function Stop-Background {}
@@ -69,7 +69,9 @@ try {
         # 过渡态文字在状态标签上；两个按钮（启动/关闭）都不该可用
         Assert ($card.ST -eq $expectedState -and $card.LblSt.Text -eq $expectedState) 'Transition display changed.'
         Assert (-not $card.Btn.IsEnabled -and -not $card.BtnStop.IsEnabled -and -not $card.ReadyToToggle) 'Transition must disable both buttons.'
-        Assert ($card.LastToggle -gt $lastToggle -and $card.Dot.Fill.Color -eq [Windows.Media.Colors]::Orange) 'Transition feedback changed.'
+        # 过渡态颜色跟主题 token 走（P5 把内联 Brushes.Orange 换成了对比度达标的琥珀）。
+        $busyColor = if ($script:T -and $script:T.BrushBusy) { $script:T.BrushBusy.Color } else { [Windows.Media.Colors]::Orange }
+        Assert ($card.LastToggle -gt $lastToggle -and $card.Dot.Fill.Color -eq $busyColor) 'Transition feedback changed.'
       } else {
         Assert (-not $script:sync.wake.WaitOne(0)) 'Rejected command woke worker.'
         Assert ($script:cmdQueue.IsEmpty -and $card.ST -eq $case.State -and $card.LastToggle -eq $lastToggle) "$source guard changed state or queued an action."
@@ -79,9 +81,10 @@ try {
           'unknown' {'TestService 状态尚未就绪'}
           'cooldown' { $null }
         }
-        if ($expected) { Assert ($script:statusBar.Text -eq $expected) "$source feedback changed: $($case.Error)" }
+        if ($expected) { Assert ($script:statusBar.Text -match [regex]::Escape($expected)) "$source feedback changed: $($case.Error)" }
         else {
-          $pattern=if ($source -eq 'Button') {'^TestService 请等待 [1-8]s$'} else {'^TestService 请等待 [1-8]s 再操作$'}
+          # 状态栏现在带 HH:mm:ss 前缀（动作日志语义），不能再从行首锚定。
+          $pattern=if ($source -eq 'Button') {'TestService 请等待 [1-8]s$'} else {'TestService 请等待 [1-8]s 再操作$'}
           Assert ($script:statusBar.Text -match $pattern) 'Cooldown feedback changed.'
         }
       }
@@ -101,12 +104,14 @@ try {
   $card=New-Card 'TestService' $script:svc.TestService
   Update-CardData $card.SvcName '运行中' '无响应'
   Assert ($card.LblSt.Text -eq '等待中') "健康未通过时应显示等待中，got [$($card.LblSt.Text)]"
-  Assert ($card.Dot.Fill.Color -eq [Windows.Media.Colors]::Orange) '等待中应显示橙点'
+  $busyColor = if ($script:T -and $script:T.BrushBusy) { $script:T.BrushBusy.Color } else { [Windows.Media.Colors]::Orange }
+  $dangerColor = if ($script:T -and $script:T.BrushDanger) { $script:T.BrushDanger.Color } else { [Windows.Media.Colors]::Red }
+  Assert ($card.Dot.Fill.Color -eq $busyColor) '等待中应显示橙点'
   # 等太久（超过 WaitHealthyTimeoutMs）：不是「还在启动」，是卡住了
   $card.UnhealthySince = [datetime]::Now.AddMilliseconds(-($script:WAIT_HEALTHY_TIMEOUT_MS + 1000))
   Update-CardData $card.SvcName '运行中' '无响应'
   Assert ($card.LblSt.Text -eq '无响应') "等待超时后应显示无响应，got [$($card.LblSt.Text)]"
-  Assert ($card.Dot.Fill.Color -eq [Windows.Media.Colors]::Red) '等待超时后应显示红点'
+  Assert ($card.Dot.Fill.Color -eq $dangerColor) '等待超时后应显示红点'
   # 滞回：一次正常不清零，也不闪回绿（探测抖动时会出现这个序列）
   Update-CardData $card.SvcName '运行中' '正常'
   Assert ($card.UnhealthySince -ne [datetime]::MinValue) '一次正常不该清零累计'
@@ -115,7 +120,8 @@ try {
   Update-CardData $card.SvcName '运行中' '正常'
   Assert ($card.UnhealthySince -eq [datetime]::MinValue) '连续两次正常应清零 UnhealthySince'
   Assert ($card.LblSt.Text -eq '运行中') "真恢复后显示运行中，got [$($card.LblSt.Text)]"
-  Assert ($card.Dot.Fill.Color -eq [Windows.Media.Colors]::Green) '真恢复后显示绿点'
+  $okColor = if ($script:T -and $script:T.BrushOk) { $script:T.BrushOk.Color } else { [Windows.Media.Colors]::Green }
+  Assert ($card.Dot.Fill.Color -eq $okColor) '真恢复后显示绿点'
   # 抖动序列：不健康 → 正常 → 不健康，累计起点不重置
   $card=New-Card 'TestService' $script:svc.TestService
   Update-CardData $card.SvcName '运行中' '无响应'

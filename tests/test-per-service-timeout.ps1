@@ -11,7 +11,7 @@
 param([string]$RepoRoot=(Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Xaml
-foreach ($module in 'theme','util','card','xaml') { . (Join-Path $RepoRoot "lib/$module.ps1") }
+foreach ($module in 'theme','util','card','xaml','dialogs') { . (Join-Path $RepoRoot "lib/$module.ps1") }
 . (Join-Path $RepoRoot 'lib/poll.ps1')
 function Assert($condition,[string]$message) { if (-not $condition) { throw $message } }
 

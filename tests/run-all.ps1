@@ -48,6 +48,9 @@ Invoke-Check 'PowerShell parser' {
 }
 
 # 自动收集 tests/test-*.ps1：手写清单漏登记 = 新用例静默不进 CI。
+# NSSM_SM_HEADLESS=1 让子进程跳过确认框（Confirm-ExitBusy）：MessageBox 在非交互测试里
+# 会真弹窗并永久阻塞，整个 run-all 就停在那儿等人工点「是」。
+$env:NSSM_SM_HEADLESS = '1'
 # 统一 -STA（WPF 用例必需，纯函数用例加了也无害）；test-helpers.ps1 是被 dot-source 的夹具。
 $tests = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter 'test-*.ps1' -File |
   Where-Object { $_.Name -ne 'test-helpers.ps1' } |

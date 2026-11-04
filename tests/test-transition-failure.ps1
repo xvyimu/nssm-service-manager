@@ -37,7 +37,7 @@ try {
 
 # ---- 2/3. UI 侧：失败回滚与超时逃生 ----
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Xaml
-foreach ($module in 'theme','util','card','xaml') { . (Join-Path $RepoRoot "lib/$module.ps1") }
+foreach ($module in 'theme','util','card','xaml','dialogs') { . (Join-Path $RepoRoot "lib/$module.ps1") }
 $script:sync=@{wake=[Threading.AutoResetEvent]::new($false); gate=[object]::new()}
 $script:svc=[ordered]@{TestService=@{port=8080;url='http://127.0.0.1:8080'}}
 $script:cmdQueue=[Collections.Concurrent.ConcurrentQueue[object]]::new()

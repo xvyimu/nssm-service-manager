@@ -23,6 +23,9 @@ $fakeExe = Join-Path ([IO.Path]::GetTempPath()) "sm-dlg-$([guid]::NewGuid().ToSt
 $script:dialogErrors = @(); $script:dialogWarnings = @(); $script:confirmAnswer = $true; $script:confirmSeen = $null
 function Show-DialogError($owner, [string]$msg) { $script:dialogErrors += $msg }
 function Show-DialogWarning($owner, [string]$msg, [string]$title) { $script:dialogWarnings += @{ msg=$msg; title=$title } }
+# 单测不该受运行机器真实 ACL 影响：默认「不可写」，要验告警的用例自己置 $true。
+$script:exeDirPermissive = $false
+function Test-ExeDirPermissive([string]$exe) { return [bool]$script:exeDirPermissive }
 function Confirm-SensitiveEnvKeys($owner, [string]$tip) { $script:confirmSeen = $tip; $script:confirmAnswer }
 # NSSM / 保存 替身
 $script:installed = @()
@@ -100,6 +103,17 @@ try {
   Assert ($script:installed -contains 'SvcG') 'GPU 提示后应继续注册。'
   Assert ($script:dialogWarnings.Count -eq 1 -and $script:dialogWarnings[0].title -eq '运行账户提示') "应弹一条运行账户提示，got $($script:dialogWarnings.Count)"
   Assert ($script:dialogWarnings[0].msg -match 'LocalSystem') '提示应点明 LocalSystem'
+
+  # ---- T3-i2：LocalSystem + 可写 exe 目录 → 再多一条安全姿态提示，且仍继续注册 ----
+  $script:exeDirPermissive = $true
+  $script:installed = @(); $script:dialogErrors = @(); $script:dialogWarnings = @()
+  $ok = Submit-AddService $win @{ n='SvcG2'; p='8088'; exe=$fakeExe; url=''; dir=''; par=''; env=''
+      account='LocalSystem'; gpu=$false }
+  $script:exeDirPermissive = $false
+  Assert ($ok) '可写目录告警不该阻断注册。'
+  Assert ($script:installed -contains 'SvcG2') '告警后应继续注册。'
+  Assert ($script:dialogWarnings.Count -eq 1 -and $script:dialogWarnings[0].title -eq '安全姿态提示') "应弹一条安全姿态提示，got $($script:dialogWarnings.Count)"
+  Assert ($script:dialogWarnings[0].msg -match 'SYSTEM') '提示应点明可被替换后以 SYSTEM 运行'
 
   # ---- T3-j：未知账户直接拒绝，不注册（静默回落会让用户以为按最小权限跑了）----
   $script:installed = @(); $script:dialogErrors = @(); $script:dialogWarnings = @()
@@ -202,7 +216,7 @@ try {
   $card = $script:cards['RmSvc']
   Assert ($card.ST -eq '删除中') "删除未置过渡态：$($card.ST)"
   Assert (-not $card.Btn.IsEnabled -and -not $card.ReadyToToggle) '删除中按钮未禁用。'
-  Assert ($script:statusBar.Text -eq '正在删除 RmSvc ...') "状态栏文案不对：$($script:statusBar.Text)"
+  Assert ($script:statusBar.Text -match '正在删除 RmSvc') "状态栏文案不对：$($script:statusBar.Text)"
   $cmd = $null; [void]$script:cmdQueue.TryDequeue([ref]$cmd)
   Assert ($cmd.n -eq 'RmSvc' -and $cmd.act -eq 'remove' -and $cmd.e -gt 0) "删除命令入队错误：$($cmd.n)/$($cmd.act)/$($cmd.e)"
 
@@ -211,7 +225,7 @@ try {
   Submit-RemoveCommand 'NotInCache'
   $cmd = $null; [void]$script:cmdQueue.TryDequeue([ref]$cmd)
   Assert ($cmd.n -eq 'NotInCache' -and $cmd.act -eq 'remove') '卡片不在缓存时未入队删除命令。'
-  Assert ($script:statusBar.Text -eq '正在删除 NotInCache ...') 'else 分支状态栏文案不对。'
+  Assert ($script:statusBar.Text -match '正在删除 NotInCache') 'else 分支状态栏文案不对。'
 
   Write-Output 'PASS: Submit-RemoveCommand enqueues remove + sets transition when cached; enqueues without transition when uncached.'
 } finally { $win.Close(); $script:sync.wake.Dispose(); Remove-Item -LiteralPath $fakeExe -Force -EA SilentlyContinue }
