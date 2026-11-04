@@ -78,16 +78,43 @@ function Show-Log([string]$n, $owner){
     Title = "$n 日志"; Width = 760; Height = 520; WindowStartupLocation='CenterOwner'
     Background = [System.Windows.Media.Brushes]::White
   }
+  # 正文等宽 11px：日志是用来对齐扫读的，CJK 字体下多空格会错位。
   $box = New-Object System.Windows.Controls.TextBox -Property @{
-    IsReadOnly = $true; FontFamily = $script:cjkFont; FontSize = 10
+    IsReadOnly = $true; FontFamily = $script:fontMono; FontSize = 11
     VerticalScrollBarVisibility = 'Auto'; TextWrapping = 'NoWrap'
     Background = [System.Windows.Media.Brushes]::White; Foreground = [System.Windows.Media.Brushes]::Black
   }
-  $lt = New-Object System.Windows.Controls.StackPanel -Property @{ Orientation='Horizontal' }
+  # 顶部元信息：行数上限 / 文件大小 / 最后写入时刻——一眼判断「日志到底还活着没有」。
+  $meta = New-Object System.Windows.Controls.TextBlock -Property @{
+    FontFamily=$script:cjkFont; FontSize=11; Foreground=$script:T.Dim; Margin='10,8,4,0'
+  }
+  $lt = New-Object System.Windows.Controls.StackPanel -Property @{ Orientation='Horizontal'; Margin='6,4,6,6' }
   # 当前日志 + 轮转历史下拉；切换时重新加载
   $state = @{ File = $null }
   $combo = New-Object System.Windows.Controls.ComboBox -Property @{ Margin='4,2'; MinWidth=220 }
-  $refreshBtn = New-Object System.Windows.Controls.Button -Property @{ Content='🔄 刷新'; Margin='4,2' }
+  $refreshBtn = New-Object System.Windows.Controls.Button -Property @{ Content='刷新'; Margin='4,2' }
+  # 跟随最新：默认开，用户往上一滚就自动关（看历史时不该被新行顶回底部）。
+  $follow = New-Object System.Windows.Controls.CheckBox -Property @{
+    Content='跟随最新'; IsChecked=$true; Margin='12,0,4,0'; VerticalAlignment='Center'; FontFamily=$script:cjkFont; FontSize=11
+  }
+  $openDir = New-Object System.Windows.Controls.Button -Property @{ Content='打开文件夹'; Margin='4,2' }
+  $copyPath = New-Object System.Windows.Controls.Button -Property @{ Content='复制路径'; Margin='4,2' }
+  $logRoot = if ($logDir) { [string]$logDir } else { $null }   # 调用方脚本作用域，闭包里显式带走
+
+  $updateMeta = {
+    $sizeText = ''
+    $whenText = ''
+    if ($state.File -and (Test-Path -LiteralPath $state.File -PathType Leaf)) {
+      try {
+        $fi = [IO.FileInfo]$state.File
+        $sizeText = if ($fi.Length -ge 1MB) { '{0:N1} MB' -f ($fi.Length / 1MB) }
+                    elseif ($fi.Length -ge 1KB) { '{0:N0} KB' -f ($fi.Length / 1KB) }
+                    else { "$($fi.Length) B" }
+        $whenText = $fi.LastWriteTime.ToString('HH:mm:ss')
+      } catch {}
+    }
+    $meta.Text = "最近 500 行" + $(if ($sizeText) { " · 文件 $sizeText" } else { '' }) + $(if ($whenText) { " · 更新于 $whenText" } else { '' })
+  }.GetNewClosure()
 
   $load = {
     $box.Clear()
@@ -99,7 +126,8 @@ function Show-Log([string]$n, $owner){
     } catch {
       $box.Text = "读取日志失败：$($_.Exception.Message)"
     }
-    $box.ScrollToEnd()
+    & $updateMeta
+    if ($follow.IsChecked) { $box.ScrollToEnd() }
   }.GetNewClosure()
 
   # 初始填充与刷新共用：枚举文件 → 建 ComboBoxItem → 选中 oldPath（或首项）
@@ -133,9 +161,37 @@ function Show-Log([string]$n, $owner){
     & $load
   }.GetNewClosure())
 
-  [void]$lt.Children.Add($combo); [void]$lt.Children.Add($refreshBtn)
+  # 上滚即关跟随：滚轮 / PageUp / Up / Home 都算「用户想看历史」。内容装得下时不算（滚不动）。
+  $box.Add_PreviewMouseWheel({
+    param($s,$e)
+    if ($e.Delta -gt 0 -and $box.ScrollableHeight -gt 0) { $follow.IsChecked = $false }
+  }.GetNewClosure())
+  $box.Add_PreviewKeyDown({
+    param($s,$e)
+    if ($box.ScrollableHeight -gt 0 -and ($e.Key -eq [System.Windows.Input.Key]::Up -or $e.Key -eq [System.Windows.Input.Key]::PageUp -or $e.Key -eq [System.Windows.Input.Key]::Home)) {
+      $follow.IsChecked = $false
+    }
+  }.GetNewClosure())
+
+  $openDir.Add_Click({
+    $p = if ($state.File) { Split-Path -Parent $state.File } elseif ($logRoot) { $logRoot } else { $null }
+    if (-not $p -or -not (Test-Path -LiteralPath $p)) {
+      [System.Windows.MessageBox]::Show($f2,'还没有日志目录。','打开文件夹','OK','Information') | Out-Null
+      return
+    }
+    try { Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$p`"" } catch {}
+  }.GetNewClosure())
+  $copyPath.Add_Click({
+    if (-not $state.File) { return }
+    try { [System.Windows.Clipboard]::SetText([string]$state.File) } catch {}
+  }.GetNewClosure())
+
+  [void]$lt.Children.Add($combo); [void]$lt.Children.Add($refreshBtn); [void]$lt.Children.Add($follow)
+  [void]$lt.Children.Add($openDir); [void]$lt.Children.Add($copyPath)
   $dock = New-Object System.Windows.Controls.DockPanel
   $dock.LastChildFill = $true
+  $meta.SetValue([System.Windows.Controls.DockPanel]::DockProperty, [System.Windows.Controls.Dock]::Top)
+  [void]$dock.Children.Add($meta)
   $lt.SetValue([System.Windows.Controls.DockPanel]::DockProperty, [System.Windows.Controls.Dock]::Top)
   [void]$dock.Children.Add($lt)
   [void]$dock.Children.Add($box)

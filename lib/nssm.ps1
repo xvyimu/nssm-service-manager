@@ -13,6 +13,17 @@ function nssm-set([string]$n,[string]$k,[Parameter(ValueFromRemainingArguments=$
   if($r.exit -ne 0){ throw "NSSM set $k 失败($($r.exit)): $($r.out)" }
 }
 
+# 只跑 nssm set，不 install：注册已存在时补写参数（「注册成功、清单没写成」的重试走这里）。
+# 回滚策略由调用方决定——单独补参数失败不该 remove 一个本来就在用的服务。
+function Set-NssmServiceParams([string]$n,[string]$exe,[string]$dir,[string]$par,$envPairs,[string]$account=''){
+  # 阈值从 config 取，缺则回落默认值（不靠 [int]$null=0）。
+  $rotateBytes = if ($script:config -and $script:config.AppRotateBytes) { [int]$script:config.AppRotateBytes } else { 5242880 }
+  $stopMethod  = if ($script:config -and $script:config.AppStopMethodConsole) { [int]$script:config.AppStopMethodConsole } else { 5000 }
+  # 轮转年龄门槛：不设的话「每次启动轮转一次」会把频繁重启的服务的日志堆成几十个档
+  $rotateSecs  = if ($script:config -and $script:config.AppRotateSeconds) { [int]$script:config.AppRotateSeconds } else { 86400 }
+  foreach($s in Get-NssmSetSpec $n $dir $par $envPairs $rotateBytes $stopMethod $account $rotateSecs){ nssm-set $n $s.k $s.v }
+}
+
 # GUI/CLI 共用 NSSM 注册与配置；输入校验、错误显示、保存和启动仍由调用方处理。
 function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$envPairs,[string]$account=''){
   $inst = Invoke-ExternalQuiet $script:nssm @('install', $n, $exe)
@@ -23,13 +34,9 @@ function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$
     $why = if(($nssmOut -join ' ') -match 'Administrator access'){ '需要管理员权限' } else { '服务未创建' }
     throw "NSSM install 未生效：$why"
   }
-  # set 失败会留半注册残骸，失败时尽力 remove 回滚再抛原始错误；阈值从 config 取，缺则回落形参默认值（不靠 [int]$null=0）。
-  $rotateBytes = if ($script:config -and $script:config.AppRotateBytes) { [int]$script:config.AppRotateBytes } else { 5242880 }
-  $stopMethod  = if ($script:config -and $script:config.AppStopMethodConsole) { [int]$script:config.AppStopMethodConsole } else { 5000 }
-  # 轮转年龄门槛：不设的话「每次启动轮转一次」会把频繁重启的服务的日志堆成几十个档
-  $rotateSecs  = if ($script:config -and $script:config.AppRotateSeconds) { [int]$script:config.AppRotateSeconds } else { 86400 }
+  # set 失败会留半注册残骸，失败时尽力 remove 回滚再抛原始错误。
   try {
-    foreach($s in Get-NssmSetSpec $n $dir $par $envPairs $rotateBytes $stopMethod $account $rotateSecs){ nssm-set $n $s.k $s.v }
+    Set-NssmServiceParams $n $exe $dir $par $envPairs $account
   } catch {
     # 回滚失败不盖掉原始错误，但也不能静默——残骸服务还留在服务数据库里，用户需要知道。
     try {

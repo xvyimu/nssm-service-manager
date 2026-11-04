@@ -6,6 +6,16 @@
 # 健康历史是纯函数族，Update-StatusTick 依赖它；单独 dot-source util 的脚本（含单测）也要能用。
 if (-not (Get-Command Test-HealthChanged -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot 'health.ps1') }
 
+# 退出确认要问的「在途卡片」：只算清单里还存在的服务。服务被删/被重载后残留的卡片
+# 永远等不到回执，拿它去问只会每次退出都弹一次「X 还在切换中」。§Get-ExitBusy
+function Get-ExitBusy($cards,$svc){
+  # config 未加载时（CLI/部分单测）回退同一份清单：只认三种会让「暂停中」静默漏掉。
+  $states = if ($script:TRANSITION_STATES) { $script:TRANSITION_STATES } else { @('启动中','停止中','暂停中','继续中','删除中') }
+  @($cards.Values | Where-Object {
+    $_.ST -in $states -and ($null -eq $svc -or $svc.Contains($_.SvcName))
+  })
+}
+
 # ---- 配置层（services.json 是 SSOT，services.example.json 是兜底）----
 # 兜底读示例清单，不在源码里抄服务名；不要在此初始化 $script:configWarning（会清掉 config.ps1 写入的原因）。
 
@@ -150,7 +160,7 @@ function Invoke-SvcReload {
   # 有在途命令时拒绝：卡片被重建/丢弃后回执会落在不存在的卡上，而删除成功路径还会把旧内存
   # 清单写回磁盘（$script:svc.Remove + Save-Svc）。
   foreach ($c in @($script:cards.Values)) {
-    if ($c.ST -in @('启动中','停止中','暂停中','继续中','删除中')) {
+    if ($c.ST -in $script:TRANSITION_STATES) {
       return "$($c.SvcName) 正在切换中，稍后重载"
     }
   }
@@ -221,11 +231,12 @@ function Open-PanelUrl([string]$url){
 
 # ---- 状态栏消息与每帧队列处理（DispatcherTimer 的回调体）----
 # 消息带显示租约（$script:msgUntil）：否则后台失败消息会被同一 tick 的自动刷新盖掉。§状态栏消息
-$script:MSG_LEASE = [TimeSpan]::FromSeconds(5)
+$script:MSG_LEASE = [TimeSpan]::FromSeconds(30)
 
 function Set-StatusMessage([string]$text){
   if (-not $script:statusBar) { return }   # 模块可能被 CLI/测试加载，此时无状态栏
-  $script:statusBar.Text = $text
+  # 带时间戳＝动作日志的语义：同一行能回答「什么时候发生的」。30 秒租约够看完。
+  $script:statusBar.Text = "$(Get-Date -Format 'HH:mm:ss')  $text"
   $script:msgUntil = [datetime]::Now + $script:MSG_LEASE
 }
 
@@ -255,19 +266,28 @@ function Update-StatusTick {
           Set-CardRollback $script:cards[$item.n]
           continue
         }
+        # 先写盘成功、再改内存：原来先 Remove 再 Save，保存失败时界面已经宣称删掉，
+        # 磁盘仍留着条目，下次启动又冒出来（探针 CardRemoved=true 复现过）。
+        $next = [ordered]@{}
+        foreach ($k in $script:svc.Keys) { if ($k -ne $item.n) { $next[$k] = $script:svc[$k] } }
+        try { Save-Svc $next }
+        catch {
+          # 服务已从系统删除，只是清单没写成：卡片保留并标「待保存」，给重试入口。
+          # 不回滚删除、不自动改 .bak、不替用户删资产。
+          if (Get-Command Set-CardPendingSave -EA SilentlyContinue) { Set-CardPendingSave $script:cards[$item.n] $item.n }
+          Set-StatusMessage "$($item.n) 已从系统删除，但清单保存失败：$($_.Exception.Message)。用右键「重试保存清单」。"
+          continue
+        }
         [Threading.Monitor]::Enter($script:sync.gate)
-        try { $script:svc.Remove($item.n) } finally { [Threading.Monitor]::Exit($script:sync.gate) }
+        try { [void]$script:svc.Remove($item.n) } finally { [Threading.Monitor]::Exit($script:sync.gate) }
         $script:cards.Remove($item.n)
         if ($script:healthSeen) { $script:healthSeen.Remove($item.n) }   # 同名重建时重记「首次观测」
         if ($script:svcState) { $script:svcState.Remove($item.n) }
-        # 保存成败只赋一次文案（T6）：原实现对「保存失败」又被「已删除」盖掉，用户看不到。§Update-StatusTick
-        $note = try { Save-Svc $script:svc; "$($item.n) 已删除" }
-                catch { "$($item.n) 已删除但配置保存失败：$($_.Exception.Message)" }
-        Set-StatusMessage $note
+        Set-StatusMessage "$($item.n) 已删除"
         Render-Page
       } else {
         # 启停回执：ok=$false 时 Update-CardData 回滚过渡态（T1），否则解封按钮与冷却。
-        Update-CardData $item.n $null $null -e $item.e -ack -ok ([bool]$item.ok)
+        Update-CardData $item.n $null $null -e $item.e -ack -ok ([bool]$item.ok) -why ([string]$item.why)
       }
     } else {
       # restart 的中间回执（phase='start'）：停止阶段结束、开始启动。不是探测值，
@@ -282,7 +302,9 @@ function Update-StatusTick {
       if ($null -eq $script:svcState) { $script:svcState = @{} }       # 同上；批量启停也读它
       # 全量记「最近一次探测值」：批量启停按它筛目标，翻页外（没有卡片）的服务也要能全启/全停。
       # at = 落库时刻，批量据此跳过过期状态（后台 runspace 死掉/探测被限流时 svcState 会停在旧值）。
-      $script:svcState[$item.n] = @{ st = $item.st; h = $item.h; at = [datetime]::Now }
+      # at 用 worker 的采样时刻（$item.at），不是 UI 消费时刻：排队/主线程卡顿不能把旧结果标成「刚更新」。
+      # 缺 at 时回落 Now 只为兼容旧夹具/旧路径；生产路径（poll.ps1）每个结果都带 at。§Update-StatusTick
+      $script:svcState[$item.n] = @{ st = $item.st; h = $item.h; at = $(if ($item.at) { [datetime]$item.at } else { [datetime]::Now }) }
       $prev = $script:healthSeen[$item.n]
       $prevSt = if ($prev) { $prev.st } else { $null }
       $prevH = if ($prev) { $prev.h } else { $null }
@@ -303,6 +325,9 @@ function Update-StatusTick {
       [void](Invoke-TransitionTimeoutEscape $card $now)
       # 同帧刷新时长：与逃生口一样不依赖队列。§Update-StatusTick
       Update-CardClock $card $now
+      # 陈旧样本同样不依赖队列：后台还活着但探测被限流/卡住时，卡片不能继续假装实时。
+      # 后台已确认死亡后不再扫：那时 Set-CardOffline 的「未知」才是权威，别让新鲜度判定再改一遍。
+      if (-not $script:bgDeathReported -and (Get-Command Update-CardFreshness -EA SilentlyContinue)) { Update-CardFreshness $card $now }
     }
   }
   # 后台 runspace 结束 = 探测与命令都没人处理了。不提示的话按钮全灰、卡片停在最后一帧，
@@ -310,9 +335,12 @@ function Update-StatusTick {
   if ($script:bgHandle -and $script:bgHandle.IsCompleted -and -not $script:bgDeathReported) {
     $script:bgDeathReported = $true
     try { Write-CrashLog 'Background runspace completed unexpectedly' } catch {}
-    Set-StatusMessage '后台已停止响应，请重启工具'
+    Set-StatusMessage '后台已停止响应，状态不可用；请关闭重开'
     foreach ($card in @($script:cards.Values)) {
-      if ($card.ST -eq '查询中') { Set-CardRollback $card '未知' '' }
+      # 所有卡片都必须承认「不知道」：只把「查询中」改成未知，其余卡会继续显示上一次的
+      # 「运行中/正常」，等于整屏在说谎（探针 CardStillSaysRunning=true 复现过）。
+      if (Get-Command Set-CardOffline -EA SilentlyContinue) { Set-CardOffline $card }
+      elseif ($card.ST -eq '查询中') { Set-CardRollback $card '未知' '' }
     }
   }
   # 空闲 4 秒后自动刷新状态文字；消息租约未到期时不覆盖（T4）。
@@ -322,6 +350,8 @@ function Update-StatusTick {
       $script:statusBar.Text = "$(Get-Date -Format 'HH:mm:ss')  状态自动刷新"
     }
   }
+  # 标题栏新鲜度胶囊（含托盘 tooltip 刷新）；函数在 xaml.ps1，CLI/部分单测不加载，带守卫。
+  if (Get-Command Update-FreshnessPill -EA SilentlyContinue) { Update-FreshnessPill }
 }
 
 # 探测单实例 mutex 是否被 GUI 持有。OpenExisting 抛 = 无 GUI（正常）；抢到要立即释放。§Test-GuiInstanceRunning
@@ -430,4 +460,65 @@ function Show-SecurityCheck([string]$n){
   $qTxt = if($quoted){'是（已加固）'}else{'否（路径含空格时有提权风险）'}
   $msg = "$n`n`n路径: $path`n`n引号加固: $qTxt`n目录: $dir`n目录 ACL 过宽: $permissive"
   [System.Windows.MessageBox]::Show($msg,"$n 安全检查",'OK',$(if($quoted -and $permissive -eq '否'){'Information'}else{'Warning'})) | Out-Null
+}
+
+# ---- 关闭收尾（GUI 与托盘退出共用；放这里是为了能被单测直接点源）----
+# 参数默认值从调用方作用域读：GUI 里是脚本级变量，单测可注入伪对象。
+function Stop-Background {
+  param(
+    $Handle = $script:bgHandle,
+    $Pipeline = $bgPS,
+    $Runspace = $bgRS
+  )
+  # 幂等：Closed 与托盘退出可能各触发一次，重复拆 runspace 只会抛噪声异常。
+  if ($script:bgStopped) { return }
+  $script:bgStopped = $true
+  if (-not $script:sync) { return }
+  $script:sync.stop = $true
+  try { [void]$script:sync.wake.Set() } catch {}
+  # Web 视图用自己的 runspace：先置停止标志（循环 200ms 内自己退出），再兜底停管道。
+  # 包 try：web runspace 已崩时 Stop-WebView 会抛，而 bgStopped 已置位——
+  # 抛出去会让后续的排空、有界等待、资源拆解全部短路，进程退出后 mutex 仍被占。
+  if ($script:web) {
+    $script:sync.webStop = $true
+    try { if (Get-Command Stop-WebView -EA SilentlyContinue) { Stop-WebView $script:web } }
+    catch { Write-CrashLog "Web stop failed: $($_.Exception.Message)" }
+    $script:web = $null
+  }
+  # 关闭瞬间的最后几条健康变化：后台可能来不及 drain，这里兜底写一次（只有几条，不阻塞）。
+  if ($script:healthQueue -and $script:healthHistoryDir) {
+    $hev = $null
+    while ($script:healthQueue.TryDequeue([ref]$hev)) {
+      try { $null = Add-HealthEvent $script:healthHistoryDir $hev } catch {}
+    }
+  }
+  # 有界等待：后台卡在 $svc.Start()（等满 ServicesPipeTimeout ≈ 30s）或外部命令里时，
+  # UI 线程不能跟着等——窗口关了进程还在，mutex 仍被占，用户再双击就是「没反应」。
+  $ended = $false
+  if ($Handle) {
+    try { $ended = $Handle.AsyncWaitHandle.WaitOne(1500) } catch {}
+  }
+  # 等待期间后台可能又写了几条健康事件（它还在跑最后几拍）：再排一次，
+  # 否则「兜底写一次」只覆盖到等待开始那一刻。
+  if ($script:healthQueue -and $script:healthHistoryDir) {
+    $hev2 = $null
+    while ($script:healthQueue.TryDequeue([ref]$hev2)) {
+      try { $null = Add-HealthEvent $script:healthHistoryDir $hev2 } catch {}
+    }
+  }
+  if ($ended) {
+    if ($Pipeline) {
+      try { $Pipeline.EndInvoke($Handle) } catch { Write-CrashLog "Background end failed: $($_.Exception.Message)" }
+    }
+    # 只有确认管道结束才拆资源：在仍在跑的 runspace 上 Close/Dispose，异常会被吞掉，语义不确定。
+    if ($Runspace) { try { $Runspace.Close() } catch {}; try { $Runspace.Dispose() } catch {} }
+    if ($Pipeline) { try { $Pipeline.Dispose() } catch {} }
+    try { $script:sync.wake.Dispose() } catch {}
+  } elseif ($Pipeline) {
+    # 管道没结束：只发停止请求，把清理交给进程退出。这里不 Dispose，后台可能仍在用它。
+    try { [void]$Pipeline.BeginStop($null, $null) } catch { Write-CrashLog "Background stop failed: $($_.Exception.Message)" }
+    Write-CrashLog 'Background did not end within 1500ms; leaving runspace for process exit'
+  }
+  # 停收尾时也跑一次日志清理——窗口关闭是自然的维护点，避免常驻时占 UI 线程。
+  if (Get-Command Invoke-LogCleanup -EA SilentlyContinue) { Invoke-LogCleanup 'Log cleanup on close failed' }
 }

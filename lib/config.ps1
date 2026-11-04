@@ -1,6 +1,10 @@
 # lib/config.ps1 — 可调常量集中收口（PER_PAGE / 探测超时 / 日志轮转 / 冷却）
 # 默认值内嵌；仓根 config.json（已 git 忽略）存在时覆盖——与 services.json 同构：示例进仓、实配不进 git。
 # 实现细节与踩坑记录：docs/IMPLEMENTATION-NOTES.md
+# 在途状态：退出确认 / F5 重载 / 批量筛选共用同一份判定。
+# 曾经退出确认只认三种、F5 认五种，同一事实两套清单——服务卡在「暂停中」时退出不提示、重载却拒绝。
+$script:TRANSITION_STATES = @('启动中','停止中','暂停中','继续中','删除中')
+
 $script:configPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'config.json'
 $script:config = [ordered]@{
   PerPage             = 6        # 卡片每页数量（xaml.ps1 UniformGrid 3×2 与 Render-Page 分页共用）

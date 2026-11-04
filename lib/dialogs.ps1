@@ -2,6 +2,18 @@
 # 依赖调用时解析；从调用方作用域读 $script:svc / $script:cards / $sync.gate / $script:statusBar。
 # 实现细节与踩坑记录：docs/IMPLEMENTATION-NOTES.md
 
+# exe 目录是否对普通用户可写（LocalSystem 服务的提权面）。缺依赖或读不到 ACL 时一律当「否」——
+# 这是告警不是门闩，误报比漏报更烦人。抽成函数让单测能 stub，不受运行机器真实 ACL 影响。
+function Test-ExeDirPermissive([string]$exe){
+  if (-not $exe) { return $false }
+  if (-not (Get-Command Test-DirAclPermissive -EA SilentlyContinue)) { return $false }
+  try {
+    $dir = Split-Path $exe -Parent
+    if (-not $dir) { return $false }
+    return ((Test-DirAclPermissive (Get-Acl -LiteralPath $dir -EA Stop)) -eq '是')
+  } catch { return $false }
+}
+
 # 删除提交体（Show-Remove 的 del_Click 执行部分），抽出以便直测。§Submit-RemoveCommand
 function Submit-RemoveCommand([string]$n){
   $script:lastActionAt=[datetime]::Now
@@ -15,9 +27,11 @@ function Submit-RemoveCommand([string]$n){
 
 # GUI 删除服务：输入完整服务名才点亮删除（-ceq 区分大小写），避免不可逆误操作。
 function Show-Remove([string]$n, $owner){
+  $wa = [System.Windows.SystemParameters]::WorkArea
+  $maxH = if ($wa.Height -gt 0) { [int][math]::Min(480, [math]::Floor($wa.Height * 0.8)) } else { 420 }
   $f = New-Object System.Windows.Window -Property @{
-    Title="删除服务 $n"; Width=420; Height=260; WindowStartupLocation='CenterOwner'
-    Background=[System.Windows.Media.Brushes]::White; ResizeMode='NoResize'
+    Title="删除服务 $n"; Width=440; SizeToContent='Height'; MaxHeight=$maxH; MinHeight=200
+    WindowStartupLocation='CenterOwner'; Background=[System.Windows.Media.Brushes]::White; ResizeMode='NoResize'
   }
   $stack=New-Object System.Windows.Controls.StackPanel -Property @{Margin='15'}
   $warn=New-Object System.Windows.Controls.TextBlock -Property @{
@@ -26,22 +40,55 @@ function Show-Remove([string]$n, $owner){
   }
   [void]$stack.Children.Add($warn)
   # 不要叫 $input：那是 PowerShell 的自动变量（管道输入枚举器），遮蔽它迟早出怪事。
-  $confirmBox=New-Object System.Windows.Controls.TextBox -Property @{FontFamily=$script:cjkFont; FontSize=13; Margin='0,8,0,12'}
+  $confirmBox=New-Object System.Windows.Controls.TextBox -Property @{FontFamily=$script:cjkFont; FontSize=13; Margin='0,8,0,4'}
   [void]$stack.Children.Add($confirmBox)
+  # 实时差量：还差 N 个字符 / 大小写不一致 / 名称一致，给到删除前最后一眼确认。
+  $hint=New-Object System.Windows.Controls.TextBlock -Property @{
+    FontFamily=$script:cjkFont; FontSize=11; Foreground=$script:T.Dim; Margin='0,0,0,12'
+  }
+  [void]$stack.Children.Add($hint)
 
   $btnPanel=New-Object System.Windows.Controls.StackPanel -Property @{Orientation='Horizontal';HorizontalAlignment='Right'}
-  $cancel=New-Object System.Windows.Controls.Button -Property @{Content='取消';Padding='16,6';Margin='0,0,8,0'}
+  $cancel=New-Object System.Windows.Controls.Button -Property @{Content='取消';Padding='16,6';Margin='0,0,8,0'; IsCancel=$true}
   $del=New-Object System.Windows.Controls.Button -Property @{
-    Content='删除'; Padding='16,6'; IsEnabled=$false
+    Content='删除'; Padding='16,6'; IsEnabled=$false; IsDefault=$true
     Background=$script:T.Danger
     Foreground=[System.Windows.Media.Brushes]::White
   }
   [void]$btnPanel.Children.Add($cancel); [void]$btnPanel.Children.Add($del)
   [void]$stack.Children.Add($btnPanel)
-  $f.Content=$stack
+  # 内容超长时（小屏 / 极长服务名）能滚，而不是把删除按钮顶出屏幕。
+  $scroll = New-Object System.Windows.Controls.ScrollViewer -Property @{
+    Content=$stack; VerticalScrollBarVisibility='Auto'; HorizontalScrollBarVisibility='Disabled'
+    Padding='0'; Margin='0'
+  }
+  $f.Content=$scroll
 
-  $confirmBox.Add_TextChanged({ $del.IsEnabled = ($confirmBox.Text.Trim() -ceq $n) })
+  $updateHint = {
+    $t = $confirmBox.Text.Trim()
+    if (-not $t) {
+      $hint.Text = ''; $hint.Visibility = 'Collapsed'
+    } elseif ($t -ceq $n) {
+      $hint.Text = '名称一致，可以删除'; $hint.Foreground = $script:T.BrushOk; $hint.Visibility = 'Visible'
+    } elseif ($t -ieq $n) {
+      $hint.Text = '大小写不一致（区分大小写才能删除）'; $hint.Foreground = $script:T.BrushBusy; $hint.Visibility = 'Visible'
+    } elseif ($n.StartsWith($t, [System.StringComparison]::OrdinalIgnoreCase)) {
+      # 只看「还差几个字符」时不较真大小写：真正卡住提交的是大小写，那句提示在上面单独给。
+      $remain = $n.Length - $t.Length
+      $hint.Text = "还差 $remain 个字符"; $hint.Foreground = $script:T.BrushDim; $hint.Visibility = 'Visible'
+    } else {
+      $hint.Text = '与服务名不一致'; $hint.Foreground = $script:T.BrushDim; $hint.Visibility = 'Visible'
+    }
+  }
+  $onText = {
+    $del.IsEnabled = ($confirmBox.Text.Trim() -ceq $n)
+    & $updateHint
+  }
   $cancel.Add_Click({ $f.DialogResult=$false; $f.Close() })
+  # GetNewClosure 把弹窗局部变量（$n/$del/$hint/...）封进处理器；不封的话事件回调在全局
+  # 作用域解析，一律是 $null（$ErrorActionPreference=Stop 下第一次输入就抛）。
+  $confirmBox.Add_TextChanged($onText.GetNewClosure())
+  & $updateHint   # 初始就给一次提示，免得空框时按钮灰着、用户不知道要输入到哪一步
 
   $del.Add_Click({
     # 提交逻辑在 Submit-RemoveCommand，这里只负责关弹窗。抛错时不要关窗：状态栏被模态窗口
@@ -49,7 +96,7 @@ function Show-Remove([string]$n, $owner){
     try { Submit-RemoveCommand $n }
     catch { Show-DialogError $f $_.Exception.Message; return }
     $f.DialogResult=$true; $f.Close()
-  })
+  }.GetNewClosure())
 
   $f.Owner=$owner
   $f.ShowDialog() | Out-Null
@@ -68,8 +115,35 @@ function Show-DialogWarning($owner,[string]$msg,[string]$title){
 
 # 批量停止的二次确认。停止可逆，但一次误点会停掉整台机器的服务，所以给一次 OKCancel。
 # 单独成函数是为了让无头测试能重定义它（MessageBox 会真弹窗）。
-function Confirm-BatchStop($owner,[int]$count){
-  ([System.Windows.MessageBox]::Show($owner,"将停止 $count 个正在运行的服务，继续？",'全部停止','OKCancel','Warning')) -eq 'OK'
+# 名单：≤6 个全列，多出来的只报个数——确认框不该因为服务多就变成一屏文字。
+function Format-BatchStopMessage([string[]]$names){
+  $all = @($names | Where-Object { $_ })
+  $count = $all.Count
+  if ($count -eq 0) { return '将停止 0 个正在运行的服务，继续？' }
+  if ($count -le 6) {
+    "将停止 $count 个正在运行的服务：`n`n$($all -join '、')`n`n继续？"
+  } else {
+    $head = ($all[0..5] -join '、')
+    "将停止 $count 个正在运行的服务：`n`n$head 等 $count 个`n`n继续？"
+  }
+}
+
+function Confirm-BatchStop($owner,[int]$count,[string[]]$names){
+  # 老调用点只传个数，没有名单时退回纯计数文案。
+  $msg = if ($PSBoundParameters.ContainsKey('names') -and $names) { Format-BatchStopMessage $names } else { "将停止 $count 个正在运行的服务，继续？" }
+  ([System.Windows.MessageBox]::Show($owner,$msg,'全部停止','OKCancel','Warning')) -eq 'OK'
+}
+
+# 有在途命令时退出，问一句「仍要退出吗」。同样单独成函数：MessageBox 在无头测试进程里
+# 会真弹窗并永久阻塞（run-all 给子进程设 NSSM_SM_HEADLESS=1，这里直接放行）。§Confirm-ExitBusy
+function Confirm-ExitBusy($owner,[string]$what){
+  if ($env:NSSM_SM_HEADLESS -eq '1') { return $true }
+  # 没有可见窗口时没人能点这个框，MessageBox 会一直卡住调用方（无头测试、或被代码直接 Close）：
+  # 这种情况按「允许退出」处理。生产里用户点 X 时窗口是可见的，照常问。
+  if (-not $owner -or -not $owner.IsVisible) { return $true }
+  ([System.Windows.MessageBox]::Show($owner,
+    "$what。`n`n现在退出，这些操作可能在没人看的情况下完成，或停在中间状态。`n下次启动会重新查询真实状态。`n`n仍要退出吗？",
+    '有操作在途','YesNo','Warning','No')) -eq 'Yes'
 }
 
 # 添加提交体（ok_Click 执行部分），$fields 各值已 trim；返回 $true 关弹窗、$false 保持打开。§Submit-AddService
@@ -111,8 +185,19 @@ function Submit-AddService($owner,[hashtable]$fields){
   if($gpu -and (-not $account -or $account -ieq 'LocalSystem')){
     Show-DialogWarning $owner "「$n」将以 LocalSystem 运行。`nGPU/桌面交互程序在 LocalSystem 下未必拿得到显卡或桌面（取决于驱动与会话形态）。`n若启动后异常，改成本机用户账户运行——那需要该账户密码，本工具不代管，请用 nssm edit 或服务管理器修改。" '运行账户提示'
   }
+  # LocalSystem + 用户可写目录：UNC 已被拒，本地可写目录是同一根因（scoop 装出来的服务就长这样）。
+  # 只提示不阻断：阻断会直接打断现有部署；先把「可被替换」这件事说出来。
+  # 判定抽成函数：单测不该受运行机器真实 ACL 影响，stub 它即可。
+  if((-not $account -or $account -ieq 'LocalSystem') -and (Test-ExeDirPermissive $exe)){
+    Show-DialogWarning $owner "「$n」将以 LocalSystem 运行，但可执行文件位于普通用户可写的目录：`n$(Split-Path $exe -Parent)`n`n该目录的任何可写者都能替换 exe，服务重启后即以 SYSTEM 运行。`n建议先把程序移到仅管理员可写的目录，再注册服务。" '安全姿态提示'
+  }
+  # 幂等续做：上次注册成功但清单没写成时，重试会走到这里。再 install 只会报「已存在」，
+  # 因此已存在就只补写参数——用户点重试即可收敛，不必先 nssm remove 再重来。
+  $alreadyRegistered = $false
+  try { $alreadyRegistered = Test-ServicePresent $n } catch {}
   try {
-    Install-NssmService $n $exe $dir $par $envPairs $account
+    if ($alreadyRegistered) { Set-NssmServiceParams $n $exe $dir $par $envPairs $account }
+    else { Install-NssmService $n $exe $dir $par $envPairs $account }
   } catch {
     Show-DialogError $owner $_.Exception.Message; return $false
   }
@@ -120,7 +205,7 @@ function Submit-AddService($owner,[hashtable]$fields){
   if ($saveErr) {
     # 服务已注册但没落盘：不 remove（那会丢掉一个实际可用的服务）。**保持窗口**：关窗会让人以为
     # 「没加成」，常见反应是再填一次 → NSSM 报服务已存在，越描越乱。§Submit-AddService
-    Show-DialogError $owner "服务已在 NSSM 注册但没写入清单：$saveErr`n`n修好配置后点「注册并启动」重试保存；若 NSSM 提示服务已存在，先 nssm remove $n confirm 再重来。"
+    Show-DialogError $owner "服务已在 NSSM 注册但没写入清单：$saveErr`n`n修好配置后点「注册并启动」重试——已注册的服务会直接补写清单，不会重复 install。"
     return $false
   }
   Send-ServiceCommand $n 'start' | Out-Null   # 返回值是 epoch，函数契约只返回 $true/$false
@@ -135,7 +220,7 @@ function New-AddDialog(){
     Background=[System.Windows.Media.Brushes]::White; ResizeMode='NoResize'
   }
   $stack=New-Object System.Windows.Controls.StackPanel -Property @{Margin='15'}
-  $mkLabel={ param($t) New-Object System.Windows.Controls.TextBlock -Property @{Text=$t;Margin='0,8,0,2';FontFamily=$script:cjkFont;Foreground=[System.Windows.Media.Brushes]::Gray} }
+  $mkLabel={ param($t) New-Object System.Windows.Controls.TextBlock -Property @{Text=$t;Margin='0,8,0,2';FontFamily=$script:cjkFont;Foreground=$script:T.Dim} }
   $mkBox={ param($w) New-Object System.Windows.Controls.TextBox -Property @{Width=$w;FontFamily=$script:cjkFont;Margin='0,0,0,8'} }
   $mkExp = {
     param($t) New-Object System.Windows.Controls.Expander -Property @{Header=$t;Margin='0,8,0,8';FontFamily=$script:cjkFont}

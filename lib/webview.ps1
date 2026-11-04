@@ -10,8 +10,11 @@ $script:webScript = (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'web
                     (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'webview-server.ps1'))
 
 # 启动只读视图。$sync 里回写 webPort（实际端口）与 webError（启动失败原因）。
+# 请求端口与「已绑定」必须分开：GUI 用 `-not $sync.webPort` 判断绑定成功，
+# 若把传入端口预置进 webPort，固定端口 bind 失败也会立即通过（状态栏与日志宣称正在监听）。
 function Start-WebView([int]$port, [string]$token, $sync) {
-  $sync.webPort = $port
+  $sync.webRequestedPort = $port
+  $sync.webPort = 0
   $sync.webStop = $false
   $sync.webError = $null
   $rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState = 'MTA'; $rs.Open()

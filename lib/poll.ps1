@@ -101,12 +101,14 @@ function Invoke-PendingCommands {
     }
     } catch {
       # 单条命令抛异常不许终结轮询循环：照常产出失败回执，否则卡片停在过渡态直到超时逃生。
-      $sync.msg.Enqueue("$n $act 失败: $($_.Exception.Message)")
+      $why = "$n $act 失败: $($_.Exception.Message)"
+      $sync.msg.Enqueue($why)
       $ok=$false
     }
     # 命令完成回执：带 epoch 与 ok 回 UI。
     # 失败时 UI 侧要回滚过渡态并解封按钮（T1：原实现失败即静默，卡片永久卡死）。
-    $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$null;h=$null;e=$e;done=$true;act=$act;ok=[bool]$ok})
+    # why 随回执回传：失败原因要落到卡片上，不能只靠 5 秒租约的状态栏。
+    $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$null;h=$null;e=$e;done=$true;act=$act;ok=[bool]$ok;why=$why;at=[datetime]::Now})
     $ran++
   }
   $ran
@@ -117,6 +119,9 @@ try {
 $lastProbeAt = [long]0
 # 每个服务最近一次健康值：探测被限流跳过时用它把状态送到 UI，不让圆点闪红
 $lastHealth = @{}
+# 每个服务最近一次「真正探测完成」的时刻：限流跳过时沿用旧值，但必须沿用旧的采样时刻，
+# 否则 UI 会把几轮都没探测的旧值当成刚刚更新（新鲜度造假）。
+$lastHealthAt = @{}
 while(-not $sync.stop){
   $executedCmd = (Invoke-PendingCommands) -gt 0  # 本轮是否执行过命令：影响轮询间隔，见循环尾
   # 健康历史落盘：UI 线程只把「状态/健康变了」的事件塞进队列，写盘在这里（UI 线程不碰 I/O）。
@@ -173,7 +178,7 @@ while(-not $sync.stop){
       })
     } else {
       if ($st -in @('启动中','停止中','暂停中','继续中')) { $pendingSeen = $true }
-      $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$st;h=''})
+      $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$st;h='';at=[datetime]::Now})
     }
   }
 
@@ -186,7 +191,9 @@ while(-not $sync.stop){
     foreach($p in $toProbe){
       # 还没有过任何探测结果时不入队：h='' 会让运行中的圆点闪红
       if ($lastHealth.ContainsKey($p.n)) {
-        $sync.queue.Enqueue([pscustomobject]@{n=$p.n;st='运行中';h=$lastHealth[$p.n]})
+        # 沿用旧健康值时一并沿用旧采样时刻：这一轮并没有真的探测，不能标成「刚刚更新」。
+        $at = if ($lastHealthAt[$p.n]) { $lastHealthAt[$p.n] } else { [datetime]::Now }
+        $sync.queue.Enqueue([pscustomobject]@{n=$p.n;st='运行中';h=$lastHealth[$p.n];at=$at})
       }
     }
   }
@@ -227,7 +234,7 @@ while(-not $sync.stop){
       } finally { $cts.Dispose() }
       [pscustomobject]@{n=$n;h=$h}
     } -ThrottleLimit $probeThrottle
-    foreach($r in $results){ $lastHealth[$r.n]=$r.h; $sync.queue.Enqueue([pscustomobject]@{n=$r.n;st='运行中';h=$r.h}) }
+    foreach($r in $results){ $lastHealth[$r.n]=$r.h; $lastHealthAt[$r.n]=[datetime]::Now; $sync.queue.Enqueue([pscustomobject]@{n=$r.n;st='运行中';h=$r.h;at=$lastHealthAt[$r.n]}) }
   }
 
   if ((Invoke-PendingCommands) -gt 0) { $executedCmd = $true }

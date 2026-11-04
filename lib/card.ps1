@@ -9,9 +9,27 @@ $script:TOGGLE_TIMEOUT_MS = [int]$script:config.ToggleTimeoutMs
 $script:TRANSITION_HARD_CAP_FACTOR = if ($script:config.TransitionHardCapFactor) { [int]$script:config.TransitionHardCapFactor } else { 10 }  # 缺键回落 10，[int]$null=0 会把上限归零
 $script:WAIT_HEALTHY_TIMEOUT_MS = if ($script:config.WaitHealthyTimeoutMs) { [int]$script:config.WaitHealthyTimeoutMs } else { 120000 }
 
-# 置过渡态：转橙、禁用按钮、记命令纪元。启停与删除共用。§Set-CardTransition
+# 读屏名字：「服务名，状态，端口 N」。状态/端口一变就刷新一次，屏幕阅读器不用逐个子控件拼。
+function Update-CardAutomationName($card){
+  if (-not $card) { return }
+  $st = if ($card.LblSt -and $card.LblSt.Text) { [string]$card.LblSt.Text } else { [string]$card.ST }
+  $portText = $null
+  if ($card.PSObject.Properties['PortText'] -and $card.PortText) { $portText = ([string]$card.PortText.Text).TrimStart(':') }
+  $label = "$($card.SvcName)，$st"
+  if ($portText) { $label += "，端口 $portText" }
+  # 每帧（陈旧扫描）也会调进来：名字没变就别反复 SetName 触发无障碍失效通知。
+  try {
+    if ([System.Windows.Automation.AutomationProperties]::GetName($card) -ne $label) {
+      [System.Windows.Automation.AutomationProperties]::SetName($card, $label)
+    }
+  } catch {}
+}
+
+# 置过渡态：转琥珀（Busy 语义色）、禁用按钮、记命令纪元。启停与删除共用。§Set-CardTransition
 function Set-CardTransition($card, [string]$state, [int]$epoch, [datetime]$at){
   $card.PrevST=$card.ST; $card.PrevH=$card.H
+  # 新操作开始：上一条失败提示作废，否则「启动失败」会挂在新一轮「启动中」下面。
+  if (Get-Command Clear-CardLastError -EA SilentlyContinue) { Clear-CardLastError $card }
   $card.ST=$state
   $card.LastToggle=$at
   $card.TransitionAt=$at
@@ -33,9 +51,10 @@ function Set-CardTransition($card, [string]$state, [int]$epoch, [datetime]$at){
   }
   # 立刻补一次时长后缀：否则最长有 400ms 空窗，副标题会闪一下
   Update-CardClock $card ([datetime]::Now)
-  $card.LblSt.Foreground=[System.Windows.Media.Brushes]::Orange
-  $card.Dot.Fill=[System.Windows.Media.Brushes]::Orange
+  $card.LblSt.Foreground=$script:T.BrushBusy
+  $card.Dot.Fill=$script:T.BrushBusy
   $card.PendingEpoch=$epoch
+  Update-CardAutomationName $card
 }
 
 # 把时长格式化成「12s / 3分12秒 / 2小时05分」。负值（时钟回拨）返回空串。
@@ -235,7 +254,7 @@ function Invoke-BatchCommand([string]$act) {
   if ($act -eq 'stop') {
     # 停止可逆但仍要一次确认：一次误点会把整台机器的服务全停掉
     $ok = $true
-    try { $ok = Confirm-BatchStop $script:window $targets.Count } catch { $ok = $false }
+    try { $ok = Confirm-BatchStop $script:window $targets.Count $targets } catch { $ok = $false }
     if (-not $ok) { return '已取消' }
   }
   $now = [datetime]::Now
@@ -249,19 +268,22 @@ function Invoke-BatchCommand([string]$act) {
 }
 
 function New-Card([string]$name, $info){
+  # Focusable：Tab 能停在卡片上（Border 不是 Control，没有 IsTabStop；Tab 导航对非 Control 的可聚焦
+  # 元素只看 Focusable，实测会停）。焦点一到就换成 1px 强调色描边，尺寸不变所以卡片不跳动。
   $border = New-Object System.Windows.Controls.Border -Property @{
     CornerRadius=10; Margin='8'; Padding='18'
-    BorderBrush=$script:T.CardBrd; BorderThickness='1'; Background=$script:T.Card
+    BorderBrush=$script:T.CardBrd; BorderThickness='1'; Background=$script:T.Card; Focusable=$true
   }
   $grid=New-Object System.Windows.Controls.Grid
-  foreach ($height in 'Auto','Auto','*','Auto') {
+  # 第 4 行是失败/待保存提示条：失败原因必须留在发起它的卡片上，不能只活在状态栏。
+  foreach ($height in 'Auto','Auto','*','Auto','Auto') {
     [void]$grid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition -Property @{Height=$height}))
   }
   $heading=New-Object System.Windows.Controls.Grid
   [void]$heading.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition -Property @{Width='*'}))
   [void]$heading.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition -Property @{Width='Auto'}))
   $lblName=New-Object System.Windows.Controls.TextBlock -Property @{
-    Text=$name; FontFamily=$script:cjkFont; FontSize=19; FontWeight='SemiBold'; Foreground=$script:T.Fg
+    Text=$name; FontFamily=$script:cjkFont; FontSize=17; FontWeight='SemiBold'; Foreground=$script:T.Fg
     VerticalAlignment='Center'; TextTrimming='CharacterEllipsis'; ToolTip=$name; Margin='0,0,8,0'
   }
   $port=New-Object System.Windows.Controls.Border -Property @{Background=$script:T.PortBg; CornerRadius=4; Padding='7,3'; VerticalAlignment='Center'}
@@ -278,18 +300,20 @@ function New-Card([string]$name, $info){
   [void]$grid.Children.Add($endpoint); [System.Windows.Controls.Grid]::SetRow($endpoint,1)
   $state=New-Object System.Windows.Controls.StackPanel -Property @{VerticalAlignment='Center'; Margin='0,12,0,12'}
   $stateLine=New-Object System.Windows.Controls.StackPanel -Property @{Orientation='Horizontal'}
-  $dot=New-Object System.Windows.Shapes.Ellipse -Property @{Width=10; Height=10; Fill=[System.Windows.Media.Brushes]::Gray; Margin='0,0,9,0'; VerticalAlignment='Center'}
-  $lblSt=New-Object System.Windows.Controls.TextBlock -Property @{Text='查询中'; FontFamily=$script:cjkFont; FontSize=21; FontWeight='SemiBold'; Foreground=$script:T.Fg}
+  $dot=New-Object System.Windows.Shapes.Ellipse -Property @{Width=10; Height=10; Fill=$script:T.BrushStale; Margin='0,0,9,0'; VerticalAlignment='Center'}
+  $lblSt=New-Object System.Windows.Controls.TextBlock -Property @{Text='查询中'; FontFamily=$script:cjkFont; FontSize=18; FontWeight='SemiBold'; Foreground=$script:T.Fg}
   $lblUp=New-Object System.Windows.Controls.TextBlock -Property @{Text='正在获取服务状态'; FontFamily=$script:cjkFont; FontSize=12; Foreground=$script:T.Dim; Margin='19,4,0,0'; TextTrimming='CharacterEllipsis'}
   [void]$stateLine.Children.Add($dot); [void]$stateLine.Children.Add($lblSt)
   [void]$state.Children.Add($stateLine); [void]$state.Children.Add($lblUp)
   [void]$grid.Children.Add($state); [System.Windows.Controls.Grid]::SetRow($state,2)
 
   $actions=New-Object System.Windows.Controls.Grid
+  # 无 url 的服务没有面板可开：整个按钮收起（原来只是禁用，还留着一行灰字占位）。
+  $hasUrl=(-not [string]::IsNullOrWhiteSpace($info.url))
   $open=New-Object System.Windows.Controls.Button -Property @{
     Content='打开面板'; FontFamily=$script:cjkFont; FontSize=12; Padding='10,6'
     HorizontalAlignment='Left'; Background='Transparent'; BorderThickness='0'; Foreground=$script:T.Accent
-    Tag=$info.url; IsEnabled=(-not [string]::IsNullOrWhiteSpace($info.url))
+    Tag=$info.url; IsEnabled=$hasUrl; Visibility=$(if ($hasUrl) { 'Visible' } else { 'Collapsed' })
   }
   $open.Add_Click({ Open-PanelUrl ([string]$this.Tag) })
   # 「启动」和「关闭」是两个方向，拆成两个按钮——合成一个要靠读文字才知道能干什么。§New-Card
@@ -305,7 +329,12 @@ function New-Card([string]$name, $info){
   }
   [void]$rightBtns.Children.Add($btnStop); [void]$rightBtns.Children.Add($btn)
   [void]$actions.Children.Add($open); [void]$actions.Children.Add($rightBtns)
-  [void]$grid.Children.Add($actions); [System.Windows.Controls.Grid]::SetRow($actions,3)
+  $lblErr=New-Object System.Windows.Controls.TextBlock -Property @{
+    Text=''; FontFamily=$script:cjkFont; FontSize=11; Foreground=$script:T.Danger
+    TextWrapping='Wrap'; Margin='0,0,0,8'; Visibility='Collapsed'
+  }
+  [void]$grid.Children.Add($lblErr); [System.Windows.Controls.Grid]::SetRow($lblErr,3)
+  [void]$grid.Children.Add($actions); [System.Windows.Controls.Grid]::SetRow($actions,4)
   $border.Child=$grid
 
   # 防抖状态（挂在 Border 上）
@@ -329,6 +358,8 @@ function New-Card([string]$name, $info){
     # per-service 过渡态超时（services.json 的 toggleTimeoutMs），缺省用全局
     ToggleTimeoutMs=$(Resolve-ToggleTimeoutMs $info)
     Dot=$dot; LblSt=$lblSt; LblUp=$lblUp; Btn=$btn; BtnStop=$btnStop
+    # 失败/待保存提示条与它的数据；Stale 标记陈旧样本（后台还活着但探测没回来）。
+    LblErr=$lblErr; LastError=$null; Stale=$false; PendingSave=$false
     PortText=$portText; Endpoint=$endpoint; OpenBtn=$open
   }
   # 按钮持有卡片引用，Click 里直接取，省得爬 VisualTree
@@ -342,46 +373,76 @@ function New-Card([string]$name, $info){
   $btnStop.Tag = $border
   $btnStop.Add_Click({ Invoke-CardAction $this.Tag 'stop' })
 
-  # 右键菜单
+  # 右键菜单：鼠标右键与键盘 Shift+F10 / Apps 共用一份构造，避免两条路径各建一套后漂移。
   $border.Add_MouseRightButtonDown({
     param($s,$e)
-    $n = $s.SvcName
-    $ctx = New-Object System.Windows.Controls.ContextMenu
-    $items = @(@('启动','start'),@('停止','stop'),@('重启','restart'),@('面板','open'),@('日志','log'),@('健康历史','health'),@('安全检查','security'),@('删除','remove'))
-    foreach ($d in $items) {
-      # Tag 存结构而不是 'act|name' 拼串：服务名允许的字符集不含 |，但配置是手写的，
-      # 名字里带 | 时拼串会把右键动作打偏到截断后的另一个服务上。
-      $mi = New-Object System.Windows.Controls.MenuItem -Property @{Header=$d[0]; Tag=@{act=$d[1]; name=$n}}
-      if ($d[1] -eq 'remove') { $mi.Foreground = $script:T.Danger }
-      $mi.Add_Click({
-        $act = $this.Tag.act; $n = $this.Tag.name
-        switch ($act) {
-          # 右键是逃生口：绕过卡片按钮的状态门闩，直接下发——服务卡在 StopPending 时
-          # 这是唯一还能下命令的入口（PROJECT.md 已知限制里承诺过）。失败回执不会错误
-          # 回滚别人的过渡态，那由 Update-CardData 的 epoch 归属判断兜住，不靠这里拦。
-          { $_ -in @('start','stop','restart') } {
-            # 重启走 Invoke-CardRestart：先置「停止中」过渡态，避免重启期间还能再下发一条命令。
-            # 卡片不在缓存（极端：菜单开着时被 Render-Page 换掉）也照样下发，右键是逃生口。
-            if ($act -eq 'restart') {
-              $card = $script:cards[$n]
-              if ($card) { Invoke-CardRestart $card } else { [void](Send-ServiceCommand $n 'restart') }
-            } else { Send-ServiceCommand $n $act }
-          }
-          'open'    { Open-PanelUrl $script:svc[$n].url }
-          'log'     { Show-Log $n $script:window }
-          'health'  { Show-HealthHistory $n $script:window }
-          'security'{ Show-SecurityCheck $n }
-          'remove'  { Show-Remove $n $script:window; Render-Page }
-        }
-      })
-      [void]$ctx.Items.Add($mi)
-    }
+    $ctx = New-CardContextMenu $s
     $ctx.IsOpen = $true
     $e.Handled = $true
   })
 
+  # 键盘可达性：Enter = 主方向动作（与双击同一条 Invoke-CardToggle 路径，只换 source 文案）；
+  # Shift+F10 / Apps = 右键菜单。焦点在卡片按钮上时按钮自己处理 Enter/Tab，不进这两个分支。
+  $border.Add_GotKeyboardFocus({ param($s) $s.BorderBrush = $script:T.BtnFocus })
+  $border.Add_LostKeyboardFocus({ param($s) $s.BorderBrush = $script:T.CardBrd })
+  $border.Add_KeyDown({
+    param($s,$e)
+    if ($e.Key -eq [System.Windows.Input.Key]::Enter) {
+      $e.Handled = $true; Invoke-CardToggle $s 'Keyboard'
+    } elseif ($e.Key -eq [System.Windows.Input.Key]::Apps -or
+              ($e.Key -eq [System.Windows.Input.Key]::F10 -and $e.KeyboardDevice.Modifiers -band [System.Windows.Input.ModifierKeys]::Shift)) {
+      $e.Handled = $true; Open-CardContextMenu $s
+    }
+  })
+  Update-CardAutomationName $border
+
   $script:cards[$name] = $border
   $border
+}
+
+# 构造卡片右键菜单（不打开）。鼠标与键盘两条入口共用，菜单内容只有这一份。
+function New-CardContextMenu($card){
+  $n = $card.SvcName
+  $ctx = New-Object System.Windows.Controls.ContextMenu
+  $items = @(@('启动','start'),@('停止','stop'),@('重启','restart'),@('面板','open'),@('日志','log'),@('健康历史','health'),@('安全检查','security'),@('删除','remove'))
+  foreach ($d in $items) {
+    # Tag 存结构而不是 'act|name' 拼串：服务名允许的字符集不含 |，但配置是手写的，
+    # 名字里带 | 时拼串会把右键动作打偏到截断后的另一个服务上。
+    $mi = New-Object System.Windows.Controls.MenuItem -Property @{Header=$d[0]; Tag=@{act=$d[1]; name=$n}}
+    if ($d[1] -eq 'remove') { $mi.Foreground = $script:T.Danger }
+    $mi.Add_Click({
+      $act = $this.Tag.act; $n = $this.Tag.name
+      switch ($act) {
+        # 右键是逃生口：绕过卡片按钮的状态门闩，直接下发——服务卡在 StopPending 时
+        # 这是唯一还能下命令的入口（PROJECT.md 已知限制里承诺过）。失败回执不会错误
+        # 回滚别人的过渡态，那由 Update-CardData 的 epoch 归属判断兜住，不靠这里拦。
+        { $_ -in @('start','stop','restart') } {
+          # 重启走 Invoke-CardRestart：先置「停止中」过渡态，避免重启期间还能再下发一条命令。
+          # 卡片不在缓存（极端：菜单开着时被 Render-Page 换掉）也照样下发，右键是逃生口。
+          if ($act -eq 'restart') {
+            $card = $script:cards[$n]
+            if ($card) { Invoke-CardRestart $card } else { [void](Send-ServiceCommand $n 'restart') }
+          } else { Send-ServiceCommand $n $act }
+        }
+        'open'    { Open-PanelUrl $script:svc[$n].url }
+        'log'     { Show-Log $n $script:window }
+        'health'  { Show-HealthHistory $n $script:window }
+        'security'{ Show-SecurityCheck $n }
+        'remove'  { Show-Remove $n $script:window; Render-Page }
+      }
+    })
+    [void]$ctx.Items.Add($mi)
+  }
+  $ctx
+}
+
+# 键盘入口弹菜单：没有鼠标位置可依，锚在卡片上沿。
+function Open-CardContextMenu($card){
+  if (-not $card) { return }
+  $ctx = New-CardContextMenu $card
+  $ctx.PlacementTarget = $card
+  $ctx.Placement = [System.Windows.Controls.Primitives.PlacementMode]::Bottom
+  $ctx.IsOpen = $true
 }
 
 # 刷新缓存卡片的端口/URL/Tag（配置变更命中缓存时）。New-Card 把它们固化进控件，不复用会过期。§Update-CardInfo
@@ -393,16 +454,25 @@ function Update-CardInfo([string]$name, $info){
   $c.Endpoint.Text = $info.url
   $c.Endpoint.ToolTip = $info.url
   $c.OpenBtn.Tag = $info.url
-  $c.OpenBtn.IsEnabled = (-not [string]::IsNullOrWhiteSpace($info.url))
+  $hasUrl = (-not [string]::IsNullOrWhiteSpace($info.url))
+  $c.OpenBtn.IsEnabled = $hasUrl
+  $c.OpenBtn.Visibility = if ($hasUrl) { 'Visible' } else { 'Collapsed' }
+  Update-CardAutomationName $c
 }
 
 # 更新卡片数据（DispatcherTimer 调用）。$item.done 分流：回执走 -ack，探测走普通分支。§Update-CardData
-function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ack,[bool]$ok=$true){
+function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ack,[bool]$ok=$true,[string]$why=''){
   if (-not $script:cards.ContainsKey($n)) { return }
   $c = $script:cards[$n]
+  # 状态真的变了才清失败提示：同一状态的重复探测不该把「刚才为什么失败」抹掉。
+  if (-not $ack -and $c.LastError -and $st -and $st -ne $c.ST) {
+    if (Get-Command Clear-CardLastError -EA SilentlyContinue) { Clear-CardLastError $c }
+  }
   if ($ack) {
     if ($e -lt $c.PendingEpoch) { return }
     if (-not $ok) {
+      # 失败原因留在卡片上：状态栏那句只有 5 秒租约，错过就再也查不到「为什么没起来」。
+      if ($why -and (Get-Command Set-CardLastError -EA SilentlyContinue)) { Set-CardLastError $c $why }
       # 只有回执对应的就是卡片当前那条命令时才回滚。右键启停的 epoch 恒大于 PendingEpoch，
       # 它的失败不该把别人的过渡态回滚掉——那会把「停止中」刷成「运行中」，而停止命令仍在途。
       if ($e -ne $c.PendingEpoch -or $c.TransitionAt -eq [datetime]::MinValue) {
@@ -469,16 +539,16 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
   $settledHealthy = $healthy -and (-not $c.UnhealthySince -or $c.UnhealthySince -eq [datetime]::MinValue)
   $stuck = $running -and (-not $healthy) -and $waitedMs -ge $script:WAIT_HEALTHY_TIMEOUT_MS
   $displaySt = if ($running -and -not $settledHealthy) { if ($stuck) { '无响应' } else { '等待中' } } else { $st }
-  $dotColor = switch ($st) {
-    '运行中' { if ($settledHealthy) { 'Green' } elseif ($stuck) { 'Red' } else { 'Orange' } }
-    { $_ -in @('已停止','未安装') } { 'Gray' }
-    default { 'Orange' }
+  $brush = switch ($st) {
+    '运行中' { if ($settledHealthy) { $script:T.BrushOk } elseif ($stuck) { $script:T.BrushDanger } else { $script:T.BrushBusy } }
+    { $_ -in @('已停止','未安装') } { $script:T.BrushStale }
+    default { $script:T.BrushBusy }
   }
-  # 静态画刷已经冻结；这里只替换引用，不修改画刷颜色。
-  $brush = [System.Windows.Media.Brushes]::$dotColor
+  # 语义色画刷已 Freeze；这里只替换引用，不修改画刷颜色。
   $c.Dot.Fill = $brush
   $c.LblSt.Text = $displaySt
   $c.LblSt.Foreground = $brush
+  Update-CardAutomationName $c
 
   # 健康文字：正文存进 LblUpBase，时长后缀由 Update-CardClock 追加（它每帧跑）。
   $c.LblUpBase = if ($running -and $settledHealthy) {
@@ -497,4 +567,83 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
   }
   Update-CardClock $c ([datetime]::Now)
   Update-CardButtons $c
+}
+
+# ---- 失败原因 / 待保存 / 离线 / 陈旧（P1/P2）----
+
+# 失败原因挂到卡片上，不跟状态栏的 5 秒租约走。只在下次操作或状态真正变化时清除。
+function Set-CardLastError($card, [string]$why){
+  if (-not $card) { return }
+  $text = ([string]$why).Trim()
+  if (-not $text) { return }
+  $card.LastError = @{ text = $text; at = [datetime]::Now }
+  if ($card.LblErr) {
+    $card.LblErr.Text = $text
+    $card.LblErr.Visibility = 'Visible'
+  }
+}
+
+function Clear-CardLastError($card){
+  if (-not $card) { return }
+  $card.LastError = $null
+  if ($card.LblErr) { $card.LblErr.Visibility = 'Collapsed' }
+}
+
+# 服务已从系统删除，但清单没写成功：卡片留着，右键「重试保存清单」是恢复入口。
+function Set-CardPendingSave($card, [string]$name){
+  if (-not $card) { return }
+  $card.PendingSave = $true
+  $card.ST = '待保存'
+  $card.LblSt.Text = '待保存'
+  $card.Dot.Fill = $script:T.BrushBusy
+  $card.LblSt.Foreground = $script:T.BrushBusy
+  $card.LblUpBase = '服务已删除，清单未保存'
+  if ($card.LblErr) {
+    $card.LblErr.Text = "$name 已从系统删除，但 services.json 未写入。右键「重试保存清单」。"
+    $card.LblErr.Visibility = 'Visible'
+  }
+  $card.Btn.IsEnabled = $false
+  if ($card.BtnStop) { $card.BtnStop.IsEnabled = $false }
+  $card.ReadyToToggle = $false
+  Update-CardAutomationName $card
+}
+
+# 后台 runspace 已结束：所有卡片都必须承认「不知道」。只改「查询中」会让其余卡继续假装活着。
+function Set-CardOffline($card){
+  if (-not $card) { return }
+  $card.ST = '未知'
+  $card.Stale = $true
+  $card.LblSt.Text = '状态未知'
+  $card.LblSt.Foreground = $script:T.BrushStale
+  $card.Dot.Fill = $script:T.BrushStale
+  $card.LblUpBase = '后台已停止响应'
+  Update-CardAutomationName $card
+  $card.Btn.IsEnabled = $false
+  if ($card.BtnStop) { $card.BtnStop.IsEnabled = $false }
+  $card.ReadyToToggle = $false
+}
+
+# 陈旧样本：超过 2 个探测周期没有新结果，就把「运行中」降级为「状态未知」。
+# 与后台死亡分开——后台可能还活着，只是探测被限流或卡在一条外部命令上。
+function Update-CardFreshness($card, [datetime]$now){
+  if (-not $card -or $card.PendingSave) { return }
+  if ($card.ST -in @('启动中','停止中','删除中','待保存')) { $card.Stale = $false; return }
+  if (-not $script:svcState) { return }
+  $seen = $script:svcState[$card.SvcName]
+  if (-not $seen) { return }   # 首帧还没结果：交给「正在获取服务状态」
+  $at = $seen.at
+  if ($null -eq $at) { return }
+  $interval = if ($script:config.ProbeIntervalMs) { [int]$script:config.ProbeIntervalMs } else { 4000 }
+  $ageMs = ($now - [datetime]$at).TotalMilliseconds
+  if ($ageMs -le (2 * $interval)) { $card.Stale = $false; return }
+  $card.Stale = $true
+  $age = Format-Elapsed ([datetime]$at) $now
+  $card.LblSt.Text = '状态未知'
+  $card.LblSt.Foreground = $script:T.BrushStale
+  $card.Dot.Fill = $script:T.BrushStale
+  $card.LblUpBase = "已 $age 没拿到状态，正在重试"
+  $card.Btn.IsEnabled = $false
+  if ($card.BtnStop) { $card.BtnStop.IsEnabled = $false }
+  $card.ReadyToToggle = $false
+  Update-CardAutomationName $card
 }

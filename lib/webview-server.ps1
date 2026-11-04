@@ -3,7 +3,10 @@
 # 只听 loopback、只接受 GET：这是故意收窄的——GUI 以管理员身份运行，不把读接口放到外部网卡。
 $listener = $null
 try {
-  $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, [int]$sync.webPort)
+  # 请求端口与「已绑定」分开：webRequestedPort 由 Start-WebView 写入，webPort 只存绑定后的实际端口。
+  # 旧调用方（或单测）可能只设 webPort，回退它保持兼容。
+  $requested = if ($null -ne $sync.webRequestedPort) { [int]$sync.webRequestedPort } else { [int]$sync.webPort }
+  $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $requested)
   $listener.Start()
   $sync.webPort = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
 } catch {

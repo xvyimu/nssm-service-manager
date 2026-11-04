@@ -21,18 +21,14 @@ $cfg = "$root\services.json"
 # 用 Global\ 而不是 Local\：Local 只在当前会话可见，计划任务/SSH 会话里跑 -Add 会误判「没有 GUI」，
 # 写进去的新增随后被 GUI 下一次全量写回覆盖掉。GUI 提权后创建，CLI 只用 OpenExisting。
 $script:mutexName = 'Global\service-manager-gui'
-# NSSM 探测：env > Get-Command > scoop。NSSM_PATH 只校验「存在 + 文件名」，它随后以管理员身份被调用。
+# NSSM 解析：只认固定路径。它随后以管理员身份被调用，任何来自用户可写位置（NSSM_PATH、
+# PATH、scoop 目录）的副本都等于让标准用户决定管理员进程执行什么——旧的三级探测正是这个洞。
 $script:nssm = $null
-if ($env:NSSM_PATH -and (Test-Path -LiteralPath $env:NSSM_PATH) -and (Split-Path -Leaf $env:NSSM_PATH) -ieq 'nssm.exe') {
-  $script:nssm = $env:NSSM_PATH
-} else {
-  $found = $null
-  try { $found = (Get-Command nssm.exe -EA Stop).Source } catch {}
-  if ($found) { $script:nssm = $found }
-  else {
-    $scoopNssm = "$env:USERPROFILE\scoop\apps\nssm\current\nssm.exe"
-    if (Test-Path -LiteralPath $scoopNssm) { $script:nssm = $scoopNssm }
-  }
+foreach ($candidate in @(
+    (Join-Path $env:ProgramFiles 'nssm\nssm.exe'),
+    (Join-Path $env:ProgramFiles 'nssm\win64\nssm.exe')
+  )) {
+  if (Test-Path -LiteralPath $candidate -PathType Leaf) { $script:nssm = $candidate; break }
 }
 
 # 可调常量最先加载：$logDir 与 Write-CrashLog 都依赖 config，且首次调用早于模块加载区。
@@ -122,16 +118,32 @@ if (-not $owned) {
 }
 Write-CrashLog 'Single-instance mutex acquired'
 
-# DPI Aware：高缩放屏下不模糊
+# DPI Aware：PerMonitorV2（每显示器独立缩放，外接屏拨动/插拔时不再整体模糊）。
+# 老系统（Win10 1607 之前）没有 SetProcessDpiAwarenessContext，导入/调用失败就回落系统级 DPI Aware。
 try {
-  Add-Type -Namespace Win32 -Name Dpi -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'
-  [Win32.Dpi]::SetProcessDPIAware() | Out-Null
-} catch {}
+  Add-Type -Namespace Win32 -Name Dpi -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+public static extern bool SetProcessDpiAwarenessContext(System.IntPtr value);
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+public static extern bool SetProcessDPIAware();
+'@
+  # -4 = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+  $dpiCtx = [System.IntPtr](-4)
+  if (-not [Win32.Dpi]::SetProcessDpiAwarenessContext($dpiCtx)) {
+    # 返回 False 且 LastError=5(拒绝访问) = 进程的 DPI 感知已经定死（pwsh 自己的清单也可能声明了），
+    # 此时调旧 API 不会提升感知级别，只会把真实状态掩盖掉——保持现状。
+    $dpiErr = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if ($dpiErr -ne 5) { [Win32.Dpi]::SetProcessDPIAware() | Out-Null }
+  }
+} catch {
+  try { [Win32.Dpi]::SetProcessDPIAware() | Out-Null } catch {}
+}
 
 # NSSM 预检
-if (-not (Test-Path -LiteralPath $script:nssm)) {
+if (-not $script:nssm -or -not (Test-Path -LiteralPath $script:nssm -PathType Leaf)) {
   Write-CrashLog 'Startup failed: NSSM dependency missing'
-  [System.Windows.MessageBox]::Show("未在 $($script:nssm) 找到 NSSM。`n请用 scoop install nssm 安装后重试。",'依赖缺失','OK','Warning') | Out-Null
+  $want = Join-Path $env:ProgramFiles 'nssm\nssm.exe'
+  [System.Windows.MessageBox]::Show("未找到 NSSM。`n`n请把 nssm.exe 放到管理员独占目录：`n$want`n或运行 scripts\deploy-local.ps1 完成部署。",'依赖缺失','OK','Warning') | Out-Null
   exit 1
 }
 
@@ -170,17 +182,22 @@ if (-not (Test-Path -LiteralPath $script:nssm)) {
 . "$root\lib\xaml.ps1"
 Write-CrashLog 'GUI modules loaded'
 
-# 提权面自检：NSSM 以管理员身份被调用，路径所在目录若对本机普通用户可写，
-# 任何中等完整性进程都能替换它 → 本地提权。不阻断（scoop 默认就装在用户目录），
-# 但要在状态栏说出来。
-if ($script:nssm) {
+# 提权面自检：这些路径里的脚本与程序会被管理员进程执行，普通用户可写 = 可被替换。
+# **只是可见性，不构成防护**——真正的防护是程序目录本身管理员独占（见 docs/ITERATION-PLAN.md P0）。
+$script:securityFindings = @()
+$securityTargets = [ordered]@{ '程序目录' = $root; '模块目录' = (Join-Path $root 'lib') }
+if ($script:nssm) { $securityTargets['NSSM 目录'] = (Split-Path $script:nssm -Parent) }
+foreach ($key in $securityTargets.Keys) {
   try {
-    $nssmDir = Split-Path $script:nssm -Parent
-    if ((Test-DirAclPermissive (Get-Acl -Path $nssmDir -EA Stop)) -eq '是') {
-      $script:securityNotice = "NSSM 目录可被普通用户写入，建议改装到系统目录：$($script:nssm)"
-      Write-CrashLog "Security: nssm dir is user-writable: $nssmDir"
+    $path = $securityTargets[$key]
+    if ((Test-Path -LiteralPath $path) -and (Test-DirAclPermissive (Get-Acl -LiteralPath $path -EA Stop)) -eq '是') {
+      $script:securityFindings += "$key 可被普通用户写入：$path"
     }
   } catch {}
+}
+if ($script:securityFindings.Count) {
+  $script:securityNotice = "安全姿态：$($script:securityFindings -join '；')。管理员进程会执行这些位置的代码，建议迁到仅管理员可写的目录。"
+  foreach ($f in $script:securityFindings) { Write-CrashLog "Security: $f" }
 }
 
 # ---- 加载服务清单 ----
@@ -226,6 +243,7 @@ $bgRS.SessionStateProxy.SetVariable('sync', $script:sync)
 $bgPS = [powershell]::Create().AddScript($script:poll)
 $bgPS.Runspace = $bgRS
 $script:bgHandle = $bgPS.BeginInvoke()
+$script:bgStopped = $false   # Stop-Background 幂等标志（Closed 与托盘退出都会触发）
 
 # ---- 收尾：停后台 ----
 # 日志清理：两处调用（窗口关闭、首帧后）共用，策略取值只此一处。
@@ -247,23 +265,8 @@ function Invoke-LogCleanup([string]$label) {
   } catch { Write-CrashLog "$label`: $($_.Exception.Message)" }
 }
 
-function Stop-Background {
-  $script:sync.stop = $true
-  [void]$script:sync.wake.Set()
-  # Web 视图自己的 runspace：先置停止标志（循环 200ms 内自己退出），再兜底停管道
-  if ($script:web) { $script:sync.webStop = $true; Stop-WebView $script:web; $script:web = $null }
-  try { if ($script:bgHandle.AsyncWaitHandle.WaitOne(1500)) { $bgPS.EndInvoke($script:bgHandle) } } catch { Write-CrashLog "Background end failed: $($_.Exception.Message)" }
-  # Stop() 是同步的：后台卡在 $svc.Start()（等满 ServicesPipeTimeout ≈ 30s）或外部命令里时，
-  # UI 线程会被一起拖住，窗口关了进程还在——这段时间 mutex 仍被占，用户再双击是「没反应」。
-  # BeginStop 只发停止请求就返回；资源释放各自包住，管道还在跑时 Dispose 抛错也不该拖住关闭。
-  try { [void]$bgPS.BeginStop($null, $null) } catch { Write-CrashLog "Background stop failed: $($_.Exception.Message)" }
-  try { $bgRS.Close() } catch {}
-  try { $bgRS.Dispose() } catch {}
-  try { $bgPS.Dispose() } catch {}
-  try { $script:sync.wake.Dispose() } catch {}
-  # 停收尾时也跑一次日志清理——窗口关闭是自然的维护点，避免常驻时占 UI 线程。
-  Invoke-LogCleanup 'Log cleanup on close failed'
-}
+# Stop-Background 的实现放在 lib/util.ps1（可被单测直接点源，且与 Update-StatusTick 同一套作用域约定）。
+# 这里不再定义：GUI 调用时从 util.ps1 已加载的实现解析。
 
 # ---- 构建主窗口 + 应用 Mica ----
 $win = New-MainWindow
@@ -279,11 +282,29 @@ $win.Add_KeyDown({ param($s,$e)
 
 # 状态栏「N 个本地服务」右键 = 批量启停：低频操作，不占卡片上的位置；日志/删除这类危险动作不进批量。
 $batchMenu = New-Object System.Windows.Controls.ContextMenu
-foreach ($spec in @(@('全部启动','start'), @('全部停止','stop'), @('复制 Web 视图地址','weburl'))) {
+foreach ($spec in @(@('全部启动','start'), @('全部停止','stop'), @('重试保存清单','retrysave'), @('复制 Web 视图地址','weburl'))) {
   $mi = New-Object System.Windows.Controls.MenuItem -Property @{ Header = $spec[0]; Tag = $spec[1] }
   $mi.Add_Click({
     try {
       # 状态栏那条带 token 的地址只有 5 秒租约，错过就得重启——这里给个取回入口
+      if ($this.Tag -eq 'retrysave') {
+        # 删除成功但清单没写成功时，卡片停在「待保存」。这里按卡片收集待删条目重新落盘。
+        $pending = @($script:cards.Values | Where-Object { $_.PendingSave } | ForEach-Object { $_.SvcName })
+        if (-not $pending.Count) { Set-StatusMessage '没有待保存的清单变更'; return }
+        $next = [ordered]@{}
+        foreach ($k in $script:svc.Keys) { if ($k -notin $pending) { $next[$k] = $script:svc[$k] } }
+        try { Save-Svc $next } catch { Set-StatusMessage "清单保存失败：$($_.Exception.Message)"; return }
+        [Threading.Monitor]::Enter($script:sync.gate)
+        try { foreach ($k in $pending) { [void]$script:svc.Remove($k) } } finally { [Threading.Monitor]::Exit($script:sync.gate) }
+        foreach ($k in $pending) {
+          $script:cards.Remove($k)
+          if ($script:healthSeen) { $script:healthSeen.Remove($k) }
+          if ($script:svcState) { $script:svcState.Remove($k) }
+        }
+        Render-Page
+        Set-StatusMessage "已保存清单：$($pending.Count) 项删除已落盘"
+        return
+      }
       if ($this.Tag -eq 'weburl') {
         if (-not $script:web) { Set-StatusMessage 'Web 视图未开启（config.json 里设 WebView=true）'; return }
         $u = "http://127.0.0.1:$($script:sync.webPort)/?t=$($script:webToken)"

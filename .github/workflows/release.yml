@@ -7,6 +7,11 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# 同一 ref 的发布串行执行；不取消进行中的发布（半个 release 比晚发布更糟）
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: windows-latest
@@ -27,6 +32,14 @@ jobs:
         shell: pwsh
         run: ./tests/run-all.ps1
 
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -RequiredVersion 1.25.0
+
+      - name: Static analysis
+        shell: pwsh
+        run: ./tests/analyze.ps1
+
       - name: Build zip
         shell: pwsh
         run: ./scripts/package-release.ps1
@@ -37,5 +50,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $zip = (Get-ChildItem ./dist/service-manager-*.zip | Sort-Object LastWriteTime | Select-Object -Last 1).FullName
-          gh release create '${{ github.ref_name }}' $zip --title '${{ github.ref_name }}' --generate-notes
+          # 精确取本次版本的产物；不要按 LastWriteTime 挑最后一个（dist/ 有多个残留时会传错包）
+          $version = (Get-Content ./VERSION -Raw -Encoding UTF8).Trim()
+          $zip = Join-Path (Get-Location) "dist/service-manager-$version.zip"
+          if (-not (Test-Path -LiteralPath $zip)) { throw "发布包不存在：$zip" }
+          $tag = '${{ github.ref_name }}'
+          gh release create $tag $zip --title $tag --generate-notes
+          if ($LASTEXITCODE -ne 0) {
+            # 幂等：tag 已发过（重跑 / 补传）就走覆盖上传，不整条 workflow 变红
+            Write-Host "release $tag 已存在，改用 upload --clobber"
+            gh release upload $tag $zip --clobber
+            if ($LASTEXITCODE -ne 0) { throw "gh release upload 失败（exit $LASTEXITCODE）" }
+          }
