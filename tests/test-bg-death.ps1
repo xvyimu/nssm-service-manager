@@ -66,6 +66,15 @@ try {
     Assert ($script:cards[$n].ST -eq '未知') "第二拍 $n 仍应是未知，实际「$($script:cards[$n].ST)」"
   }
   Write-Output 'PASS: 第二拍不重复报告、文案不被自动刷新覆盖'
+
+  # ---- 4. 死前残样本不得把「未知」写回运行中 ----
+  # 后台结束前最后一批结果可能还在队列里。bgDeathReported 已挡住新鲜度降级，
+  # 若这些结果还能被应用，卡片就永久假装活着——正是 P1 要消灭的形态。
+  $script:queue.Enqueue([pscustomobject]@{ n='A'; st='运行中'; h='正常'; at=[datetime]::Now })
+  Update-StatusTick
+  Assert ($script:cards['A'].ST -eq '未知') "残样本不得覆写离线态，实际「$($script:cards['A'].ST)」"
+  Assert ($script:cards['A'].LblSt.Text -eq '状态未知') '残样本不得改写离线文案'
+  Write-Output 'PASS: 后台死后的残样本被拒绝应用，卡片保持未知'
 } finally {
   try { $win.Close() } catch { }
 }

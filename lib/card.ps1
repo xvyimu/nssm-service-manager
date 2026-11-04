@@ -358,8 +358,8 @@ function New-Card([string]$name, $info){
     # per-service 过渡态超时（services.json 的 toggleTimeoutMs），缺省用全局
     ToggleTimeoutMs=$(Resolve-ToggleTimeoutMs $info)
     Dot=$dot; LblSt=$lblSt; LblUp=$lblUp; Btn=$btn; BtnStop=$btnStop
-    # 失败/待保存提示条与它的数据；Stale 标记陈旧样本（后台还活着但探测没回来）。
-    LblErr=$lblErr; LastError=$null; Stale=$false; PendingSave=$false
+    # 失败/待保存提示条与它的数据；Stale 标记陈旧样本，Offline 标记后台已死（拒绝再应用结果）。
+    LblErr=$lblErr; LastError=$null; Stale=$false; PendingSave=$false; Offline=$false
     PortText=$portText; Endpoint=$endpoint; OpenBtn=$open
   }
   # 按钮持有卡片引用，Click 里直接取，省得爬 VisualTree
@@ -464,6 +464,10 @@ function Update-CardInfo([string]$name, $info){
 function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ack,[bool]$ok=$true,[string]$why=''){
   if (-not $script:cards.ContainsKey($n)) { return }
   $c = $script:cards[$n]
+  # 后台已确认死亡：卡片停在「未知」是权威。队列里可能还有它死前最后一批结果，
+  # 消费掉只会把「未知」写回「运行中」，而且此时 bgDeathReported 已挡住新鲜度降级——
+  # 那张卡就永久假装活着（P1 要消灭的正是这个形态）。
+  if ($c.Offline) { return }
   # 状态真的变了才清失败提示：同一状态的重复探测不该把「刚才为什么失败」抹掉。
   if (-not $ack -and $c.LastError -and $st -and $st -ne $c.ST) {
     if (Get-Command Clear-CardLastError -EA SilentlyContinue) { Clear-CardLastError $c }
@@ -611,6 +615,8 @@ function Set-CardPendingSave($card, [string]$name){
 # 后台 runspace 已结束：所有卡片都必须承认「不知道」。只改「查询中」会让其余卡继续假装活着。
 function Set-CardOffline($card){
   if (-not $card) { return }
+  # 标记写在这里：Update-CardData 看到它就拒绝再应用结果（队列里可能有死前的残样本）。
+  $card.Offline = $true
   $card.ST = '未知'
   $card.Stale = $true
   $card.LblSt.Text = '状态未知'

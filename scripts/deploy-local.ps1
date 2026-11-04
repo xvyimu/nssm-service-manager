@@ -24,11 +24,12 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 function Set-AdminOnlyAcl([string]$path) {
-  # 断继承 → 只留 Administrators/SYSTEM 完全控制、Users 读执行 → 子项重置为继承。
-  # 先设父目录再 /reset /T：复制进来的文件带着源目录的继承 ACE，不清掉等于没设。
+  # 顺序有讲究：先 /reset /T 把复制进来的文件自带的显式 ACE 清掉（它们会盖住继承），
+  # 再断目录继承、最后写显式规则——若先 grant 再 reset，reset 会把目录自身的显式规则一起重置回
+  # 从父目录继承，等于白设（换到父目录本来就宽的目标路径时尤其危险）。
+  & icacls.exe $path /reset /T /C /Q | Out-Null
   & icacls.exe $path /inheritance:r | Out-Null
   & icacls.exe $path /grant:r 'BUILTIN\Administrators:(OI)(CI)F' 'NT AUTHORITY\SYSTEM:(OI)(CI)F' 'BUILTIN\Users:(OI)(CI)RX' | Out-Null
-  & icacls.exe $path /reset /T /C /Q | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "设置 ACL 失败：$path（icacls exit=$LASTEXITCODE）" }
 }
 
