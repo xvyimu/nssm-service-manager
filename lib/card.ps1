@@ -440,6 +440,13 @@ function New-CardContextMenu($card){
     })
     [void]$ctx.Items.Add($mi)
   }
+  # 待保存卡自带恢复入口：卡片红字写着「右键重试保存清单」，这里就必须真有这一项，
+  # 否则提示把用户指向一个不存在的菜单（之前只有状态栏汇总标签上有）。
+  if ($card.PendingSave) {
+    $miRetry = New-Object System.Windows.Controls.MenuItem -Property @{ Header='重试保存清单'; Tag=@{act='retrysave'; name=$n} }
+    $miRetry.Add_Click({ Invoke-RetrySaveSvc $this.Tag.name })
+    [void]$ctx.Items.Add($miRetry)
+  }
   $ctx
 }
 
@@ -658,7 +665,9 @@ function Update-CardFreshness($card, [datetime]$now){
   if ($null -eq $at) { return }
   $interval = if ($script:config.ProbeIntervalMs) { [int]$script:config.ProbeIntervalMs } else { 4000 }
   $ageMs = ($now - [datetime]$at).TotalMilliseconds
-  if ($ageMs -le (2 * $interval)) { $card.Stale = $false; return }
+  # 未来样本（时钟回拨 / NTP 校正）同样不可信：差值恒负会让陈旧判据永不触发，
+  # 卡片继续显示「运行中」而时间戳其实来自未来。只在 [−1 个周期, 2 个周期] 内算新鲜。
+  if ($ageMs -ge -$interval -and $ageMs -le (2 * $interval)) { $card.Stale = $false; return }
   $card.Stale = $true
   $age = Format-Elapsed ([datetime]$at) $now
   $card.LblSt.Text = '状态未知'

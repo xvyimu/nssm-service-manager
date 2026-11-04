@@ -288,21 +288,8 @@ foreach ($spec in @(@('全部启动','start'), @('全部停止','stop'), @('重�
     try {
       # 状态栏那条带 token 的地址只有 5 秒租约，错过就得重启——这里给个取回入口
       if ($this.Tag -eq 'retrysave') {
-        # 删除成功但清单没写成功时，卡片停在「待保存」。这里按卡片收集待删条目重新落盘。
-        $pending = @($script:cards.Values | Where-Object { $_.PendingSave } | ForEach-Object { $_.SvcName })
-        if (-not $pending.Count) { Set-StatusMessage '没有待保存的清单变更'; return }
-        $next = [ordered]@{}
-        foreach ($k in $script:svc.Keys) { if ($k -notin $pending) { $next[$k] = $script:svc[$k] } }
-        try { Save-Svc $next } catch { Set-StatusMessage "清单保存失败：$($_.Exception.Message)"; return }
-        [Threading.Monitor]::Enter($script:sync.gate)
-        try { foreach ($k in $pending) { [void]$script:svc.Remove($k) } } finally { [Threading.Monitor]::Exit($script:sync.gate) }
-        foreach ($k in $pending) {
-          $script:cards.Remove($k)
-          if ($script:healthSeen) { $script:healthSeen.Remove($k) }
-          if ($script:svcState) { $script:svcState.Remove($k) }
-        }
-        Render-Page
-        Set-StatusMessage "已保存清单：$($pending.Count) 项删除已落盘"
+        # 实现收在 util.ps1：卡片右键的「重试保存清单」调用同一份，免得两边漂移。
+        Invoke-RetrySaveSvc
         return
       }
       if ($this.Tag -eq 'weburl') {

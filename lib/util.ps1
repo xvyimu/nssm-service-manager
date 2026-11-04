@@ -140,6 +140,26 @@ function Save-Svc($s) {
   $script:svcFileHintShown = $false
 }
 
+# 重试保存清单：把「待保存」的删除重新落盘。状态栏菜单与卡片右键共用这一份，
+# 免得两处各写一套后在「谁该被移除」上漂移。§Invoke-RetrySaveSvc
+function Invoke-RetrySaveSvc([string]$name){
+  $pending = @($script:cards.Values | Where-Object { $_.PendingSave } | ForEach-Object { $_.SvcName })
+  if (-not $pending.Count) { Set-StatusMessage '没有待保存的清单变更'; return }
+  $next = [ordered]@{}
+  foreach ($k in $script:svc.Keys) { if ($k -notin $pending) { $next[$k] = $script:svc[$k] } }
+  try { Save-Svc $next }
+  catch { Set-StatusMessage "清单保存失败：$($_.Exception.Message)"; return }
+  [Threading.Monitor]::Enter($script:sync.gate)
+  try { foreach ($k in $pending) { [void]$script:svc.Remove($k) } } finally { [Threading.Monitor]::Exit($script:sync.gate) }
+  foreach ($k in $pending) {
+    $script:cards.Remove($k)
+    if ($script:healthSeen) { $script:healthSeen.Remove($k) }
+    if ($script:svcState) { $script:svcState.Remove($k) }
+  }
+  if (Get-Command Render-Page -EA SilentlyContinue) { Render-Page }
+  Set-StatusMessage "已保存清单：$($pending.Count) 项删除已落盘"
+}
+
 # 清单是否被外部改过（GUI 常驻时手改、或另一个会话抢先写）：只做一次 stat，不读文件。
 # Save-Svc 自己写完会刷新 stamp 并清提示标记，所以自己的保存不会触发。§Test-SvcFileChanged
 function Test-SvcFileChanged {

@@ -58,6 +58,17 @@ try {
   Assert ($script:cards['A'].LblSt.Text -eq '待保存') '待保存文案不得被探测重写'
   Write-Output 'PASS: 待保存态压过探测值（状态行与提示条不打架）'
 
+  # ---- 1c. 待保存卡的右键菜单必须真有「重试保存清单」 ----
+  # 卡片红字把用户指向「右键重试保存清单」，菜单里没有这一项等于空指路。
+  $ctx = New-CardContextMenu $script:cards['A']
+  $headers = @($ctx.Items | ForEach-Object { $_.Header })
+  Assert ($headers -contains '重试保存清单') "待保存卡右键应含重试项，实际：$($headers -join ',')"
+  $script:cards['A'].PendingSave = $false
+  $normalHeaders = @((New-CardContextMenu $script:cards['A']).Items | ForEach-Object { $_.Header })
+  Assert ($normalHeaders -notcontains '重试保存清单') '非待保存卡不该出现重试项'
+  $script:cards['A'].PendingSave = $true
+  Write-Output 'PASS: 待保存卡右键含「重试保存清单」，非待保存卡没有'
+
   # ---- 2. 保存成功：条目与卡片都被移除 ----
   $script:svc['B'] = @{ port = 2; url = '' }
   Render-Page

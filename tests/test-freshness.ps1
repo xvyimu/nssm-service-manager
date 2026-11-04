@@ -69,7 +69,16 @@ try {
   Assert ($card.LblSt.Text -eq '运行中') "无记录时不得显示未知，实际「$($card.LblSt.Text)」"
   Assert (-not $card.Stale) '无记录时不应标记 Stale'
   Write-Output 'PASS: svcState 为空时不报错、不显示未知'
+
+  # ---- E. 未来时间戳（时钟回拨 / NTP 校正）同样不可信 ----
+  # 修前：$now - $at 恒为负，陈旧判据永不触发，卡片一直显示「运行中」。
+  Update-CardData 'A' '运行中' '正常'
+  $script:svcState = [hashtable]::Synchronized(@{ A = @{ st = '运行中'; h = '正常'; at = (Get-Date).AddHours(5) } })
+  Update-CardFreshness $card (Get-Date)
+  Assert ($card.Stale -eq $true) '未来时间戳应标记 Stale'
+  Assert ($card.LblSt.Text -eq '状态未知') "未来时间戳应显示未知，实际「$($card.LblSt.Text)」"
+  Write-Output 'PASS: 未来时间戳按陈旧处理（时钟回拨不再永久显示运行中）'
 } finally {
   try { $win.Close() } catch { }
 }
-Write-Output 'PASS: 陈旧样本新鲜度判定（4 例）'
+Write-Output 'PASS: 陈旧样本新鲜度判定（5 例，含未来时间戳）'
