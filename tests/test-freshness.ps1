@@ -78,7 +78,16 @@ try {
   Assert ($card.Stale -eq $true) '未来时间戳应标记 Stale'
   Assert ($card.LblSt.Text -eq '状态未知') "未来时间戳应显示未知，实际「$($card.LblSt.Text)」"
   Write-Output 'PASS: 未来时间戳按陈旧处理（时钟回拨不再永久显示运行中）'
+
+  # ---- F. 胶囊：未来时间戳不得写成「更新于 0s 前」 ----
+  # 颜色转琥珀但文案仍说刚更新，等于替不可信的数据背书。
+  $script:svc = [ordered]@{ A = @{ port = 1; url = '' } }
+  $script:svcState = [hashtable]::Synchronized(@{ A = @{ st = '运行中'; h = '正常'; at = (Get-Date).AddHours(2) } })
+  Update-FreshnessPill
+  Assert ($script:freshPill.Text -match '未来') "未来时间戳应点明时钟异常，实际「$($script:freshPill.Text)」"
+  Assert ($script:freshPill.Text -notmatch '0s 前') '不得把未来样本写成「0s 前」'
+  Write-Output 'PASS: 胶囊对未来时间戳给出时钟异常提示'
 } finally {
   try { $win.Close() } catch { }
 }
-Write-Output 'PASS: 陈旧样本新鲜度判定（5 例，含未来时间戳）'
+Write-Output 'PASS: 陈旧样本新鲜度判定（6 例，含未来时间戳与胶囊文案）'

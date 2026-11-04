@@ -46,10 +46,17 @@ function Update-FreshnessPill {
   $text = if ($script:bgDeathReported) {
     '离线'
   } elseif ($newest) {
-    $secs = [int]($now - $newest).TotalSeconds
-    if ($secs -lt 0) { $secs = 0 }
-    $ageText = if ($secs -lt 60) { "${secs}s" } elseif ($secs -lt 3600) { "$([int][math]::Floor($secs/60)) 分钟" } else { "$([int][math]::Floor($secs/3600)) 小时" }
-    "$head · 更新于 $ageText 前"
+    $delta = $now - $newest
+    if ($delta.TotalSeconds -lt -60) {
+      # 样本时间在未来（NTP 校正/手工改钟）：数字算出来是负的，夹成 0 会写成「更新于 0s 前」——
+      # 那是在替不可信的数据背书。颜色已经转琥珀，文案也必须说实话。
+      "$head · 更新时间在未来（检查系统时钟）"
+    } else {
+      $secs = [int]$delta.TotalSeconds
+      if ($secs -lt 0) { $secs = 0 }
+      $ageText = if ($secs -lt 60) { "${secs}s" } elseif ($secs -lt 3600) { "$([int][math]::Floor($secs/60)) 分钟" } else { "$([int][math]::Floor($secs/3600)) 小时" }
+      "$head · 更新于 $ageText 前"
+    }
   } else {
     "$head · 等待首次探测"
   }
