@@ -355,7 +355,10 @@ function Update-StatusTick {
     }
   }
   # 标题栏新鲜度胶囊（含托盘 tooltip 刷新）；函数在 xaml.ps1，CLI/部分单测不加载，带守卫。
-  if (Get-Command Update-FreshnessPill -EA SilentlyContinue) { Update-FreshnessPill }
+  # 单独包 try：胶囊是「数据还可不可信」的唯一常驻指示，不能让上游一条坏数据把它连累停更——
+  # 停更的表现是数字冻结在最后一帧，看起来比「离线」更可信。
+  try { if (Get-Command Update-FreshnessPill -EA SilentlyContinue) { Update-FreshnessPill } }
+  catch { try { Write-CrashLog "Freshness pill failed: $($_.Exception.Message)" } catch {} }
 }
 
 # 探测单实例 mutex 是否被 GUI 持有。OpenExisting 抛 = 无 GUI（正常）；抢到要立即释放。§Test-GuiInstanceRunning
@@ -489,9 +492,10 @@ function Stop-Background {
     $webToStop = $script:web
     try { if (Get-Command Stop-WebView -EA SilentlyContinue) { Stop-WebView $webToStop } }
     catch { Write-CrashLog "Web stop failed: $($_.Exception.Message)" }
-    # 只有确认停了才丢引用：停不掉时保留，至少句柄不丢、日志里能查；端口滞留到进程退出是可接受的代价。
-    $webStopped = $true
-    try { if ($webToStop.Handle) { $webStopped = [bool]$webToStop.Handle.IsCompleted } } catch {}
+    # 只有确认停了才丢引用：停不掉时保留，至少句柄不丢、日志里能查。
+    # 默认必须是「未确认」——读 Handle 抛异常、Handle 为空、Stop-WebView 不存在这三条都算没确认。
+    $webStopped = $false
+    try { $webStopped = [bool]($webToStop.Handle -and $webToStop.Handle.IsCompleted) } catch { $webStopped = $false }
     if ($webStopped) { $script:web = $null }
     else { Write-CrashLog 'Web view runspace did not stop within 2000ms; keeping reference' }
   }

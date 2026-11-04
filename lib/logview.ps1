@@ -176,7 +176,7 @@ function Show-Log([string]$n, $owner){
   $openDir.Add_Click({
     $p = if ($state.File) { Split-Path -Parent $state.File } elseif ($logRoot) { $logRoot } else { $null }
     if (-not $p -or -not (Test-Path -LiteralPath $p)) {
-      [System.Windows.MessageBox]::Show($f2,'还没有日志目录。','打开文件夹','OK','Information') | Out-Null
+      [System.Windows.MessageBox]::Show('还没有日志目录。','打开文件夹','OK','Information') | Out-Null
       return
     }
     try { Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$p`"" } catch {}

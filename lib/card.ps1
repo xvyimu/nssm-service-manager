@@ -627,6 +627,9 @@ function Set-CardPendingSave($card, [string]$name){
 # 后台 runspace 已结束：所有卡片都必须承认「不知道」。只改「查询中」会让其余卡继续假装活着。
 function Set-CardOffline($card){
   if (-not $card) { return }
+  # 待保存的卡保留自己的状态：它有一个用户可执行的恢复动作（重试保存清单），
+  # 转成「未知」会把这条唯一出路藏起来。后台死了也不影响 UI 线程直接写盘重试。
+  if ($card.PendingSave) { return }
   # 标记写在这里：Update-CardData 看到它就拒绝再应用结果（队列里可能有死前的残样本）。
   $card.Offline = $true
   $card.ST = '未知'

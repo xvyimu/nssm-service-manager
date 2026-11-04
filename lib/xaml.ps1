@@ -55,8 +55,10 @@ function Update-FreshnessPill {
   }
   if ($script:freshPill.Text -ne $text) { $script:freshPill.Text = $text }
   # 陈旧样本（>2 个探测周期）转琥珀：数字还在变，但数据已经老了。
+  # 时钟回拨时 $now < $newest，差值恒为负、永远判不出陈旧——那种情况的数据同样不可信，一并转琥珀。
+  $stale = $newest -and (($now -lt $newest) -or (($now - $newest).TotalMilliseconds -gt (2 * $interval)))
   $fg = if ($script:bgDeathReported) { $script:T.BrushDanger }
-        elseif ($newest -and (($now - $newest).TotalMilliseconds -gt (2 * $interval))) { $script:T.BrushBusy }
+        elseif ($stale) { $script:T.BrushBusy }
         else { $script:T.BrushDim }
   if ($script:freshPill.Foreground -cne $fg) { $script:freshPill.Foreground = $fg }
   if (Get-Command Update-TrayText -EA SilentlyContinue) { Update-TrayText }
@@ -194,8 +196,9 @@ function New-MainWindow {
     # 托盘「退出」是明确的收尾意图，不再二次确认。
     if (-not $script:trayExitRequested) {
       $now = [datetime]::Now
-      # 「在途」= 过渡态**且没超时**。卡死的过渡态（回执早就不来了、服务早已不在 SCM）下次 tick
-      # 就会被逃生口解封，拿它拦关窗只会每次退出都误报一次「X 还在切换中」。
+      # 「在途」= 过渡态**且没超时**。命令驱动的过渡态超时后会被逃生口解封，拿它拦关窗只会误报；
+      # 探测驱动的卡死态（TransitionAt 为空）不判超时，仍算在途——那是 SCM 侧真的没走完，
+      # 提示是对的（右键菜单是唯一出路，见 docs/PROJECT.md 已知限制）。
       # Test-TransitionTimedOut 不在（CLI / 部分单测只加载 util+xaml）时保守按在途处理。
       $canJudgeTimeout = [bool](Get-Command Test-TransitionTimedOut -EA SilentlyContinue)
       $busy = @(Get-ExitBusy $script:cards $script:svc | Where-Object {

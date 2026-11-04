@@ -27,7 +27,9 @@ function Get-TrayStatusText {
     if ($count -le 0) { return '服务管理' }
     $pending = 0
     if ($script:svcState) {
-      $pending += @($script:svcState.Values | Where-Object { $_.st -and $_.st -in @('启动中','停止中','删除中') }).Count
+      # 用同一份在途清单：这里只认三种会让「暂停中/继续中」在托盘计数里消失。
+      $states = if ($script:TRANSITION_STATES) { $script:TRANSITION_STATES } else { @('启动中','停止中','暂停中','继续中','删除中') }
+      $pending += @($script:svcState.Values | Where-Object { $_.st -and $_.st -in $states }).Count
     }
     if ($script:cards) {
       $pending += @($script:cards.Values | Where-Object { $_.PendingSave }).Count
