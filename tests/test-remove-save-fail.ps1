@@ -50,6 +50,14 @@ try {
   Assert ($script:statusBar.Text -match '清单保存失败|清单未保存') "状态栏应提示清单保存失败，实际「$($script:statusBar.Text)」"
   Write-Output 'PASS: 保存失败时条目与卡片保留、卡片标记 PendingSave、状态栏提示'
 
+  # ---- 1b. 待保存态不能被探测值冲掉 ----
+  # 后台还活着时，每 4 秒一拍的探测会走 Update-CardData；「待保存」必须压过它，
+  # 否则状态行写「运行中」而提示条写「已从系统删除」，自相矛盾。
+  Update-CardData 'A' '运行中' '正常'
+  Assert ($script:cards['A'].ST -eq '待保存') "探测值不得覆盖待保存态，实际「$($script:cards['A'].ST)」"
+  Assert ($script:cards['A'].LblSt.Text -eq '待保存') '待保存文案不得被探测重写'
+  Write-Output 'PASS: 待保存态压过探测值（状态行与提示条不打架）'
+
   # ---- 2. 保存成功：条目与卡片都被移除 ----
   $script:svc['B'] = @{ port = 2; url = '' }
   Render-Page

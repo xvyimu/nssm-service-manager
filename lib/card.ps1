@@ -27,6 +27,9 @@ function Update-CardAutomationName($card){
 
 # 置过渡态：转琥珀（Busy 语义色）、禁用按钮、记命令纪元。启停与删除共用。§Set-CardTransition
 function Set-CardTransition($card, [string]$state, [int]$epoch, [datetime]$at){
+  # 这里**故意**无条件覆盖 PrevST：restart 的启动阶段失败时，停止已经执行过了，
+  # 回滚到「停止前的终态」是谎报。让 PrevST 停在过渡态，Set-CardRollback 会把它收敛成「未知」，
+  # 由 4 秒内的探测纠正（test-transition-failure 4c 锁的就是这个语义）。
   $card.PrevST=$card.ST; $card.PrevH=$card.H
   # 新操作开始：上一条失败提示作废，否则「启动失败」会挂在新一轮「启动中」下面。
   if (Get-Command Clear-CardLastError -EA SilentlyContinue) { Clear-CardLastError $card }
@@ -232,8 +235,12 @@ function Update-CardRestartPhase([string]$n,[int]$e){
 # 只处理终态（已停止/运行中）：启动中/停止中/暂停/未安装一律不碰，避免和手动命令打架。
 # 返回一句给状态栏的话。§Invoke-BatchCommand
 function Invoke-BatchCommand([string]$act) {
-  # 单测/早期调用可能没初始化；没有探测值时按「无目标」处理，不抛
-  if ($null -eq $script:svcState) { $script:svcState = @{} }
+  # 单测/早期调用可能没初始化；没有探测值时按「无目标」处理，不抛。
+  # 建的时候必须是 Synchronized 并与 $sync 指向同一个实例，否则 Web 视图会读旧对象。
+  if ($null -eq $script:svcState) {
+    $script:svcState = [hashtable]::Synchronized(@{})
+    if ($script:sync -and -not $script:sync.svcState) { $script:sync.svcState = $script:svcState }
+  }
   $want = if ($act -eq 'start') { '已停止' } else { '运行中' }
   $label = if ($act -eq 'start') { '启动' } else { '停止' }
   # 状态过期门闩：窗口刚打开、后台 runspace 死掉、或探测被限流时，svcState 可能是很久以前的值。
@@ -464,10 +471,9 @@ function Update-CardInfo([string]$name, $info){
 function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ack,[bool]$ok=$true,[string]$why=''){
   if (-not $script:cards.ContainsKey($n)) { return }
   $c = $script:cards[$n]
-  # 后台已确认死亡：卡片停在「未知」是权威。队列里可能还有它死前最后一批结果，
-  # 消费掉只会把「未知」写回「运行中」，而且此时 bgDeathReported 已挡住新鲜度降级——
-  # 那张卡就永久假装活着（P1 要消灭的正是这个形态）。
-  if ($c.Offline) { return }
+  # 后台已确认死亡 / 删除已落盘未成功：这两种卡的状态是权威结论，探测值不能把它冲回「运行中」。
+  # 之前只靠调用方跳过新鲜度扫描，待保存态会在下一拍被探测直接覆盖，状态行与提示条自相矛盾。
+  if ($c.Offline -or $c.PendingSave) { return }
   # 状态真的变了才清失败提示：同一状态的重复探测不该把「刚才为什么失败」抹掉。
   if (-not $ack -and $c.LastError -and $st -and $st -ne $c.ST) {
     if (Get-Command Clear-CardLastError -EA SilentlyContinue) { Clear-CardLastError $c }
@@ -487,6 +493,8 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
     }
     # 成功回执：按当前状态重算门闩，硬置 $true 会绕过健康门闩
     $c.LastToggle = [datetime]::Now
+    # 成功了就清掉上一次的失败提示，否则「启动失败」会一直挂到用户下次点按钮。
+    if (Get-Command Clear-CardLastError -EA SilentlyContinue) { Clear-CardLastError $c }
     Update-CardButtons $c
     return
   }
@@ -558,7 +566,9 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
   $c.LblUpBase = if ($running -and $settledHealthy) {
     '服务响应正常'
   } elseif ($running) {
-    $h
+    # 副标题不能复述状态词：「无响应」是 120 秒后才该出现的状态，写在「等待中」下面会让
+    # 同一张卡同时出现两个矛盾状态（真机截图确认过）。这里只陈述探测结果。
+    if ($h) { "探测未通过（$h）" } else { '探测未通过' }
   } elseif ($st -eq '已停止') {
     '随时可以启动'
   } elseif ($st -eq '已暂停') {
@@ -596,6 +606,8 @@ function Clear-CardLastError($card){
 # 服务已从系统删除，但清单没写成功：卡片留着，右键「重试保存清单」是恢复入口。
 function Set-CardPendingSave($card, [string]$name){
   if (-not $card) { return }
+  # 已离线的卡改不回「待保存」：后台都死了，这条删除回执本身就可疑。
+  if ($card.Offline) { return }
   $card.PendingSave = $true
   $card.ST = '待保存'
   $card.LblSt.Text = '待保存'
@@ -633,6 +645,8 @@ function Set-CardOffline($card){
 # 与后台死亡分开——后台可能还活着，只是探测被限流或卡在一条外部命令上。
 function Update-CardFreshness($card, [datetime]$now){
   if (-not $card -or $card.PendingSave) { return }
+  # Offline 是卡片自己的属性，守卫放这里，不依赖每个调用方记得跳过。
+  if ($card.Offline) { return }
   if ($card.ST -in @('启动中','停止中','删除中','待保存')) { $card.Stale = $false; return }
   if (-not $script:svcState) { return }
   $seen = $script:svcState[$card.SvcName]

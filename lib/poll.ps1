@@ -73,6 +73,8 @@ function Invoke-PendingCommands {
   while(-not $sync.stop -and $sync.cmd.TryDequeue([ref]$item)){
     $n=[string]$item.n; $act=[string]$item.act; $e=$item.e
     $ok=$true  # 每次迭代重置，防止上一条的失败码泄漏；未知 act 兜底判成功
+    # why 同样必须重置：上一轮的失败原因会跟着下一轮成功回执一起回传，UI 会拿到假原因是「刚才失败」。
+    $why=''
     try {
     switch($act){
       'start'   { $ok=Invoke-ServiceStart $n }

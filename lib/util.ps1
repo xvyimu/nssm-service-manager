@@ -299,7 +299,11 @@ function Update-StatusTick {
       # 健康历史：只有「状态或健康值变了」才记一条（4 秒一拍的重复值不落盘，否则一天几万行）。
       # 写盘交给后台 runspace（UI 线程不碰 I/O），这里只入队。
       if ($null -eq $script:healthSeen) { $script:healthSeen = @{} }   # 单测/CLI 直接调 tick 时没有初始化
-      if ($null -eq $script:svcState) { $script:svcState = @{} }       # 同上；批量启停也读它
+      # 惰性建也必须是 Synchronized：裸 @{} 会让 Web runspace 继续读旧实例，造成静默分叉。
+      if ($null -eq $script:svcState) {
+        $script:svcState = [hashtable]::Synchronized(@{})
+        if ($script:sync -and -not $script:sync.svcState) { $script:sync.svcState = $script:svcState }
+      }
       # 全量记「最近一次探测值」：批量启停按它筛目标，翻页外（没有卡片）的服务也要能全启/全停。
       # at = 落库时刻，批量据此跳过过期状态（后台 runspace 死掉/探测被限流时 svcState 会停在旧值）。
       # at 用 worker 的采样时刻（$item.at），不是 UI 消费时刻：排队/主线程卡顿不能把旧结果标成「刚更新」。
@@ -471,7 +475,8 @@ function Stop-Background {
     $Runspace = $bgRS
   )
   # 幂等：Closed 与托盘退出可能各触发一次，重复拆 runspace 只会抛噪声异常。
-  if ($script:bgStopped) { return }
+  # 用 -eq $true：首次读在 GUI 赋值之前，未初始化变量在 StrictMode 下会抛，且位置在置位之前、try 之外。
+  if ($script:bgStopped -eq $true) { return }
   $script:bgStopped = $true
   if (-not $script:sync) { return }
   $script:sync.stop = $true
@@ -481,9 +486,14 @@ function Stop-Background {
   # 抛出去会让后续的排空、有界等待、资源拆解全部短路，进程退出后 mutex 仍被占。
   if ($script:web) {
     $script:sync.webStop = $true
-    try { if (Get-Command Stop-WebView -EA SilentlyContinue) { Stop-WebView $script:web } }
+    $webToStop = $script:web
+    try { if (Get-Command Stop-WebView -EA SilentlyContinue) { Stop-WebView $webToStop } }
     catch { Write-CrashLog "Web stop failed: $($_.Exception.Message)" }
-    $script:web = $null
+    # 只有确认停了才丢引用：停不掉时保留，至少句柄不丢、日志里能查；端口滞留到进程退出是可接受的代价。
+    $webStopped = $true
+    try { if ($webToStop.Handle) { $webStopped = [bool]$webToStop.Handle.IsCompleted } } catch {}
+    if ($webStopped) { $script:web = $null }
+    else { Write-CrashLog 'Web view runspace did not stop within 2000ms; keeping reference' }
   }
   # 关闭瞬间的最后几条健康变化：后台可能来不及 drain，这里兜底写一次（只有几条，不阻塞）。
   if ($script:healthQueue -and $script:healthHistoryDir) {
