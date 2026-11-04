@@ -2,7 +2,7 @@
 # HANDOFF
 
 > **更新日：** 2026-10-30　**版本：** `VERSION` = 0.9.0
-> **本文件只写接手指南**：当前状态 / 已知限制 / 下一步。改了什么看 `docs/CHANGELOG.md`，
+> **本文件只写接手指南**：当前状态 / 已知限制 / 下一步。改了什么看 `CHANGELOG.md`，
 > 为什么这么设计看 `docs/PROJECT.md`（技术栈与取舍的 SSOT），实现细节看
 > `docs/IMPLEMENTATION-NOTES.md`（代码里的 `§小节名` 指向那里）。
 
@@ -22,12 +22,14 @@
   豁免的理由在 `PSScriptAnalyzerSettings.psd1`（CI 的 `static-analysis` 任务跑同一条命令）。
 - **CI**（`.github/workflows/`）：`test.yml` = `regression` + `static-analysis` + `secrets`(gitleaks)；
   `release.yml` = 打 tag `v*` → 跑回归 → `scripts/package-release.ps1` 出 zip → `gh release create`。
-- **发布状态**：`VERSION`、打包脚本、release workflow 都已就位，本地已打 tag `v0.9.0`
-  （`git describe --tags` 可查），**还没 push**。推送需要写权限，属于人来做的一步：
-  ```powershell
-  git push origin main; git push origin v0.9.0
-  ```
-  `release.yml` 会校验 `VERSION` 与 tag 一致，不一致直接红。改版本时 `git tag -d v0.9.0` 重打即可。
+- **发布状态**（2026-11-04 实测）：`v0.9.0` 已推送到远端（`main` 与 `origin/main` 同步），
+  本地 `main` 比该 tag 多 2 个提交——下一次发布的版本号需在 `0.9.1` / `0.10.0` 之间选一个，
+  不能重发 `v0.9.0`。发版流程：改 `VERSION` → 在根 `CHANGELOG.md` 加版本小节 → commit →
+  `git tag v<版本>` → `git push origin main --tags`。`release.yml` 会校验 `VERSION` 与 tag 一致，
+  并在 tag 上补跑静态分析；重跑同一 tag 会走 `gh release upload --clobber`，不会红。
+- **部署位置**：日常运行的不是本仓，而是 `scripts/deploy-local.ps1` 复制到管理员独占目录的副本
+  （默认 `C:\Program Files\ServiceManager`，NSSM 固定在 `C:\Program Files\nssm\nssm.exe`）。
+  本仓是开发副本：改完代码要重跑部署脚本才生效。快捷方式指向运行时副本的 `launch.vbs`。
 - **本轮（2026-10-30 优化方案 A/B/C 批）落地**：
   - A1 `Add-SvcEntry` 改 copy-on-write：保存失败不再让内存与磁盘分叉（`lib/util.ps1`）。
   - A2 `Save-Svc` 写前清目标只读属性，清不掉翻译成「services.json 是只读的」。
@@ -76,6 +78,6 @@
 2. **首次发布**：打 `v0.9.0` tag → 确认 Release 附件能解压即跑（zip 里 `launch.vbs` + `lib/` +
    example 配置齐）。之后每次发版只改 `VERSION` + CHANGELOG 再打 tag。
 3. **文档漂移巡检**：改了行为就同步 `README.md`（功能/文件表/CLI 用法）与
-   `docs/PROJECT.md`（取舍、已知限制）；`docs/CHANGELOG.md` 的 `[未发布]` 段在发版时改成版本号。
+   `docs/PROJECT.md`（取舍、已知限制）；根 `CHANGELOG.md` 的 `[未发布]` 段在发版时改成版本号。
 4. **测试数量**：`tests/run-all.ps1` 自动收集，新增用例不必登记；README 与 PROJECT.md 里
    写死的「20 项」在新增 `test-*.ps1` 时要一起改（本轮只加了用例内断言，数量未变）。

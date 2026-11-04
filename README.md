@@ -20,27 +20,31 @@ NSSM 本身是命令行工具。服务一多，日常启停、查状态、看日
 ## 快速开始
 
 ```powershell
-# 1. 装依赖（NSSM 用 scoop，或自行放置后设 NSSM_PATH）
+# 1. 装依赖（NSSM 用 scoop，随后由部署脚本固定到 Program Files）
 scoop install nssm
 
-# 2. 复制示例配置（config.json 可选，不复制就用内嵌默认值）
-Copy-Item services.example.json services.json
-Copy-Item config.example.json config.json
-
-# 3. 跑回归测试（不需要管理员）
+# 2. 跑回归测试（不需要管理员）
 pwsh -NoProfile -File tests/run-all.ps1
 
-# 4. 启动 GUI（会弹 UAC，NSSM/sc.exe 需要管理员）
-pwsh -NoProfile -File service-manager-gui.ps1
+# 3. 部署到管理员独占目录（会弹 UAC；同时把 nssm.exe 固定到 C:\Program Files\nssm）
+pwsh -NoProfile -File scripts/deploy-local.ps1
+
+# 4. 日常入口：双击部署目录里的 launch.vbs（桌面快捷方式指向它）
+#    C:\Program Files\ServiceManager\launch.vbs
 ```
 
-日常用双击 `launch.vbs`（wscript 无控制台，不闪黑窗）→ UAC → 管理员 GUI。非管理员 PowerShell 入口会用它提权。
+`services.json` / `config.json` 首次部署时从源目录迁移一次；之后只认部署目录里的那份（重复部署不会覆盖）。
+
+**为什么必须部署到 Program Files**：GUI 以管理员身份运行，而它执行的脚本、NSSM 都来自程序目录。
+放在用户可写目录时，任何标准用户改一行脚本，你下次双击并同意 UAC 就执行了它——ACL 是唯一真实的边界。
+应用内的「安全姿态」提示只能让装错被发现，不构成防护。NSSM 与 `pwsh.exe` 也只认 Program Files 固定路径，
+不再读取 `NSSM_PATH` / PATH / scoop 的副本。
 
 不想 clone 也可以：从 [Releases](https://github.com/xvyimu/nssm-service-manager/releases) 下载 `service-manager-<版本>.zip`，解压后双击 `launch.vbs` 即可（包内含 `lib/` 与两份 example 配置，不含任何本机清单）。发布包由 `scripts/package-release.ps1` 生成，打 tag `v<版本>` 时由 `.github/workflows/release.yml` 自动发布。
 
 **UAC 与提权后的行为**：UAC 被拒时 `launch.vbs` 弹「需要管理员权限」提示并以退出码 1 结束，非管理员入口原样透传，日志里有 `Elevation launcher exited: code=1`。提权后的 GUI 由管理员进程持有，普通权限的任务管理器**结束不掉**它（UIPI 限制）——退出请用窗口 ✕ 或托盘「退出」。
 
-NSSM 路径按三档探测：`$env:NSSM_PATH` → `Get-Command nssm.exe` → scoop 安装路径。都找不到时弹窗提示安装。进程声明 DPI Aware，高缩放屏下不糊。
+NSSM 只从 `C:\Program Files\nssm\nssm.exe` 加载（部署脚本负责放过去与收 ACL）；找不到时弹窗给出固定路径，不回落到用户可写的副本。进程声明 PerMonitorV2，多屏不同缩放下不糊。
 
 **提权面**：`launch.vbs` 优先用 `C:\Program Files\PowerShell\7\pwsh.exe`，scoop 的 shim 只是次选——scoop 装在用户目录，中等完整性进程能替换它，下一次双击 + UAC 就是管理员权限。NSSM 也一样：启动时检查 `nssm.exe` 所在目录的 ACL，普通用户可写就在状态栏提示「建议改装到系统目录」（不阻断，scoop 默认就这么装）。
 
@@ -216,8 +220,22 @@ pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName <服务名
 
 ## 依赖
 
-- PowerShell 7（`pwsh`）
-- NSSM 2.24（scoop 安装，或自备后设 `NSSM_PATH`）
+- PowerShell 7（`pwsh`，必须在 `C:\Program Files\PowerShell\7\`）
+- NSSM 2.24（必须在 `C:\Program Files\nssm\nssm.exe`，由 `scripts/deploy-local.ps1` 固定）
+- `services.json` 里的可执行文件若是 `LocalSystem` 服务，应放在仅管理员可写的目录；添加时会告警
+
+## 升级与回滚
+
+```powershell
+# 升级：先拉新代码/解压新包，再重新部署（不覆盖 services.json / config.json / logs）
+pwsh -NoProfile -File scripts/deploy-local.ps1
+
+# 回滚程序：把上一版目录整体还原，或解压旧版 zip 覆盖程序文件
+# 回滚清单：services.json.bak 是同目录里的上一版（每次保存前自动生成）
+```
+
+升级不改数据文件；清单格式只增字段不删字段，旧版读到新键会忽略而不是崩。
+回滚不影响已注册的服务——服务本身的配置在注册表里，程序目录只决定「谁来管它们」。
 
 ## 添加新服务
 

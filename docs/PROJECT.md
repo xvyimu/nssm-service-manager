@@ -200,10 +200,10 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 - **CLI `-Add` 拒绝在清单损坏时写入**：`Load-Svc` 解析失败会回落到 `services.example.json`，若继续 `-Add`，末尾的 `Save-Svc` 会把「示例清单 + 新服务」写回真实文件，用户条目整份消失且退出码 0。故 `-Add` 前检查 `Load-Svc` 的专用标志 `$script:svcLoadFailed`（**不能**用 `$script:configWarning`——那个也可能是 config.json 坏了写的，而 config.json 坏了按设计不阻断）。非致命提示（per-service 字段写错）打印后继续。
   **2026-10-29 补**：`Save-Svc` 自身也加了同一门闩——原来只有 CLI 分支拦，GUI 在清单解析失败后点一次「添加」/「删除」同样把示例清单写回真实文件，而 `File.Replace` 不带备份、`services.json` 又不在 git 里。现在 `$script:svcLoadFailed` 为真时 `Save-Svc` 直接抛，调用方按失败处理。
 - **外部命令有 60s 超时（`$sync.extCommandTimeoutMs`）**：2026-10-29 加。原来 `ReadToEnd()` 同步读，`sc.exe` / `nssm.exe` 卡住时后台命令队列永久停摆，且不抛异常、crash log 里没有线索。现在异步读 + `WaitForExit(timeout)`，超时 `Kill(entireProcessTree)` 并返回 `exit=-1`。
-- **后台 runspace 死亡会被检测**：每帧判 `$script:bgHandle.IsCompleted`，完成即写一行 crash log、状态栏提示「后台已停止响应，请重启工具」，并把仍停在「查询中」的卡片收敛到「未知」。
+- **后台 runspace 死亡会被检测**：每帧判 `$script:bgHandle.IsCompleted`，完成即写一行 crash log、状态栏提示「后台已停止响应，状态不可用」，并把**所有**卡片收敛到「未知」且禁用动作——只改「查询中」会让其余卡继续显示上一次的「运行中/正常」，等于整屏在说谎。另外「陈旧样本」（超过 `2 × ProbeIntervalMs` 没新结果）走独立判定 `Update-CardFreshness`，同样降级为未知。
 - **`Show-SecurityCheck` 的 ACL 判定是启发式**：只认 `Users`/`Everyone`/`Authenticated Users`/AppContainer SID 这几类宽泛主体 + `Write|Modify|FullControl`。目录若被改写为其它宽松形态（如某个具体用户账户 FullControl），判定为「否」。不是权威审计。
-- **`NSSM_PATH` 只校验「存在 + 文件名为 nssm.exe」**：不校验签名/路径。该值随后以管理员身份被调用，故文件名校验只为挡住「指向任意 exe」；仍无法防御能改管理员进程环境变量的攻击者（那种场景已超出本工具的信任边界）。**2026-10-28 评估过加 `Get-AuthenticodeSignature`**：实测本机官方 scoop 包的 `nssm.exe` 是 `NotSigned`，加了会对所有正常安装误报，故不加。
-  **2026-10-29 补**：启动时检查 `nssm.exe` 所在目录的 ACL，若本机普通用户可写（`Test-DirAclPermissive` 判「是」）则在状态栏提示「建议改装到系统目录」并写一行 crash log。不阻断——scoop 默认就装在用户目录。同一天把 `launch.vbs` 的 pwsh 解析顺序改成 Program Files 优先、scoop 次之，理由相同：用户可写目录里的 pwsh 被替换后，下次双击 + UAC 就是管理员权限。
+- **NSSM 与 pwsh 只认固定路径**：2026-11-04 改。原先按 `NSSM_PATH` → PATH → scoop 三档探测，`launch.vbs` 也有 scoop 回退；两者都让标准用户能决定管理员进程执行哪个二进制（预置一个副本，等你下次 UAC 同意）。现在 GUI 只认 `C:\Program Files\nssm\nssm.exe`，启动器只认 `C:\Program Files\PowerShell\7\pwsh.exe`，缺失时明确报错并给出该路径。**不加签名校验**：本机 scoop 包的 `nssm.exe` 实测 `NotSigned`，加了会误报所有正常安装。
+- **提权面的真实边界是 ACL，不是自检**：启动时对程序目录、`lib`、NSSM 目录跑 `Test-DirAclPermissive`，可写则写 crash log + 状态栏提示；添加服务时若 `LocalSystem` + exe 目录可写，再弹一次告警。这些都只是「装错能被发现」。真正的边界由 `scripts/deploy-local.ps1` 建立：程序放管理员独占目录，`Users` 只读执行。
 - **`Open-PanelUrl` 只放行 `http` / `https`**：2026-10-29 改为白名单。原实现直接 `Start-Process` 任意 URI，`file:///` 或自定义协议在提权 GUI 下等于以管理员**执行**任意程序（不只是「打开网页」）。非 http/https 的地址现在只更新状态栏，不启动。
 - **健康探测有 `probe` 口径（`auto` / `tcp` / `http`），关闭按钮不再看健康**：2026-10-30 加。原实现只有「TCP 通 + HTTP 200」一条路，非 HTTP 服务（数据库、gRPC、纯 socket）永远不是绿点；更糟的是 `Test-CardCanStop` 把健康一起判进去，这类服务的「关闭」按钮被永久禁用，只剩右键菜单。现在 `probe: tcp`（或 `url` 为空）时 TCP 通即正常，健康门闩只留在双击路径。
 - **`services.json` 的三道写入门闩**：解析失败拒写（原有）、顶层形状必须是对象（2026-10-30 加：`[]` / `"x"` 这类合法 JSON 取不到键，旧实现返回空清单并当成功，下一次保存把原文件覆盖成 `{}`）、载入后 mtime 变化拒写（手改或另一个会话抢先写时不让全量写回抹掉别人的改动）。写前顺手把上一版留成 `services.json.bak`。
@@ -211,6 +211,18 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 - **健康历史只在「变化」时记一条**：`logs/health/health-YYYYMMDD.ndjson`，没有心跳/采样点，所以「一直平稳」在历史里是空白而不是一行行「正常」。这是刻意的——4 秒一拍全记一天几万行，读的时候全是噪声。写入在后台 runspace（UI 线程不碰 I/O），`HealthHistory=false` 时连队列都不建。保留天数用 `HealthKeepDays` 按天删文件。
 - **Web 只读视图的信任边界**：默认关。开时只 `127.0.0.1` 监听、只接受 `GET`、必须带 `?t=<128 位随机 token>`（状态栏显示一次），没有任何写入口。局域网访问走 SSH 端口转发——**不**监听外部网卡，也**不**自己写登录/会话。端口 0 = 随机，避免和别的工具抢固定端口；端口被占用时状态栏报错，不静默。
 - **批量启停只处理终态**：只挑「已停止 / 运行中」，启动中/停止中/暂停/未安装都不碰——批量命令和手动命令抢同一张卡时，过渡态最容易打架。目标来自全量探测结果 `$script:svcState`，不只当前页；**状态过期（超过 2 个探测周期没刷新）的条目跳过**并在文案里说明——窗口刚开、后台 runspace 死掉或探测被限流时，旧值会让批量朝「其实已经停了」的服务再发 stop。
+
+## 范围外（明确不做）
+
+产品边界锁在「单机、单管理员、6–8 个 NSSM 服务、只读展示 + 启停/增删」。以下不是待办：
+
+- 依赖图/拓扑排序、定时编排、远程管理、告警外发、多用户共用、驱动类服务、依赖桌面会话的服务。
+- 自更新、MSI、代码签名基础设施、安装器；常驻服务化或多进程 IPC。
+- 暗色主题、多页签、拖拽排序、Web 视图扩容、健康数据可视化。
+- 把 SCM 操作与文件写入描述成「事务」：只做两阶段 + 补偿 + 分歧可见。
+- 为「更少行数」重构：精简是软目标，功能冻结优先。
+
+需要上述能力时那是另一个产品，不塞进这个仓。判断「还要不要改」的验收清单见 `docs/ITERATION-PLAN.md` §9。
 
 ## 测试
 

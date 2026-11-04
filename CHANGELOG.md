@@ -3,7 +3,66 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
-## [0.9.0]（已就位，待打 tag）
+## [1.0.0]（2026-11-04）封板：状态诚实 · 失败可恢复 · 提权边界
+
+不新增功能。这一版把「界面说的和实际发生的一致」与「装在哪才安全」两件事做完，之后进入冻结维护。
+
+### P0 提权边界
+
+- **程序与 NSSM 改到管理员独占目录**：新增 `scripts/deploy-local.ps1`（幂等，不覆盖本机清单），
+  默认部署到 `C:\Program Files\ServiceManager`，`Users` 只读执行、`Administrators`/`SYSTEM` 完全控制；
+  `nssm.exe` 固定到 `C:\Program Files\nssm\nssm.exe`。
+- **不再信任用户环境**：GUI 只认上述固定路径，删掉 `NSSM_PATH` / `Get-Command` / scoop 三级探测；
+  `launch.vbs` 删掉 scoop 与 PATH 回退，只认 Program Files 的 `pwsh.exe`。
+  原因：这两处都以管理员身份执行，用户可写目录里的副本等于让标准用户决定管理员进程跑什么。
+- **自检扩面但仍不冒充防护**：启动检查程序目录、`lib`、NSSM 目录的 ACL；添加 `LocalSystem` 服务时
+  若 exe 目录可写再告警一次。真正边界由部署脚本建立。
+
+### P1 状态诚实
+
+- **采样时刻由 worker 回传**：`poll.ps1` 每个结果带 `at`；`svcState.at` 不再是 UI 消费时刻。
+  限流跳过的那轮沿用上次采样时刻，不再伪装成「刚更新」。
+- **陈旧样本降级**：超过 `2 × ProbeIntervalMs` 没新结果 → 「状态未知」+ 禁用动作（`Update-CardFreshness`）。
+- **后台死亡全员转未知**：原先只改「查询中」的卡，其余继续显示旧的「运行中/正常」；现在全部走 `Set-CardOffline`。
+- **失败原因留在卡片上**：回执带 `why`，`Set-CardLastError` 渲染红字一条；状态栏改为带时间戳的 30 秒动作日志。
+
+### P2 失败可恢复
+
+- **添加服务幂等续做**：已注册但清单没写成时，重试只补 `nssm set` + 保存 + 启动，不再报「服务已存在」。
+- **删除先落盘再改内存**：保存失败时卡片保留并标「待保存」，右键「重试保存清单」是恢复入口；
+  不再出现「界面说删了、磁盘还在」。
+- 抽出 `Set-NssmServiceParams`，让「补参数」与「首次注册」分开，回滚策略由调用方决定。
+
+### P3 退出生命周期
+
+- `Stop-Background` 幂等 + 有界：确认管道结束才拆 runspace，未结束只发停止请求；
+  关闭前兜底排空健康队列，不再丢最后一条变化。
+- 退出确认：有在途命令或未超时过渡态时提示；清单里已不存在的残留卡片不再拦人。
+
+### P4 交付一致性
+
+- 打包加入 `assets/icon.ico`；自检清单从主入口 dot-source 列表派生，并断言包内不含实配/日志/tests。
+- release：按 `VERSION` 精确取包、tag 上补跑静态分析、发布幂等、加 concurrency。
+- CI 新增 `version-consistency`：`VERSION` 必须是 semver 且等于 `CHANGELOG.md` 首个版本小节。
+- 文档：`CHANGELOG.md` 移到仓根（唯一 SSOT）；新增 `docs/README.md`、`ARCHITECTURE.md`、`adr/`、`lessons/`。
+
+### P5 体验收尾
+
+- 语义色改为 WCAG AA 达标值（橙 `#FFA500`≈2.0:1 → 琥珀 `#8A5300`；红 `#FF0000` → `#C0392B`），
+  颜色不再单独承载语义。
+- 层级：服务名 19→17、状态 21→18；卡片可聚焦，Enter/菜单键等价鼠标；`AutomationProperties.Name` 补全。
+- 标题栏新鲜度胶囊（`更新于 Ns 前` / `离线`）；底栏写出真实快捷键。
+- 对话框：删除框 Esc/Enter/滚动 + 实时差量提示；批量停止列出目标名单。
+- 日志窗等宽字体、跟随最新、文件大小与更新时间、打开文件夹/复制路径。
+- 托盘 tooltip 带计数、菜单加全部启停与日志目录、首次收进托盘提示一次。
+- DPI 改 PerMonitorV2，初始尺寸按工作区夹取。
+
+### 测试
+
+- 新增 6 个回归：`test-freshness`、`test-bg-death`、`test-add-idempotent`、`test-remove-save-fail`、
+  `test-shutdown`、`test-exit-confirm`；全套 26 项 + parser 自检，`PSScriptAnalyzer` Error/Warning = 0。
+
+## [0.9.0]（2026-10-30，已发布）
 
 ### 2026-10-30：优化方案 A/B/C 批（一致性债 / 功能缺口 / 工程化）
 
