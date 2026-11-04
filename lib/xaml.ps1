@@ -193,7 +193,14 @@ function New-MainWindow {
     # 有在途命令时退出：SCM 那边的操作不会因为关窗停下，但重启可能停在停止阶段。
     # 托盘「退出」是明确的收尾意图，不再二次确认。
     if (-not $script:trayExitRequested) {
-      $busy = Get-ExitBusy $script:cards $script:svc
+      $now = [datetime]::Now
+      # 「在途」= 过渡态**且没超时**。卡死的过渡态（回执早就不来了、服务早已不在 SCM）下次 tick
+      # 就会被逃生口解封，拿它拦关窗只会每次退出都误报一次「X 还在切换中」。
+      # Test-TransitionTimedOut 不在（CLI / 部分单测只加载 util+xaml）时保守按在途处理。
+      $canJudgeTimeout = [bool](Get-Command Test-TransitionTimedOut -EA SilentlyContinue)
+      $busy = @(Get-ExitBusy $script:cards $script:svc | Where-Object {
+        -not $canJudgeTimeout -or (-not (Test-TransitionTimedOut $_ $now))
+      })
       $queued = if ($script:cmdQueue) { @($script:cmdQueue.ToArray()).Count } else { 0 }
       if ($busy.Count -or $queued) {
         $names = @($busy | ForEach-Object { $_.SvcName }) -join '、'
