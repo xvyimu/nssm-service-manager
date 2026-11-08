@@ -31,8 +31,23 @@ function Read-SvcFile([string]$path){
     throw "顶层必须是对象（服务名 → {port,url[,probe,...]}），实际是 $kind"
   }
   $o = [ordered]@{}; foreach ($k in $j.Keys) {
-    $p = [int]$j[$k].port; $u = [string]$j[$k].url
-    if ($p -lt 1 -or $p -gt 65535) { throw "$k 端口非法: $p" }
+    # 服务值必须是对象：`"X": 123` / `"X": null` 取不到 .Keys，会静默丢一整条
+    if ($null -eq $j[$k] -or $j[$k] -isnot [System.Collections.IDictionary]) {
+      $kind = if ($null -eq $j[$k]) { 'null' } else { $j[$k].GetType().Name }
+      $script:svcFieldWarnings += "$k 的值必须是对象（{port,url,...}），实际是 $kind，已跳过"
+      continue
+    }
+    $u = [string]$j[$k].url
+    # port 可选：无端口的服务（rclone mount、纯守护进程）配 probe=none，只按服务状态显示。
+    # 缺 port 不再整份抛错——一条配错不该让其它服务一起退回示例清单。§Read-SvcFile
+    $hasPort = @($j[$k].Keys | Where-Object { $_ -ieq 'port' }).Count -gt 0
+    $p = 0
+    if ($hasPort) {
+      $parsed = 0
+      if (-not [int]::TryParse([string]$j[$k].port, [ref]$parsed) -or $parsed -lt 1 -or $parsed -gt 65535) {
+        $script:svcFieldWarnings += "$k 端口非法（$($j[$k].port)），按无端口处理"
+      } else { $p = $parsed }
+    }
     $entry = @{ port = $p; url = $u }
     # 可选 per-service 超时覆盖（toggleTimeoutMs/httpTimeoutMs/tcpTimeoutMs），缺省回落全局。
     # **必须显式带走**：Save-Svc 写整份 $script:svc，只挑 port/url 会让用户的覆盖被静默抹掉。
@@ -56,11 +71,14 @@ function Read-SvcFile([string]$path){
     if ($actualProbe) {
       $rawProbe = [string]$j[$k][$actualProbe]
       $pv = $rawProbe.Trim().ToLowerInvariant()
-      if ($pv -in @('auto','tcp','http')) { $entry['probe'] = $pv }
+      if ($pv -in @('auto','tcp','http','none')) { $entry['probe'] = $pv }
       else { $script:svcFieldWarnings += "$k 的 probe 无效（$rawProbe），已回落 auto（TCP 通且 HTTP 200）" }
     }
     # 白名单外的键会被 Save-Svc 的全量写回静默抹掉——记一条提示。
     # 用户把字段名打错一个字母时，原来的表现是「配了但没生效」，且连提示都没有。
+    if (-not $hasPort -and [string]$entry['probe'] -ne 'none') {
+      $script:svcFieldWarnings += "$k 未配置 port 且未声明 probe=none，健康探测会恒失败"
+    }
     $known = @('port','url','probe','toggleTimeoutMs','httpTimeoutMs','tcpTimeoutMs')
     foreach ($key in $j[$k].Keys) {
       if (-not @($known | Where-Object { $_ -ieq $key }).Count) {

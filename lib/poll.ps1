@@ -172,15 +172,33 @@ while(-not $sync.stop){
     }
 
     if ($st -eq '运行中') {
-      # per-service 探测超时随探测项带给并行块；缺省是 0，并行块回落到全局值
-      $toProbe.Add([pscustomobject]@{
-        n=$n; port=[int]$info.port; url=[string]$info.url
-        probe=[string]$info.probe
-        tcpMs=[int]$info.tcpTimeoutMs; httpMs=[int]$info.httpTimeoutMs
-      })
+      # probe=none：无端口服务，服务状态即健康状态，不做连通性探测
+      if ([string]$info.probe -eq 'none') {
+        $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$st;h='正常';at=[datetime]::Now})
+      } else {
+        # per-service 探测超时随探测项带给并行块；缺省是 0，并行块回落到全局值
+        $toProbe.Add([pscustomobject]@{
+          n=$n; port=[int]$info.port; url=[string]$info.url
+          probe=[string]$info.probe
+          tcpMs=[int]$info.tcpTimeoutMs; httpMs=[int]$info.httpTimeoutMs
+          stopped=$false
+        })
+      }
     } else {
       if ($st -in @('启动中','停止中','暂停中','继续中')) { $pendingSeen = $true }
-      $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$st;h='';at=[datetime]::Now})
+      # 已停止但端口仍被占用：说明有非服务进程在听（孤儿进程）。给一个可见信号，
+      # 否则「服务已停止」和「网页还能打开」会同时成立，用户无从判断。
+      $orphanPort = ($st -eq '已停止' -and [int]$info.port -gt 0 -and [string]$info.probe -ne 'none')
+      if ($orphanPort) {
+        $toProbe.Add([pscustomobject]@{
+          n=$n; port=[int]$info.port; url=''
+          probe='tcp'
+          tcpMs=[int]$info.tcpTimeoutMs; httpMs=0
+          stopped=$true
+        })
+      } else {
+        $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$st;h='';at=[datetime]::Now})
+      }
     }
   }
 
@@ -191,6 +209,9 @@ while(-not $sync.stop){
               ([Environment]::TickCount64 - $lastProbeAt -ge $probeIntervalMs)
   if ($toProbe.Count -and -not $sync.stop -and -not $probeDue) {
     foreach($p in $toProbe){
+      # 已停止服务的条目只回答「端口是否被占用」：跳过轮直接不入队，
+      # 否则会沿用历史健康值把卡片刷回「运行中 + 绿点」。
+      if ($p.stopped) { continue }
       # 还没有过任何探测结果时不入队：h='' 会让运行中的圆点闪红
       if ($lastHealth.ContainsKey($p.n)) {
         # 沿用旧健康值时一并沿用旧采样时刻：这一轮并没有真的探测，不能标成「刚刚更新」。
@@ -217,6 +238,8 @@ while(-not $sync.stop){
         if($iar.AsyncWaitHandle.WaitOne($tcpMsLocal,$false)){ try{$tcp.EndConnect($iar);$listen=$true}catch{} }
       } finally { try{$tcp.Close()}catch{} }
 
+      # 已停止服务的探测只回答「端口是否被别的进程占着」，不参与健康判定
+      if($_.stopped){ return [pscustomobject]@{n=$n;h=($(if($listen){'端口被占用'}else{''}));stopped=$true} }
       if(-not $listen){ return [pscustomobject]@{n=$n;h='无响应'} }
       # probe=tcp 或没填 url：TCP 通即正常。非 HTTP 服务（数据库/gRPC/纯 socket 守护）走 HTTP
       # 探测必然失败，旧实现让这类卡永远不是绿点，还会把「关闭」按钮一起锁死。§probe
@@ -236,7 +259,15 @@ while(-not $sync.stop){
       } finally { $cts.Dispose() }
       [pscustomobject]@{n=$n;h=$h}
     } -ThrottleLimit $probeThrottle
-    foreach($r in $results){ $lastHealth[$r.n]=$r.h; $lastHealthAt[$r.n]=[datetime]::Now; $sync.queue.Enqueue([pscustomobject]@{n=$r.n;st='运行中';h=$r.h;at=$lastHealthAt[$r.n]}) }
+    foreach($r in $results){
+      if ($r.stopped) {
+        # 已停止服务的「端口占用」只用于提示，不进健康缓存
+        $sync.queue.Enqueue([pscustomobject]@{n=$r.n;st='已停止';h=$r.h;at=[datetime]::Now})
+      } else {
+        $lastHealth[$r.n]=$r.h; $lastHealthAt[$r.n]=[datetime]::Now
+        $sync.queue.Enqueue([pscustomobject]@{n=$r.n;st='运行中';h=$r.h;at=$lastHealthAt[$r.n]})
+      }
+    }
   }
 
   if ((Invoke-PendingCommands) -gt 0) { $executedCmd = $true }
@@ -245,8 +276,10 @@ while(-not $sync.stop){
   # 「有服务停在过渡态」同样用短间隔，让翻转 1 秒内可见。
   if (-not $sync.stop) {
     # 中间态用更短间隔；也照常探测运行中的服务（本地回环，代价可忽略）。
+    # 只数「运行中」的探测项：已停止服务的端口占用检查不该把整轮节奏从 15s 拉到 4s。
+    $activeProbe = @($toProbe | Where-Object { -not $_.stopped }).Count
     $sleepMs = if ($pendingSeen) { $probePendingMs }
-               elseif ($toProbe.Count -or $executedCmd) { $probeIntervalMs }
+               elseif ($activeProbe -or $executedCmd) { $probeIntervalMs }
                else { $probeIdleMs }
     [void]$sync.wake.WaitOne($sleepMs)
   }

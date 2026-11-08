@@ -51,7 +51,12 @@ function Write-CrashLog([string]$m){
     if ($info.Exists -and $info.Length -gt $script:crashLogMaxBytes) {
       $bak = "$($script:crashLog).1"
       if (Test-Path -LiteralPath $bak) { Remove-Item -LiteralPath $bak -Force -EA SilentlyContinue }
-      [IO.File]::Move($script:crashLog, $bak)
+      try { [IO.File]::Move($script:crashLog, $bak) }
+      catch {
+        # 日志查看器开着时 Move 会失败（句柄占用）：先尽力留副本，再截断当前文件
+        try { [IO.File]::Copy($script:crashLog, $bak, $true) } catch {}
+        try { [IO.File]::WriteAllText($script:crashLog, '', [Text.UTF8Encoding]::new($false)) } catch {}
+      }
     }
   } catch {}
 }
@@ -114,6 +119,15 @@ try { $owned = $script:appMutex.WaitOne(0) }
 catch [System.Threading.AbandonedMutexException] { $owned = $true }
 if (-not $owned) {
   Write-CrashLog 'Already running; another instance holds the mutex'
+  # 双击重复触发时把已有窗口提到前台：否则第二次 UAC 白弹一次，用户只看到「点了没反应」。
+  try {
+    Add-Type -Namespace Win32 -Name Fg -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern System.IntPtr FindWindow(string lpClassName, string lpWindowName);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr hWnd);
+'@
+    $h = [Win32.Fg]::FindWindow($null, '服务管理')
+    if ($h -ne [IntPtr]::Zero) { [void][Win32.Fg]::SetForegroundWindow($h) }
+  } catch {}
   exit 0
 }
 Write-CrashLog 'Single-instance mutex acquired'

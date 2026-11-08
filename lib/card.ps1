@@ -577,7 +577,7 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
     # 同一张卡同时出现两个矛盾状态（真机截图确认过）。这里只陈述探测结果。
     if ($h) { "探测未通过（$h）" } else { '探测未通过' }
   } elseif ($st -eq '已停止') {
-    '随时可以启动'
+    if ($h -eq '端口被占用') { '端口被其它进程占用（服务本体未运行）' } else { '随时可以启动' }
   } elseif ($st -eq '已暂停') {
     # 暂停态按钮都不可用，恢复走右键「重启」（先 stop 再 start，SCM 接受）
     '服务已暂停，可用右键「重启」尝试恢复'

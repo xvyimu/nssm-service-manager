@@ -100,10 +100,25 @@ try {
   # CLI 的 -Add 门闩靠这个标志判断「清单是否回落成示例」。config.json 坏了按设计不阻断
   # （用默认值），若用 configWarning 当判据，会把 -Add 一起拦下并报错到根本没坏的文件上。
   $script:configWarning = $null; $script:configNotices = $null; $script:svcLoadFailed = $null
-  [IO.File]::WriteAllText($cfg, '{"Broken":{"port":0,"url":"u"}}', [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText($cfg, '["not-an-object"]', [Text.UTF8Encoding]::new($false))
   $null = Load-Svc
   Assert ($script:svcLoadFailed -eq $true) 'services.json 解析失败时 svcLoadFailed 必须为 true'
   Assert ($script:configWarning -match 'services\.json') "失败消息应点名 services.json：$($script:configWarning)"
+
+  # 1c-2. 无端口服务（probe=none）不再让整份清单退回示例
+  $script:svcLoadFailed = $null; $script:svcFieldWarnings = @()
+  [IO.File]::WriteAllText($cfg, '{"Mount":{"probe":"none"}}', [Text.UTF8Encoding]::new($false))
+  $parsedNoPort = Load-Svc
+  Assert ($script:svcLoadFailed -eq $false) 'probe=none 的无端口服务不该判为解析失败'
+  Assert ($parsedNoPort['Mount'].probe -eq 'none' -and $parsedNoPort['Mount'].port -eq 0) '无端口服务的 probe=none 未被带走'
+
+  # 1c-3. 端口非法只降级该条 + 收集提示，不整份抛错
+  $script:svcLoadFailed = $null; $script:svcFieldWarnings = @()
+  [IO.File]::WriteAllText($cfg, '{"Bad":{"port":0},"Ok":{"port":3000}}', [Text.UTF8Encoding]::new($false))
+  $mixed = Load-Svc
+  Assert ($script:svcLoadFailed -eq $false) '单条端口非法不该让整份清单失效'
+  Assert ($mixed['Ok'].port -eq 3000) '相邻正常服务被误伤'
+  Assert (@($script:svcFieldWarnings).Count -ge 1) '端口非法应留下一条提示'
 
   $script:configWarning = 'config.json 无效：故意·坏'   # 模拟 config.ps1 写的（非致命）
   $script:svcLoadFailed = $null
