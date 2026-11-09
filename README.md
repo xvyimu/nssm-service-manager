@@ -26,8 +26,9 @@ scoop install nssm
 # 2. 跑回归测试（不需要管理员）
 pwsh -NoProfile -File tests/run-all.ps1
 
-# 3. 部署到管理员独占目录（会弹 UAC；同时把 nssm.exe 固定到 C:\Program Files\nssm）
+# 3. 一键部署（普通权限运行即可，脚本自己弹一次 UAC；同时把 nssm.exe 固定到 C:\Program Files\nssm）
 pwsh -NoProfile -File scripts/deploy-local.ps1
+#    资源管理器里也可以直接双击 scripts\deploy.cmd
 
 # 4. 日常入口：双击部署目录里的 launch.vbs（桌面快捷方式指向它）
 #    C:\Program Files\ServiceManager\launch.vbs
@@ -228,9 +229,12 @@ pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName <服务名
 
 ```powershell
 # 升级：先拉新代码/解压新包，再重新部署（不覆盖 services.json / config.json / logs）
-pwsh -NoProfile -File scripts/deploy-local.ps1
+# 部署脚本会自己提权、备份旧程序文件、逐文件比对 SHA256，完成后直接启动程序。
+pwsh -NoProfile -File scripts/deploy-local.ps1            # 部署 + 启动
+pwsh -NoProfile -File scripts/deploy-local.ps1 -NoLaunch # 只部署
 
-# 回滚程序：把上一版目录整体还原，或解压旧版 zip 覆盖程序文件
+# 回滚程序：把 %ProgramData%\ServiceManager\backup\<时间戳>\ 里的文件整份拷回程序目录
+# （脚本自动留最近 5 份；部署中途失败会先自动还原，不会留下半新半旧的目录）
 # 回滚清单：services.json.bak 是同目录里的上一版（每次保存前自动生成）
 ```
 

@@ -8,6 +8,18 @@
 $script:TRANSITION_STATES = @('启动中','停止中','删除中')
 
 $script:configPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'config.json'
+
+# 装机版本号：显示在标题栏、启动时写进 gui-crash.log。
+# 这台机器出过「源码修好了、装的还是旧版」的事故，版本放在第一眼能看到的地方，比翻日志可靠。
+$script:appVersion = ''
+try { $script:appVersion = (Get-Content -LiteralPath (Join-Path (Split-Path $PSScriptRoot -Parent) 'VERSION') -Raw -Encoding UTF8).Trim() } catch {}
+
+# 非致命配置提示的唯一写入口。裸写 `$null += "x"` 会变成 String（`@($null)` 也不是空数组），
+# 六处调用点各写一遍守卫正是这个坑的来源；收口成一处，单测只点源 util.ps1 时由它补一份同义实现。
+function Add-ConfigNotice([string]$message) {
+  if ($null -eq $script:configNotices) { $script:configNotices = @() }
+  $script:configNotices += $message
+}
 $script:config = [ordered]@{
   PerPage             = 6        # 卡片每页数量（xaml.ps1 UniformGrid 3×2 与 Render-Page 分页共用）
   TcpTimeoutMs        = 200      # 端口探测超时（poll.ps1 TcpClient BeginConnect）
@@ -84,8 +96,7 @@ if (Test-Path -LiteralPath $script:configPath) {
       # 未知键：拼错（`TcpTimeout` 少个 Ms）或版本不符时，静默忽略等于「配了但没生效」。
       # services.json 那侧有同样的白名单提示，这里保持一致。§config 加载
       if (-not $script:config.Contains($k)) {
-        if ($null -eq $script:configNotices) { $script:configNotices = @() }
-        $script:configNotices += "config.json：未知键 $k 已忽略（拼写或版本不符）"
+        Add-ConfigNotice "config.json：未知键 $k 已忽略（拼写或版本不符）"
         continue
       }
       $def = $script:config[$k]
@@ -102,8 +113,7 @@ if (Test-Path -LiteralPath $script:configPath) {
             $lo, $hi = $script:configRanges[$k]
             if ($n -lt $lo -or $n -gt $hi) {
               $valid = $false; $rangeNoted = $true
-              if ($null -eq $script:configNotices) { $script:configNotices = @() }
-              $script:configNotices += "config.json：$k=$n 超出允许范围（$lo..$hi），已用默认值 $def"
+              Add-ConfigNotice "config.json：$k=$n 超出允许范围（$lo..$hi），已用默认值 $def"
             }
           }
         }
@@ -116,15 +126,11 @@ if (Test-Path -LiteralPath $script:configPath) {
       if ($valid) { $script:config[$k] = $value }
       elseif ($rangeNoted) { }   # 已记过更具体的越界提示，别再叠一条「值无效」
       else {
-        if ($null -eq $script:configNotices) { $script:configNotices = @() }
-        $script:configNotices += "config.json：$k 的值 '$raw' 无效，已用默认值 $def"
+        Add-ConfigNotice "config.json：$k 的值 '$raw' 无效，已用默认值 $def"
       }
     }
   } catch {
-    # 解析失败不阻断启动：记 configWarning，由 GUI 加载后弹框（格式 `<文件名> 无效：<原因>`）。§config 加载
-    $msg = "config.json 无效：$($_.Exception.Message)"
-    if (-not $script:configWarning) { $script:configWarning = $msg }
-    # 正常启动顺序下 statusBar 还没建（config 先于窗口加载）；这句是给「先建窗口再加载 config」兜底。
-    if ($script:statusBar) { $script:statusBar.Text = "$msg，用默认配置" }
+    # config.json 可选：解析失败按默认值继续，只留一条提示——弹框留给「清单不可解析、保存会丢数据」那种。
+    Add-ConfigNotice "config.json 无效：$($_.Exception.Message)（已用默认值）"
   }
 }

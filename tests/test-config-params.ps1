@@ -73,11 +73,17 @@ try {
     Assert ($workerFallback.Sync.probeIntervalMs -eq 4000 -and $workerFallback.Sync.probeIdleMs -eq 15000 -and $workerFallback.Sync.probeThrottleLimit -eq 8) 'poll probe cadence defaults not restored when sync keys absent.'
   } finally { Close-FakePoll $workerFallback }
 
-  # ---- 2. 坏 config.json：回落默认值且设置 configWarning ----
-  $script:config = $null; $script:configWarning = $null
+  # ---- 2. 坏 config.json：回落默认值 + 留一条提示（可选文件坏了不拦启动）----
+  $script:config = $null; $script:configWarning = $null; $script:configNotices = $null
   [IO.File]::WriteAllText((Join-Path $RepoRoot 'config.json'), '{ broken', [Text.UTF8Encoding]::new($false))
   . (Join-Path $RepoRoot 'lib/config.ps1')
-  Assert ($script:configWarning -match 'config\.json 无效') 'config.json broken should set configWarning.'
+  Assert (@($script:configNotices | Where-Object { $_ -match 'config\.json 无效' }).Count -eq 1) 'config.json broken should add a notice.'
+  Assert (-not $script:configWarning) 'configWarning 只给「清单解析失败」，config.json 坏了不该拦启动'
+  # 提示收口：连续调用必须累积成数组（裸 `$null += "x"` 会退化成字符串）
+  Assert (Get-Command Add-ConfigNotice -ErrorAction SilentlyContinue) 'Add-ConfigNotice 应已定义'
+  $script:configNotices = $null
+  Add-ConfigNotice 'a'; Add-ConfigNotice 'b'
+  Assert ($script:configNotices -is [array] -and $script:configNotices.Count -eq 2) 'Add-ConfigNotice 应累积成数组'
   Assert ($script:config.PerPage -eq 6 -and $script:config.WaitStoppedTimeoutMs -eq 6000) 'Defaults not restored on broken config.'
   # LogDir 默认空串 = 用仓内 logs/（主脚本据此回落，见 service-manager-gui.ps1 顶部）
   Assert ($script:config.LogKeepCount -eq 10 -and $script:config.LogKeepDays -eq 14 -and $script:config.LogDir -eq '') 'Log retention defaults not restored on broken config.'

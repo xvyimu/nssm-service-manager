@@ -78,8 +78,7 @@ if ($Add) {
     Write-Host "已停止：services.json 未能解析。现在继续 -Add 会把示例清单写回你的配置。请先修复该文件。"
     exit 1
   }
-  # config.json 的坏消息是非致命的（已用默认值），但 CLI 原来一声不响，这里补一句。
-  if ($script:configWarning) { Write-Host "提示: $($script:configWarning)（已用默认值，不阻断）" }
+  # config.json 坏消息现在统一进 configNotices（非致命、已用默认值），下面一并打印。
   # 用 if 守卫而不是 @($x)：`@($null)` 是「含一个 $null 的数组」，会打印一行空的「提示: 」。
   if ($script:configNotices) { foreach ($notice in $script:configNotices) { Write-Host "提示: $notice" } }
   # CLI 模式没有 runspace，但 add-svc.ps1 用 $sync.gate 加锁——给个本地锁
@@ -98,7 +97,7 @@ trap {
   exit 1
 }
 $isAdmin = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-Write-CrashLog "Startup: admin=$isAdmin; apartment=$([Threading.Thread]::CurrentThread.GetApartmentState())"
+Write-CrashLog "Startup: admin=$isAdmin; apartment=$([Threading.Thread]::CurrentThread.GetApartmentState()); version=$($script:appVersion)"
 if (-not $isAdmin) {
   # 与桌面快捷方式共用启动器，避免临时 VBS 的编码/参数拼接漂移。
   Write-CrashLog 'Elevation requested via launch.vbs'
@@ -380,15 +379,15 @@ $timer.Start()
 # 提权面自检的提示（若有）：带租约的状态栏消息，避免被下一帧立刻刷掉。
 if ($script:securityNotice) { Set-StatusMessage $script:securityNotice }
 
-# 配置解析失败提示
-# 消息自带文件名，故此处只加处置说明，不再拼文件名前缀（否则会出现「配置文件无效：config.json 无效：…」）。
-if ($script:configWarning) {
-  [System.Windows.MessageBox]::Show("$($script:configWarning)`n当前使用恢复配置，保存前请修复该文件。",'配置错误','OK','Warning') | Out-Null
+# 配置提示：只有「清单解析失败」拦人——那时屏幕上是示例清单、保存被禁用，必须说清后果。
+# 其余（config.json 写坏、可选字段写错、缺 port）不打断启动：状态栏一行 + 日志留档。
+if ($script:svcLoadFailed) {
+  [System.Windows.MessageBox]::Show("$($script:configWarning)`n当前显示 services.example.json，保存已禁用（不会覆盖原文件）。修好后按 F5 重载。",'服务清单未能解析','OK','Warning') | Out-Null
 }
-
-# 配置提示（非致命）：per-service 可选字段写错。清单照常用，故措辞不讲「恢复配置」。
 if ($script:configNotices) {
-  [System.Windows.MessageBox]::Show(($script:configNotices -join "`n`n"),'配置提示','OK','Warning') | Out-Null
+  $notices = @($script:configNotices)
+  Set-StatusMessage "配置提示（$($notices.Count) 条）：$($notices[0])"
+  foreach ($notice in $notices) { Write-CrashLog "Config notice: $notice" }
 }
 
 # ---- 显示（Application.Run 等价）----

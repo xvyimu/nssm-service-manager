@@ -96,7 +96,9 @@ function New-MainWindow {
 
   $titleBar = New-Object System.Windows.Controls.Grid -Property @{Height=44; Margin='20,0,8,0'; Background='Transparent'}
   $title = New-Object System.Windows.Controls.TextBlock -Property @{
-    Text='服务管理'; FontSize=14; FontWeight='SemiBold'; Foreground=$script:T.Fg; VerticalAlignment='Center'
+    # 版本写进标题栏：装的哪一版一眼可见（换机器/换部署后先看这里）。
+    Text=$(if ($script:appVersion) { "服务管理 v$($script:appVersion)" } else { '服务管理' })
+    FontSize=14; FontWeight='SemiBold'; Foreground=$script:T.Fg; VerticalAlignment='Center'
   }
   [void]$titleBar.Children.Add($title)
   $windowActions = New-Object System.Windows.Controls.StackPanel -Property @{

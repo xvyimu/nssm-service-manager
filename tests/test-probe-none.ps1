@@ -39,6 +39,21 @@ try {
   Assert ($null -eq $parsed4['Num'] -and $null -eq $parsed4['Nul']) '非对象值应被跳过'
   Assert ($parsed4['Good'].port -eq 8080) '非对象值不该让整份清单失效'
   Assert (@($script:svcFieldWarnings).Count -ge 2) '非对象值应逐条提示'
+
+  # 3b. probe=none 时端口无意义：写 0 / 乱写不报警，合法端口原样保留（改探测口径后还认得原端口）
+  [IO.File]::WriteAllText($tmp,
+    '{"Zero":{"probe":"none","port":0},"Junk":{"probe":"none","port":"abc"},"Keep":{"probe":"none","port":5244}}',
+    [Text.UTF8Encoding]::new($false))
+  $parsed5 = Read-SvcFile $tmp
+  Assert ($parsed5['Zero'].port -eq 0 -and $parsed5['Junk'].port -eq 0) 'probe=none 的非法端口应静默归零'
+  Assert ($parsed5['Keep'].port -eq 5244) 'probe=none 的合法端口应保留'
+  Assert (@($script:svcFieldWarnings).Count -eq 0) "probe=none 的端口字段不该报警：$($script:svcFieldWarnings -join ';')"
+
+  # 3c. probe 大小写/空白归一化后仍是 none
+  [IO.File]::WriteAllText($tmp, '{"Trim":{"probe":" NONE ","port":0}}', [Text.UTF8Encoding]::new($false))
+  $parsed6 = Read-SvcFile $tmp
+  Assert ($parsed6['Trim'].probe -eq 'none') 'probe 应归一化为 none'
+  Assert ($parsed6['Trim'].port -eq 0 -and @($script:svcFieldWarnings).Count -eq 0) '归一化后仍不该因端口报警'
 } finally {
   if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
 }

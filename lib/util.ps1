@@ -6,6 +6,15 @@
 # 健康历史是纯函数族，Update-StatusTick 依赖它；单独 dot-source util 的脚本（含单测）也要能用。
 if (-not (Get-Command Test-HealthChanged -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot 'health.ps1') }
 
+# 提示收口函数常驻 config.ps1（先于本文件加载）；单测只点源本文件时补一份同义实现，
+# 免得每个调用点各写一遍 `$null -eq` 守卫。
+if (-not (Get-Command Add-ConfigNotice -ErrorAction SilentlyContinue)) {
+  function Add-ConfigNotice([string]$message) {
+    if ($null -eq $script:configNotices) { $script:configNotices = @() }
+    $script:configNotices += $message
+  }
+}
+
 # 退出确认要问的「在途卡片」：只算清单里还存在的服务。服务被删/被重载后残留的卡片
 # 永远等不到回执，拿它去问只会每次退出都弹一次「X 还在切换中」。§Get-ExitBusy
 function Get-ExitBusy($cards,$svc){
@@ -38,17 +47,34 @@ function Read-SvcFile([string]$path){
       continue
     }
     $u = [string]$j[$k].url
-    # port 可选：无端口的服务（rclone mount、纯守护进程）配 probe=none，只按服务状态显示。
-    # 缺 port 不再整份抛错——一条配错不该让其它服务一起退回示例清单。§Read-SvcFile
+    # 探测口径先解析，port 校验依赖它：probe=none（rclone mount、纯守护进程）端口无意义，
+    # 写 0 / 乱写都不该报警——否则每次启动都弹一条「端口非法」。
+    # auto（默认，TCP 通后还要求 HTTP 200）/ tcp（TCP 通即正常）：非 HTTP 服务必须写 tcp，
+    # 否则 HTTP 探测必然失败、卡片永远不是绿点。§Read-SvcFile
+    $actualProbe = @($j[$k].Keys | Where-Object { $_ -ieq 'probe' }) | Select-Object -First 1
+    $probe = 'auto'; $entryProbe = $null
+    if ($actualProbe) {
+      $rawProbe = [string]$j[$k][$actualProbe]
+      $pv = $rawProbe.Trim().ToLowerInvariant()
+      if ($pv -in @('auto','tcp','http','none')) { $probe = $pv; $entryProbe = $pv }
+      else { $script:svcFieldWarnings += "$k 的 probe 无效（$rawProbe），已回落 auto（TCP 通且 HTTP 200）" }
+    }
+    # port 可选：缺 port 不再整份抛错——一条配错不该让其它服务一起退回示例清单。§Read-SvcFile
     $hasPort = @($j[$k].Keys | Where-Object { $_ -ieq 'port' }).Count -gt 0
     $p = 0
     if ($hasPort) {
       $parsed = 0
-      if (-not [int]::TryParse([string]$j[$k].port, [ref]$parsed) -or $parsed -lt 1 -or $parsed -gt 65535) {
+      # 合法端口一律保留（哪怕 probe=none，之后改探测口径还认得原端口）；非法值只在需要端口时提示。
+      if ([int]::TryParse([string]$j[$k].port, [ref]$parsed) -and $parsed -ge 1 -and $parsed -le 65535) {
+        $p = $parsed
+      } elseif ($probe -ne 'none') {
         $script:svcFieldWarnings += "$k 端口非法（$($j[$k].port)），按无端口处理"
-      } else { $p = $parsed }
+      }
+    } elseif ($probe -ne 'none') {
+      $script:svcFieldWarnings += "$k 未配置 port 且未声明 probe=none，健康探测会恒失败"
     }
     $entry = @{ port = $p; url = $u }
+    if ($null -ne $entryProbe) { $entry['probe'] = $entryProbe }
     # 可选 per-service 超时覆盖（toggleTimeoutMs/httpTimeoutMs/tcpTimeoutMs），缺省回落全局。
     # **必须显式带走**：Save-Svc 写整份 $script:svc，只挑 port/url 会让用户的覆盖被静默抹掉。
     foreach ($opt in 'toggleTimeoutMs','httpTimeoutMs','tcpTimeoutMs') {
@@ -64,21 +90,8 @@ function Read-SvcFile([string]$path){
       }
       $entry[$opt] = $v
     }
-    # 探测口径：auto（默认，TCP 通后还要求 HTTP 200）/ tcp（TCP 通即正常）。
-    # 非 HTTP 服务（数据库、gRPC、纯 socket 守护）必须写 tcp：HTTP 探测对它必然失败，
-    # 卡片会永远不是绿点。§Read-SvcFile
-    $actualProbe = @($j[$k].Keys | Where-Object { $_ -ieq 'probe' }) | Select-Object -First 1
-    if ($actualProbe) {
-      $rawProbe = [string]$j[$k][$actualProbe]
-      $pv = $rawProbe.Trim().ToLowerInvariant()
-      if ($pv -in @('auto','tcp','http','none')) { $entry['probe'] = $pv }
-      else { $script:svcFieldWarnings += "$k 的 probe 无效（$rawProbe），已回落 auto（TCP 通且 HTTP 200）" }
-    }
     # 白名单外的键会被 Save-Svc 的全量写回静默抹掉——记一条提示。
     # 用户把字段名打错一个字母时，原来的表现是「配了但没生效」，且连提示都没有。
-    if (-not $hasPort -and [string]$entry['probe'] -ne 'none') {
-      $script:svcFieldWarnings += "$k 未配置 port 且未声明 probe=none，健康探测会恒失败"
-    }
     $known = @('port','url','probe','toggleTimeoutMs','httpTimeoutMs','tcpTimeoutMs')
     foreach ($key in $j[$k].Keys) {
       if (-not @($known | Where-Object { $_ -ieq $key }).Count) {
@@ -91,15 +104,13 @@ function Read-SvcFile([string]$path){
 }
 
 function Load-Svc {
-  # 专用标志：configWarning 有两个写入方，后果不同——调用方只能认这个判断「是否回落成示例」。§Load-Svc
+  # 专用标志：configWarning 只由「services.json 解析失败」写，调用方据它判定「是否回落成示例」。§Load-Svc
   $script:svcLoadFailed = $false
   if (Test-Path $cfg) {
     try {
       $loaded = Read-SvcFile $cfg
-      # 可选字段写错只攒提示不走 configWarning（后者弹框写「使用恢复配置」）。
-      # **必须先判空初始化为 @()**：$null += "x" 变成 String，@($null) 也不是空数组。§Load-Svc
-      if ($null -eq $script:configNotices) { $script:configNotices = @() }
-      foreach ($w in $script:svcFieldWarnings) { $script:configNotices += "services.json：$w" }
+      # 可选字段写错只攒提示，不弹「使用恢复配置」那种框。
+      foreach ($w in $script:svcFieldWarnings) { Add-ConfigNotice "services.json：$w" }
       # 记下 mtime：Save-Svc 写前比对，挡住「手改后 GUI 全量写回」的覆盖。§Save-Svc
       $script:svcFileStamp = (Get-Item -LiteralPath $cfg).LastWriteTimeUtc.Ticks
       $script:svcFileHintShown = $false
@@ -110,6 +121,9 @@ function Load-Svc {
       $script:configWarning = "services.json 无效：$($_.Exception.Message)"
       $script:svcLoadFailed = $true
     }
+  } else {
+    # 首次运行/文件被移走：没有清单就没有可管的服务，留一句免得用户以为「服务全丢了」。
+    Add-ConfigNotice "services.json 不存在（$cfg），当前显示示例清单；保存会把示例条目写进去"
   }
   # 兜底：services.json 缺失或损坏时读示例清单，让首次运行有内容可看
   $example = Join-Path (Split-Path $cfg -Parent) 'services.example.json'
@@ -204,6 +218,7 @@ function Invoke-SvcReload {
   }
   $script:svcLoadFailed = $false
   $script:configWarning = $null
+  $script:configNotices = @()   # 重载重算提示，否则托盘长驻期间每次 F5 都会追加一批
   $new = Load-Svc
   if ($script:svcLoadFailed) { return 'services.json 解析失败，未重载（原清单保持不变）' }
   $script:svc = $new
