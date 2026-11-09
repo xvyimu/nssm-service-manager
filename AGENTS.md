@@ -14,6 +14,10 @@ pwsh -NoProfile -File tests/analyze.ps1
 # 打发布 zip（dist/，不含本机清单）；发布靠打 tag v<version> 触发 release workflow
 pwsh -NoProfile -File scripts/package-release.ps1
 
+# 同步装机目录（改完代码必须跑一次，否则机器上跑的还是旧版；自提权，弹一次 UAC）
+# 备份 → 复制 → 逐文件 SHA256 → 失败自动还原 → 启动；不覆盖 services.json / config.json / logs
+pwsh -NoProfile -File scripts/deploy-local.ps1
+
 # 启动 GUI（会弹 UAC；NSSM/sc.exe 需要管理员）
 pwsh -NoProfile -File service-manager-gui.ps1
 
@@ -22,6 +26,7 @@ scoop install nssm
 ```
 
 改动后：**跑 `pwsh -NoProfile -File tests/run-all.ps1` 和 `tests/analyze.ps1`**，两条全绿才算完。测试是 WPF/STA，需 Windows。
+改了程序文件还要 `scripts/deploy-local.ps1` 同步装机目录（会弹 UAC，装机目录与源码不一致就是「改了没生效」）。
 
 ## 项目结构
 
