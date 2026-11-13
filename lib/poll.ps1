@@ -185,6 +185,8 @@ while(-not $sync.stop){
         })
       }
     } else {
+      # 与 config.ps1 的 $script:SCM_PENDING_STATES 同值：本 runspace 只前置了 svc-common/health/poll
+      # 的文本，拿不到 config 里的变量，改动要两边同步。
       if ($st -in @('启动中','停止中','暂停中','继续中')) { $pendingSeen = $true }
       # 已停止但端口仍被占用：说明有非服务进程在听（孤儿进程）。给一个可见信号，
       # 否则「服务已停止」和「网页还能打开」会同时成立，用户无从判断。

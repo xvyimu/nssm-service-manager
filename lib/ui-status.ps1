@@ -7,7 +7,7 @@
 # 永远等不到回执，拿它去问只会每次退出都弹一次「X 还在切换中」。§Get-ExitBusy
 function Get-ExitBusy($cards,$svc){
   # config 未加载时（CLI/部分单测）回退同一份清单：只认三种会让「暂停中」静默漏掉。
-  $states = if ($script:TRANSITION_STATES) { $script:TRANSITION_STATES } else { @('启动中','停止中','暂停中','继续中','删除中') }
+  $states = if ($script:TRANSITION_STATES) { $script:TRANSITION_STATES } else { @('启动中','停止中','删除中') }
   @($cards.Values | Where-Object {
     $_.ST -in $states -and ($null -eq $svc -or $svc.Contains($_.SvcName))
   })

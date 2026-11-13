@@ -75,7 +75,7 @@ function Format-Elapsed([datetime]$since, [datetime]$now) {
 function Update-CardClock($card, [datetime]$now) {
   if (-not $card -or -not $card.LblUp) { return }
   $label = switch ($card.ST) {
-    { $_ -in @('启动中','停止中','删除中','暂停中','继续中') } { '已' }
+    { $_ -in $script:SWITCHING_STATES } { '已' }
     '运行中' { if ($card.H -and $card.H -ne '正常') { '已等待' } else { '已运行' } }
     '已停止' { '已停' }
     default   { $null }
@@ -96,7 +96,7 @@ function Resolve-ToggleTimeoutMs($info){
 
 # 取卡片自己的覆盖，缺省回落全局；旧夹具没该字段，$null 即回落。§Test-TransitionTimedOut
 function Test-TransitionTimedOut($card, [datetime]$now){
-  if ($card.ST -notin @('启动中','停止中','删除中')) { return $false }
+  if ($card.ST -notin $script:TRANSITION_STATES) { return $false }
   if ($card.TransitionAt -eq [datetime]::MinValue) { return $false }
   $limit = Resolve-ToggleTimeoutMs $card
   $started = if ($card.TransitionStartedAt -and $card.TransitionStartedAt -ne [datetime]::MinValue) { $card.TransitionStartedAt } else { $card.TransitionAt }
@@ -128,7 +128,7 @@ function Set-CardRollback($card, [string]$toState, [string]$toHealth){
   if (-not $card) { return }
   if (-not $toState) {
     $toState=[string]$card.PrevST
-    if ([string]::IsNullOrEmpty($toState) -or $toState -in @('启动中','停止中','删除中','查询中')) { $toState='未知' }
+    if ([string]::IsNullOrEmpty($toState) -or $toState -in ($script:TRANSITION_STATES + @('查询中'))) { $toState='未知' }
   }
   $h = if ($PSBoundParameters.ContainsKey('toHealth')) { $toHealth } else { $card.PrevH }
   # 先落回目标终态再交给 Update-CardData，否则过渡态守卫会按旧 ST 拦下这个值
@@ -661,7 +661,7 @@ function Update-CardFreshness($card, [datetime]$now){
   if (-not $card -or $card.PendingSave) { return }
   # Offline 是卡片自己的属性，守卫放这里，不依赖每个调用方记得跳过。
   if ($card.Offline) { return }
-  if ($card.ST -in @('启动中','停止中','删除中','待保存')) { $card.Stale = $false; return }
+  if ($card.ST -in $script:STALE_EXEMPT_STATES) { $card.Stale = $false; return }
   if (-not $script:svcState) { return }
   $seen = $script:svcState[$card.SvcName]
   if (-not $seen) { return }   # 首帧还没结果：交给「正在获取服务状态」

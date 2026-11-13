@@ -30,7 +30,7 @@ function Update-FreshnessPill {
   $count = 0
   if ($script:svc) { $count = @($script:svc.Keys).Count }
   $pending = 0
-  if ($script:cards) { $pending = @($script:cards.Values | Where-Object { $_.ST -in @('启动中','停止中','删除中','待保存') }).Count }
+  if ($script:cards) { $pending = @($script:cards.Values | Where-Object { $_.ST -in $script:STALE_EXEMPT_STATES }).Count }
   $newest = $null
   if ($script:svcState) {
     foreach ($key in @($script:svcState.Keys)) {

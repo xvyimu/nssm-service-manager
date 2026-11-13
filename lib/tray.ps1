@@ -27,8 +27,9 @@ function Get-TrayStatusText {
     if ($count -le 0) { return '服务管理' }
     $pending = 0
     if ($script:svcState) {
-      # 用同一份在途清单：这里只认三种会让「暂停中/继续中」在托盘计数里消失。
-      $states = if ($script:TRANSITION_STATES) { $script:TRANSITION_STATES } else { @('启动中','停止中','暂停中','继续中','删除中') }
+      # 与 config.ps1 的 $script:TRANSITION_STATES 同值：这里拿不到 config（见上方「同一份在途清单」说明）。
+      # 只认三种会让「暂停中/继续中」在托盘计数里消失——它们由 SCM 或外部操作引起，本工具没有对应命令。
+      $states = if ($script:TRANSITION_STATES) { $script:TRANSITION_STATES } else { @('启动中','停止中','删除中') }
       $pending += @($script:svcState.Values | Where-Object { $_.st -and $_.st -in $states }).Count
     }
     if ($script:cards) {

@@ -2,6 +2,8 @@
 #
 # 只做启发式告警（见 docs/HANDOFF.md），真正的边界是 deploy-local.ps1 设的 ACL。
 # 由 lib/util.ps1 聚合加载。
+# 主体/权限判据在 lib/acl.ps1（与注册表收紧脚本、部署门禁共用一份名单）。
+if (-not (Get-Command Test-WidePrincipal -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot 'acl.ps1') }
 
 # ---- 安全检查（借鉴 PSSM：路径引号加固 + 目录 ACL 过宽）：纯解析，不碰 UI 也不抛错。§Resolve-ServiceExeDir
 function Resolve-ServiceExeDir([string]$path){
@@ -15,15 +17,12 @@ function Resolve-ServiceExeDir([string]$path){
   @{ dir = $dir; quoted = $quoted }
 }
 
-# 判定目录 ACL 是否「过宽」（本机任意标准用户可写）。返回 '是' / '否' / '未知'。§Test-DirAclPermissive
+# 判定目录 ACL 是否「过宽」（本机任意标准用户可写）。返回 '是' / '否' / '未知（无法读取 ACL）'。§Test-DirAclPermissive
 function Test-DirAclPermissive($acl){
-  if (-not $acl) { return '未知（无法读取 ACL）' }
-  # 宽泛主体含 Authenticated Users 与 AppContainer SID（S-1-15-3-*）；判据与 set-service-params-acl.ps1 的 Test-LeakyAce 对齐。§Test-DirAclPermissive
-  foreach ($a in $acl.Access) {
-    $id = $a.IdentityReference.Value
-    $wide = @('BUILTIN\Users','Everyone','Users','NT AUTHORITY\Authenticated Users','Authenticated Users') -contains $id -or $id -like 'S-1-15-3-*'
-    if ($wide -and $a.FileSystemRights.ToString() -match 'Write|Modify|FullControl') { return '是' }
-  }
+  # 判据在 lib/acl.ps1：主体名单 + 写权限，与 set-service-params-acl.ps1、deploy-local.ps1 共用。§Test-AclHasWideWrite
+  $r = Test-AclHasWideWrite $acl
+  if ($null -eq $r) { return '未知（无法读取 ACL）' }
+  if ($r) { return '是' }
   '否'
 }
 

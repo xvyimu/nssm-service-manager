@@ -1,11 +1,19 @@
 # lib/config.ps1 — 可调常量集中收口（PER_PAGE / 探测超时 / 日志轮转 / 冷却）
 # 默认值内嵌；仓根 config.json（已 git 忽略）存在时覆盖——与 services.json 同构：示例进仓、实配不进 git。
 # 实现细节与踩坑记录：docs/IMPLEMENTATION-NOTES.md
-# 在途状态：退出确认 / F5 重载共用同一份判定。
-# 只收**本工具发起的命令**造成的过渡态——这三种都有回执在等，丢了回执就会卡住，
-# 所以退出要提示、重载要拒绝。'暂停中'/'继续中' 由 SCM 侧或外部操作引起，本工具没有对应命令，
-# 既没有回执可丢、也不该拦退出（`Test-TransitionTimedOut` 同样只认这三种）。
+# 状态集合：四组语义，判据只在这里写一次（tests/test-state-sets.ps1 钉住成员）。
+# 过渡态——只收**本工具发起的命令**造成的状态：三种都有回执在等，丢了回执就会卡住，
+# 所以退出要提示、F5 要拒绝、超时要逃生。'暂停中'/'继续中' 由 SCM 侧或外部操作引起，
+# 本工具没有对应命令，既没有回执可丢、也不该拦退出（`Test-TransitionTimedOut` 同样只认这三种）。
 $script:TRANSITION_STATES = @('启动中','停止中','删除中')
+# SCM 中间态——poll 看到就把轮询间隔压到 ProbePendingMs。poll.ps1 在独立 runspace 里跑，
+# 只前置了 svc-common/health/poll 的文本、拿不到这里的变量，那边保留同值字面量，改动要两边同步。
+$script:SCM_PENDING_STATES = @('启动中','停止中','暂停中','继续中')
+# 切换态——卡片时长后缀「已…」的判定（视觉口径，比过渡态宽）。
+$script:SWITCHING_STATES = $script:SCM_PENDING_STATES + @('删除中')
+# 陈旧豁免——这些卡不会被「超过 2 个探测周期」降级成「状态未知」：过渡态有自己的逃生通道，
+# 待保存卡有用户可执行的恢复动作（右键重试保存清单）。
+$script:STALE_EXEMPT_STATES = $script:TRANSITION_STATES + @('待保存')
 
 $script:configPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'config.json'
 

@@ -190,24 +190,22 @@ Set-AdminOnlyAcl $nssmTargetDir
 
 # 自检：程序文件齐全 + 标准用户不可写。
 $missing = @()
-foreach ($must in 'service-manager-gui.ps1', 'launch.vbs', 'lib\config.ps1', 'lib\util.ps1', 'lib\svc-store.ps1', 'lib\ui-status.ps1', 'lib\log-retention.ps1', 'lib\security-check.ps1', 'lib\shutdown.ps1', 'lib\card.ps1', 'assets\icon.ico') {
+foreach ($must in 'service-manager-gui.ps1', 'launch.vbs', 'lib\config.ps1', 'lib\util.ps1', 'lib\acl.ps1', 'lib\svc-store.ps1', 'lib\ui-status.ps1', 'lib\log-retention.ps1', 'lib\security-check.ps1', 'lib\shutdown.ps1', 'lib\card.ps1', 'assets\icon.ico') {
   if (-not (Test-Path -LiteralPath (Join-Path $Target $must))) { $missing += $must }
 }
 if ($missing.Count) { throw "部署不完整，缺：$($missing -join ', ')" }
 if (-not (Test-Path -LiteralPath $nssmTarget)) { throw "NSSM 未就位：$nssmTarget" }
 
 # 自检要递归：/reset /T 若因占用跳过某个子文件，只看根目录的 ACL 会漏掉它。
+# 主体/权限判据的唯一来源是 lib/acl.ps1（GUI 自检、注册表收紧脚本共用）；这份门禁曾只匹配
+# Users/Everyone，漏掉 AppContainer SID（S-1-15-3-*）。
+if (-not (Get-Command Test-WidePrincipal -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot '..\lib\acl.ps1') }
 $broad = @()
 foreach ($item in Get-ChildItem -LiteralPath $Target -Recurse -Force) {
   $itemAcl = Get-Acl -LiteralPath $item.FullName
-  foreach ($ace in $itemAcl.Access) {
-    if ($ace.AccessControlType -eq 'Allow' -and
-      ($ace.IdentityReference.Value -match 'Users|Authenticated Users|Everyone') -and
-      ($ace.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Write)) {
-      $broad += $item.FullName
-      break
-    }
-  }
+  # 门禁 fail-closed：判不出来（$null）也算不通过——这是部署最后一道检查，宁可报错重跑。
+  $wideWrite = Test-AclHasWideWrite $itemAcl
+  if ($null -eq $wideWrite -or $wideWrite) { $broad += $item.FullName }
 }
 if ($broad.Count) { throw "ACL 自检失败：$($broad.Count) 个条目仍有普通用户写权限，例如 $($broad[0])" }
 

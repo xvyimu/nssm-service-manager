@@ -14,19 +14,18 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# 主体名单的唯一来源：lib/acl.ps1（与 GUI 安全检查、部署门禁共用）。
+# 以前这里和那两处各写一份，漂过一次——只摘了 BUILTIN\Users，漏掉两个 ReadKey 主体却报「已收紧」。
+if (-not (Get-Command Test-WidePrincipal -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot '..\lib\acl.ps1') }
+
 # 需要移除的「非管理员可读」主体。**移除名单与校验名单必须共用这一个判据**——
 # 两处各写一份曾导致只摘了 BUILTIN\Users，而默认 ACL 里还有两个 ReadKey 主体
 # （实测：APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES 与裸 SID
 # S-1-15-3-* = ALL RESTRICTED APPLICATION PACKAGES），脚本却报「已收紧到
-# Administrators + SYSTEM」——声明不成立。S-1-15-3-* 是 AppContainer 包 SID 前缀，
-# 具体后缀随系统而变，故按前缀匹配而非写死。
+# Administrators + SYSTEM」——声明不成立。
+# 名单本体在 lib/acl.ps1 的 Test-WidePrincipal，本函数只保留旧名字给调用方。
 function Test-LeakyAce([string]$identity){
-  $identity -eq 'BUILTIN\Users' -or
-  $identity -eq 'NT AUTHORITY\Everyone' -or
-  $identity -eq 'Everyone' -or
-  $identity -eq 'APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES' -or
-  $identity -eq 'APPLICATION PACKAGE AUTHORITY\ALL RESTRICTED APPLICATION PACKAGES' -or
-  $identity -like 'S-1-15-3-*'
+  Test-WidePrincipal $identity
 }
 
 # 确保某主体对注册表键有 FullControl。用 SetAccessRule（存在则替换、不存在则添加）——
