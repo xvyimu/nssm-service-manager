@@ -174,6 +174,8 @@ try {
   Assert ($byKey['AppRotateBytes'] -join '|' -eq '5242880') 'AppRotateBytes should be 5242880'
   # 年龄门槛：没有它，AppRotateFiles=1 会在每次服务启动时都轮转一次，频繁重启就堆成几十个档
   Assert ($byKey['AppRotateSeconds'] -join '|' -eq '86400') 'AppRotateSeconds should be 86400'
+  # 默认不自启：nssm install 建出来的是 SERVICE_AUTO_START，spec 里必须有这一条把它改回手动
+  Assert ($byKey['Start'] -join '|' -eq 'SERVICE_DEMAND_START') "Start 必须是 SERVICE_DEMAND_START，got $($byKey['Start'] -join '|')"
 
   $spec = Get-NssmSetSpec 'SvcB' 'C:\app' '-x' @('K1=V1','K2=V2')
   $byKey = @{}; foreach ($s in $spec) { $byKey[$s.k] = $s.v }
@@ -210,7 +212,7 @@ try {
   } elseif (Test-Path -LiteralPath $cfg) {
     throw 'Test created services.json where none existed.'
   }
-  Write-Output 'PASS: Test-SvcInput (name/exe/port/dup + order), Test-SvcAccount (built-in whitelist, custom rejected), ConvertTo-EnvPairs (sep/trim/drop-empty, separator inside value kept), Test-EnvPairs (format/APPDATA), Find-SensitiveEnvKeys (sensitive-name detection + _FILE path-aware skip + expanded patterns), Get-LogFiles (regex-escaped service names), Get-NssmSetSpec (AppExit dual-token, env multi-token, ObjectName single token, optional-key omission, array-typed values).'
+  Write-Output 'PASS: Test-SvcInput (name/exe/port/dup + order), Test-SvcAccount (built-in whitelist, custom rejected), ConvertTo-EnvPairs (sep/trim/drop-empty, separator inside value kept), Test-EnvPairs (format/APPDATA), Find-SensitiveEnvKeys (sensitive-name detection + _FILE path-aware skip + expanded patterns), Get-LogFiles (regex-escaped service names), Get-NssmSetSpec (AppExit dual-token, env multi-token, ObjectName single token, optional-key omission, array-typed values, Start=SERVICE_DEMAND_START).'
 } finally {
   Remove-Item -LiteralPath $fakeExe -Force -EA SilentlyContinue
 }

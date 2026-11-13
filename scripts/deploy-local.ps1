@@ -190,7 +190,7 @@ Set-AdminOnlyAcl $nssmTargetDir
 
 # 自检：程序文件齐全 + 标准用户不可写。
 $missing = @()
-foreach ($must in 'service-manager-gui.ps1', 'launch.vbs', 'lib\config.ps1', 'lib\util.ps1', 'lib\card.ps1', 'assets\icon.ico') {
+foreach ($must in 'service-manager-gui.ps1', 'launch.vbs', 'lib\config.ps1', 'lib\util.ps1', 'lib\svc-store.ps1', 'lib\ui-status.ps1', 'lib\log-retention.ps1', 'lib\security-check.ps1', 'lib\shutdown.ps1', 'lib\card.ps1', 'assets\icon.ico') {
   if (-not (Test-Path -LiteralPath (Join-Path $Target $must))) { $missing += $must }
 }
 if ($missing.Count) { throw "部署不完整，缺：$($missing -join ', ')" }

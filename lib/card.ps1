@@ -110,6 +110,7 @@ function Test-TransitionTimedOut($card, [datetime]$now){
 # 两个动作各自的门闩：启动只看状态；关闭也只看状态——健康探测的失败原因很多（非 HTTP 服务、
 # 面板返回 401、探测抖动），把它接进按钮可用性会让服务正常却关不掉。健康只影响双击。
 function Test-CardCanStart([string]$state){ $state -eq '已停止' }
+# 停止按钮的可用判据：只有「运行中」能停，中间态与已停止一律置灰。
 function Test-CardCanStop([string]$state){
   $state -eq '运行中'
 }
@@ -274,6 +275,8 @@ function Invoke-BatchCommand([string]$act) {
   "已下发 $($targets.Count) 个${label}命令$staleNote"
 }
 
+# 建一张服务卡片：只搭视觉树与事件挂接，不查服务、不下命令；
+# 状态与数据由 Update-CardData 和命令层驱动。
 function New-Card([string]$name, $info){
   # Focusable：Tab 能停在卡片上（Border 不是 Control，没有 IsTabStop；Tab 导航对非 Control 的可聚焦
   # 元素只看 Focusable，实测会停）。焦点一到就换成 1px 强调色描边，尺寸不变所以卡片不跳动。
@@ -604,6 +607,7 @@ function Set-CardLastError($card, [string]$why){
   }
 }
 
+# 清掉卡片上的错误行；探测恢复或用户重试成功后调用，避免红字长期挂着误导。
 function Clear-CardLastError($card){
   if (-not $card) { return }
   $card.LastError = $null

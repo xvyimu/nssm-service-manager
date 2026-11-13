@@ -109,6 +109,7 @@ function Show-DialogError($owner,[string]$msg){
 function Confirm-SensitiveEnvKeys($owner,[string]$tip){
   ([System.Windows.MessageBox]::Show($owner,$tip,'敏感键名提示','OKCancel','Warning')) -eq 'OK'
 }
+# 统一告警框：固定 OK 按钮，标题与正文由调用方给，免得各调用点自拼 MessageBox 参数。
 function Show-DialogWarning($owner,[string]$msg,[string]$title){
   [System.Windows.MessageBox]::Show($owner,$msg,$title,'OK','Warning') | Out-Null
 }
@@ -128,6 +129,7 @@ function Format-BatchStopMessage([string[]]$names){
   }
 }
 
+# 批量停止的二次确认：有名单就逐条列出，只给个数时退回计数文案；返回用户是否继续。
 function Confirm-BatchStop($owner,[int]$count,[string[]]$names){
   # 老调用点只传个数，没有名单时退回纯计数文案。
   $msg = if ($PSBoundParameters.ContainsKey('names') -and $names) { Format-BatchStopMessage $names } else { "将停止 $count 个正在运行的服务，继续？" }

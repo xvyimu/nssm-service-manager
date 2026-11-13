@@ -71,6 +71,7 @@ function Update-FreshnessPill {
   if (Get-Command Update-TrayText -EA SilentlyContinue) { Update-TrayText }
 }
 
+# 建主窗口骨架：无边框标题栏（版本+汇总）、卡片面板、分页与页脚，并挂 F5 重载 / 批量菜单。
 function New-MainWindow {
   $size = Get-MainWindowSize ([System.Windows.SystemParameters]::WorkArea)
   $win = New-Object System.Windows.Window -Property @{
@@ -240,8 +241,10 @@ function Get-SvcNames {
   try { @($script:svc.Keys) } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }
 }
 
+# 按 PerPage 算总页数；空清单也返回 1 页（Max），避免分页器出现「第 0 页」。
 function Get-PageCount([int]$count) { [math]::Max(1,[math]::Ceiling($count / $script:PER_PAGE)) }
 
+# 重建当前页的卡片（切页、增删服务后调用）；只动可见卡片，其它页状态保留在 $cards 里。
 function Render-Page {
   $script:cardPanel.Children.Clear()
   $gate = if ($script:sync -and $script:sync.gate) { $script:sync.gate } else { $null }

@@ -3,8 +3,9 @@
 # 从 lib/util.ps1（nssm-set）与 lib/add-svc.ps1（Install/Remove）合并抽出。
 # 不含 UI、不含输入校验——纯 NSSM 命令包装，失败抛错。
 # 作用域约定与自加载依赖：docs/IMPLEMENTATION-NOTES.md
-. (Join-Path $PSScriptRoot 'svc-input.ps1')
-. (Join-Path $PSScriptRoot 'svc-common.ps1')
+# 依赖守卫：GUI 入口已点过同一批文件，无条件重源会静默重定义函数（与 util.ps1 的写法一致）。
+if (-not (Get-Command Test-SvcInput -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot 'svc-input.ps1') }
+if (-not (Get-Command Invoke-ScQuiet -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot 'svc-common.ps1') }
 
 # NSSM set 包装：失败抛错
 function nssm-set([string]$n,[string]$k,[Parameter(ValueFromRemainingArguments=$true)][object[]]$v){

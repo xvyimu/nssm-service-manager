@@ -26,6 +26,7 @@ function Get-WebSnapshot($svc, $state, $gate = $null) {
   }
 }
 
+# 生成只读状态页 HTML：服务名/状态/健康/端口逐格转义，页面里没有任何命令入口。
 function Get-WebPageHtml($rows) {
   $enc = { param($s) [System.Net.WebUtility]::HtmlEncode([string]$s) }
   $cells = foreach ($r in $rows) {

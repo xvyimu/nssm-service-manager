@@ -72,6 +72,7 @@ $script:SvcAccounts = @(
   @{ Key='NT AUTHORITY\NetworkService'; Label='NetworkService（网络服务，以计算机身份访网）' }
 )
 
+# 校验运行账户：只认白名单三档，空串按 LocalSystem 处理（与 nssm install 默认一致）。
 function Test-SvcAccount([string]$account){
   if (-not $account) { return $null }
   if ($script:SvcAccounts.Key -contains $account) { return $null }
@@ -95,6 +96,8 @@ function Get-NssmSetSpec([string]$n,[string]$dir,[string]$par,[object[]]$envPair
   # 年龄门槛：文件至少活 N 秒才允许轮转，避免频繁重启堆积日志档。
   $spec.Add(@{k='AppRotateSeconds'; v=@($rotateSeconds)})
   $spec.Add(@{k='AppStopMethodConsole'; v=@($stopMethodMs)})
+  # 默认不自启：nssm install 建出来的是 SERVICE_AUTO_START，必须显式改回手动，
+  # 否则每个新注册的服务都会跟着开机跑起来。只在 install 后 set 一次，不提供改自启的入口。
   $spec.Add(@{k='Start'; v=@('SERVICE_DEMAND_START')})
   $spec.Add(@{k='AppExit'; v=@('Default','Ignore')})
   # LocalSystem 是 install 默认值，不必 set（让没选与显式选走同一路径）。

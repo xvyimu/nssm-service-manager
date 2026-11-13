@@ -52,7 +52,8 @@ function Add-SvcFromCli([string]$spec){
   }
 }
 
-. (Join-Path $PSScriptRoot 'svc-common.ps1')
 # 自加载依赖：svc-input.ps1 → nssm.ps1 → svc-common.ps1（CLI 模式只点源 util + add-svc）。§文件头 · 自加载
-. (Join-Path $PSScriptRoot 'svc-input.ps1')
-. (Join-Path $PSScriptRoot 'nssm.ps1')
+# 每层都加存在性守卫：GUI 入口已点过这批文件，重复点源只会静默重定义。
+if (-not (Get-Command Invoke-ScQuiet -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot 'svc-common.ps1') }
+if (-not (Get-Command Test-SvcInput -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot 'svc-input.ps1') }
+if (-not (Get-Command Install-NssmService -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot 'nssm.ps1') }

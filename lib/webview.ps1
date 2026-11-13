@@ -25,6 +25,7 @@ function Start-WebView([int]$port, [string]$token, $sync) {
   @{ PS = $ps; Runspace = $rs; Handle = $handle }
 }
 
+# 停 Web 视图：先置停止标志让监听循环自己退出，再拆 runspace；重复调用安全。
 function Stop-WebView($web) {
   if (-not $web) { return }
   try { [void]$web.PS.BeginStop($null, $null) } catch {}

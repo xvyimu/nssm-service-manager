@@ -42,6 +42,7 @@ function Invoke-ExternalQuiet([string]$exe, [string[]]$argv){
   @{ exit = $p.ExitCode; out = ($stdout + $stderr).Trim() }
 }
 
+# sc.exe 的静默包装：只回退出码，输出留给需要诊断时走 Invoke-ExternalQuiet。
 function Invoke-ScQuiet([string[]]$argv){
   (Invoke-ExternalQuiet (Get-ScExe) $argv).exit
 }

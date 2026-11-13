@@ -77,6 +77,7 @@ public static extern int DwmSetWindowAttribute(System.IntPtr hwnd, int attr, ref
 '@
 $script:DWMWA_SYSTEMBACKDROP_TYPE = 38
 
+# 设置窗口背景材质（Win11 type=2 走 Mica，见 $script:DWMWA_SYSTEMBACKDROP_TYPE）；旧系统调用失败即当无操作。
 function Set-Backdrop([System.IntPtr]$hwnd, [int]$type = 2) {
   [Win32.Dwm]::DwmSetWindowAttribute($hwnd, $script:DWMWA_SYSTEMBACKDROP_TYPE, [ref]$type, 4) | Out-Null
 }
