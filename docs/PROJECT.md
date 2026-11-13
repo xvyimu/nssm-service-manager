@@ -32,6 +32,7 @@ service-manager-gui.ps1（主入口：CLI 分支 + 提权 + 模块加载 + 窗�
 │                     状态栏与租约（Set-StatusMessage）、每帧 tick、单实例检测
 ├─ lib/log-retention.ps1  每服务日志目录解析（Get-SvcLogDir，读注册表 AppStdout）、轮转档清理
 ├─ lib/security-check.ps1 安全检查（Resolve-ServiceExeDir/Test-DirAclPermissive/Show-SecurityCheck）
+├─ lib/acl.ps1        ACL 判据唯一来源（宽面主体 + 写能力；GUI 自检 / 注册表收紧脚本 / 部署门禁共用）
 ├─ lib/shutdown.ps1   关窗收尾（Stop-Background）
 ├─ lib/svc-input.ps1  纯函数族：输入校验（Test-SvcInput/Test-SvcAccount）、env 解析
 │                     （ConvertTo-EnvPairs/Test-EnvPairs/Find-SensitiveEnvKeys）、

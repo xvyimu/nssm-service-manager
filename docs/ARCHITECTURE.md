@@ -20,6 +20,7 @@ UI 层       lib/xaml.ps1                窗口外壳 · 分页 · 状态栏
             lib/ui-status.ps1           命令入队 · 状态栏与租约 · 每帧 tick · 单实例检测
             lib/log-retention.ps1       日志目录解析 · 轮转档清理
             lib/security-check.ps1      exe 目录可写性 · ACL 宽面判定
+            lib/acl.ps1                 ACL 判据唯一来源（宽面主体 + 写能力，三处共用）
             lib/shutdown.ps1            关窗收尾
             lib/add-svc.ps1             CLI 添加服务
             lib/nssm.ps1                NSSM 命令包装（install / set / remove）

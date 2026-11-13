@@ -15,6 +15,17 @@
 - **探测口径归一**：新增 `$script:ProbeModes` 与 `Resolve-ProbeSpec`（`lib/svc-input.ps1`），
   GUI 提交、CLI 简写、`Test-SvcInput` 共用一套取值与 URL 归一规则，不再各写一份分支；
   `Test-SvcInput` 增加 `-probe`，`none` 口径不校验端口范围。
+- **ACL 判据归一 + 补覆盖**：新增 `lib/acl.ps1`（`Test-WidePrincipal` / `Test-WriteCapable` /
+  `Test-AclHasWideWrite`）与 `tests/test-acl.ps1`。此前三处各写一份名单：GUI 自检、注册表收紧脚本、
+  部署门禁——deploy 那份只匹配 Users/Everyone，漏了 AppContainer SID（S-1-15-3-*），门禁等于没查全。
+  归一时顺带修掉两个判据缺陷：显式 **Deny** ACE 不再被算成「过宽」；主体按 **SID** 取（真实 ACL 经
+  `GetAccessRules` 回来是 SID，德语等本地化名字不再漏判）。部署门禁改为 fail-closed：判不出 ACL 也算不通过。
+- **状态集合收敛**（先补覆盖再合并）：新增 `tests/test-state-sets.ps1`，把四组语义的成员用行为钉住——
+  过渡态（超时逃生 / 退出确认）、SCM 中间态（poll 加速）、切换态（时长后缀）、陈旧豁免（+待保存）、
+  托盘计数。随后把散在 `card/xaml/tray/ui-status` 的字面量合并到 `config.ps1` 的四个常量
+  （`TRANSITION_STATES` / `SCM_PENDING_STATES` / `SWITCHING_STATES` / `STALE_EXEMPT_STATES`）；
+  `poll.ps1` 在独立 runspace 里拿不到 config 变量，保留同值字面量并在注释里写明双向同步。
+  顺带修掉两处不一致：`ui-status` 与 `tray` 的回落字面量各写 5 态，与 config 的 3 态不符。
 - **`lib/util.ps1` 按职责拆分**：591 行、五类职责 → `svc-store`（清单读写）/ `ui-status`（命令入队 + 状态栏 + 每帧 tick）/
   `log-retention`（日志目录与轮转档清理）/ `security-check`（提权边界自检）/ `shutdown`（关窗收尾）；
   `util.ps1` 只剩加载顺序与两处兼容垫片。调用方（GUI 入口、单测）不用改 dot-source 行。

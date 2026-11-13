@@ -61,6 +61,7 @@ NSSM 只从 `C:\Program Files\nssm\nssm.exe` 加载（部署脚本负责放过�
 | `lib/ui-status.ps1` | 命令入队（`Send-ServiceCommand`）、状态栏与租约、每帧 tick、单实例检测 |
 | `lib/log-retention.ps1` | 每服务日志目录解析（读注册表 `AppStdout`）与轮转档清理 |
 | `lib/security-check.ps1` | 提权边界自检：exe 目录可写性、引号、ACL 宽面判定 |
+| `lib/acl.ps1` | ACL 判据唯一来源：宽面主体名单 + 写能力（GUI 自检 / 注册表收紧脚本 / 部署门禁共用） |
 | `lib/shutdown.ps1` | 关窗收尾：停后台 runspace、等回执、清日志档 |
 | `lib/poll.ps1` | 后台 runspace 探测脚本块（Get-Service 批量 + TcpClient + HttpClient 健康探测）+ 命令执行 |
 | `lib/svc-common.ps1` | UI 线程与后台 runspace 共用的原语（`Wait-Stopped` / `Invoke-ServiceRemove` / 退出码与状态中文映射 / `Invoke-ExternalQuiet`）——poll.ps1 构造 runspace 时前置其文本 |
@@ -274,7 +275,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 ## 测试与截图
 
 ```powershell
-pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 自动收集 tests/test-*.ps1（当前 27 项）
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 自动收集 tests/test-*.ps1（当前 29 项）
 pwsh -NoProfile -File tests/analyze.ps1              # PSScriptAnalyzer（Error/Warning 必须为 0）
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-tmp/，已 git 忽略）
@@ -290,6 +291,8 @@ pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-t
 | `test-card-actions` | 两个按钮各管一个方向、双击切换、20 个状态/门闩用例、反馈文案、暂停态双禁用 |
 | `test-card-clock` | 时长显示（秒/分/时边界、负值）；首次观测不起算、启动完成才起算 |
 | `test-transition-failure` | 过渡态失败回执、回滚、超时逃生、后台死亡逃生、方向门闩 |
+| `test-state-sets` | 四组状态集合的成员：过渡态 / SCM 中间态 / 切换态 / 陈旧豁免（退出确认、胶囊与托盘计数同源） |
+| `test-acl` | 宽面主体名单（名字 + SID）、写能力判据、目录/注册表 ACL 判定、Deny 不算、读不到返回未知 |
 | `test-poll-commands` | 命令队列、`StartPending` 不回落 `sc.exe`、中间态 1 秒轮询、状态/退出码映射表 |
 | `test-per-service-timeout` | per-service 超时字段保留与 round-trip、坏值只丢字段、并行块 `$using:` 静态扫描 |
 | `test-svc-input` | 输入校验四类拒绝、env 解析、账户白名单、`Get-NssmSetSpec` 参数组装 |
