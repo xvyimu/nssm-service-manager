@@ -3,6 +3,24 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
+## [未发布]（2026-11-13）
+
+工程化整理，行为零变化（`tests/run-all.ps1` 27 项 + `tests/analyze.ps1` 全绿后交付）：
+
+- **`lib/util.ps1` 按职责拆分**：591 行、五类职责 → `svc-store`（清单读写）/ `ui-status`（命令入队 + 状态栏 + 每帧 tick）/
+  `log-retention`（日志目录与轮转档清理）/ `security-check`（提权边界自检）/ `shutdown`（关窗收尾）；
+  `util.ps1` 只剩加载顺序与两处兼容垫片。调用方（GUI 入口、单测）不用改 dot-source 行。
+  拆的是文件边界不是控制流——20 个函数按行原样搬过去，另加各文件头与 `Load-Svc` 一处补注。
+- **依赖点源加守卫**：`lib/nssm.ps1`、`lib/add-svc.ps1` 原来无条件点源 svc-input/svc-common，
+  GUI 入口已点过时会静默重定义函数；改为 `Get-Command` 存在性判断，与 util.ps1 的写法一致。
+- **「服务默认不自启」显式化**：`Get-NssmSetSpec` 的 `Start=SERVICE_DEMAND_START` 补注释并加回归断言。
+  `nssm install` 建出来的是 AUTO_START，这条 set 是唯一把它改回手动的点（nssm 2.24 实测生效）。
+- **补 16 处函数头中文说明**（`Load-Svc` / `New-Card` / `New-MainWindow` / `Render-Page` / `Invoke-ScQuiet` /
+  `Test-SvcAccount` / `Get-WebPageHtml` 等），都是跨文件调用、原来只有内联注释的函数。
+- **文档同步**：README 文件表与测试项数（20 → 27）、PROJECT.md 目录树、ARCHITECTURE.md 分层表；
+  IMPLEMENTATION-NOTES 的 `util.ps1` 小节加拆分说明；HANDOFF 发布状态从 `v0.9.0` 更到 `v1.0.6`（`VERSION` 1.0.7 未打 tag）。
+- `deploy-local.ps1` 的完整性自检加入五个新模块，漏文件会直接报缺。
+
 ## [1.0.7]（2026-11-09）
 
 一台机器的真实事故：装的是 11-04 的旧版，`services.json` 里 `OpenList-Mount` 已经改成

@@ -15,7 +15,12 @@ UI 层       lib/xaml.ps1                窗口外壳 · 分页 · 状态栏
             lib/logview.ps1             日志窗口 · 健康历史窗口
             lib/tray.ps1                可选托盘（WinForms 按需加载）
             lib/theme.ps1               字体 · 语义色 · 按钮模板 · Mica P/Invoke
-领域层      lib/util.ps1                清单读写 · 命令入队 · 状态 tick · 收尾
+领域层      lib/util.ps1                聚合加载点（按依赖顺序点源下列五模块）
+            lib/svc-store.ps1           清单读写 · 外部修改检测 · 重载 · 新增条目
+            lib/ui-status.ps1           命令入队 · 状态栏与租约 · 每帧 tick · 单实例检测
+            lib/log-retention.ps1       日志目录解析 · 轮转档清理
+            lib/security-check.ps1      exe 目录可写性 · ACL 宽面判定
+            lib/shutdown.ps1            关窗收尾
             lib/add-svc.ps1             CLI 添加服务
             lib/nssm.ps1                NSSM 命令包装（install / set / remove）
             lib/svc-input.ps1           纯函数：输入校验 · env 解析 · NSSM set 规格

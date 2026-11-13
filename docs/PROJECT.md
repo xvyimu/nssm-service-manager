@@ -26,10 +26,13 @@ PowerShell 7 + WPF 的本地 Windows 服务管理 GUI。卡片式启停 / 健康
 service-manager-gui.ps1（主入口：CLI 分支 + 提权 + 模块加载 + 窗口启动）
 ├─ lib/config.ps1     可调常量收口（PerPage/超时/轮转/冷却/托盘/日志保留）
 ├─ lib/theme.ps1      系统字体、主题色 $script:T、按钮模板、Mica P/Invoke
-├─ lib/util.ps1       配置持久化（Read-SvcFile/Load-Svc/Save-Svc）、命令入队（Send-ServiceCommand）、
-│                     每服务日志目录解析（Get-SvcLogDir，读注册表 AppStdout）、
-│                     打开面板（Open-PanelUrl）、日志轮转保留（Remove-RotatedLogs）、
-│                     安全检查（Resolve-ServiceExeDir/Show-SecurityCheck）
+├─ lib/util.ps1       聚合加载点（2026-11-13 按职责拆分）：按依赖顺序点源下面五个模块
+├─ lib/svc-store.ps1  清单读写（Read-SvcFile/Load-Svc/Save-Svc/Add-SvcEntry）、外部修改检测、重载
+├─ lib/ui-status.ps1  命令入队（Send-ServiceCommand）、打开面板（Open-PanelUrl）、
+│                     状态栏与租约（Set-StatusMessage）、每帧 tick、单实例检测
+├─ lib/log-retention.ps1  每服务日志目录解析（Get-SvcLogDir，读注册表 AppStdout）、轮转档清理
+├─ lib/security-check.ps1 安全检查（Resolve-ServiceExeDir/Test-DirAclPermissive/Show-SecurityCheck）
+├─ lib/shutdown.ps1   关窗收尾（Stop-Background）
 ├─ lib/svc-input.ps1  纯函数族：输入校验（Test-SvcInput/Test-SvcAccount）、env 解析
 │                     （ConvertTo-EnvPairs/Test-EnvPairs/Find-SensitiveEnvKeys）、
 │                     NSSM set 规格（Get-NssmSetSpec，含 ObjectName）

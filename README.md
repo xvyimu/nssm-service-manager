@@ -56,7 +56,12 @@ NSSM 只从 `C:\Program Files\nssm\nssm.exe` 加载（部署脚本负责放过�
 | `launch.vbs` | 启动器（双击入口）：wscript 无控制台 → ShellExecute runas pwsh → 管理员 GUI，零黑窗 |
 | `service-manager-gui.ps1` | 主入口：CLI 分支 + 提权 + 模块加载 + 窗口启动 |
 | `lib/theme.ps1` | 系统字体、主题色、按钮样式、Mica P/Invoke |
-| `lib/util.ps1` | 配置持久化（`Load-Svc` / `Save-Svc` / `Add-SvcEntry`）、状态栏与租约、日志轮转、安全检查、命令入队 |
+| `lib/util.ps1` | 聚合加载点：按依赖顺序点源下面五个模块，调用方（GUI 入口 / 单测）仍只需 dot-source 本文件 |
+| `lib/svc-store.ps1` | 清单读写：`Load-Svc` / `Save-Svc` / `Add-SvcEntry` / 外部修改检测 / F5 重载 |
+| `lib/ui-status.ps1` | 命令入队（`Send-ServiceCommand`）、状态栏与租约、每帧 tick、单实例检测 |
+| `lib/log-retention.ps1` | 每服务日志目录解析（读注册表 `AppStdout`）与轮转档清理 |
+| `lib/security-check.ps1` | 提权边界自检：exe 目录可写性、引号、ACL 宽面判定 |
+| `lib/shutdown.ps1` | 关窗收尾：停后台 runspace、等回执、清日志档 |
 | `lib/poll.ps1` | 后台 runspace 探测脚本块（Get-Service 批量 + TcpClient + HttpClient 健康探测）+ 命令执行 |
 | `lib/svc-common.ps1` | UI 线程与后台 runspace 共用的原语（`Wait-Stopped` / `Invoke-ServiceRemove` / 退出码与状态中文映射 / `Invoke-ExternalQuiet`）——poll.ps1 构造 runspace 时前置其文本 |
 | `lib/svc-input.ps1` | 纯函数族：输入校验、env 解析、敏感键名检测、NSSM set 参数组装（可单独点源，不加载 WPF/config） |
@@ -260,7 +265,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 ## 测试与截图
 
 ```powershell
-pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 自动收集 tests/test-*.ps1（当前 20 项）
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 自动收集 tests/test-*.ps1（当前 27 项）
 pwsh -NoProfile -File tests/analyze.ps1              # PSScriptAnalyzer（Error/Warning 必须为 0）
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-tmp/，已 git 忽略）

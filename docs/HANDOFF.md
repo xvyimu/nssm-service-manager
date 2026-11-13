@@ -22,9 +22,8 @@
   豁免的理由在 `PSScriptAnalyzerSettings.psd1`（CI 的 `static-analysis` 任务跑同一条命令）。
 - **CI**（`.github/workflows/`）：`test.yml` = `regression` + `static-analysis` + `secrets`(gitleaks)；
   `release.yml` = 打 tag `v*` → 跑回归 → `scripts/package-release.ps1` 出 zip → `gh release create`。
-- **发布状态**（2026-11-04 实测）：`v0.9.0` 已推送到远端（`main` 与 `origin/main` 同步），
-  本地 `main` 比该 tag 多 2 个提交——下一次发布的版本号需在 `0.9.1` / `0.10.0` 之间选一个，
-  不能重发 `v0.9.0`。发版流程：改 `VERSION` → 在根 `CHANGELOG.md` 加版本小节 → commit →
+- **发布状态**（2026-11-13 实测）：最新 tag 是 `v1.0.6`（`git tag --sort=-v:refname` 首行）；工作区 `VERSION` 已到 `1.0.7`，尚未打 tag。
+  发版流程：改 `VERSION` → 在根 `CHANGELOG.md` 加版本小节 → commit →
   `git tag v<版本>` → `git push origin main --tags`。`release.yml` 会校验 `VERSION` 与 tag 一致，
   并在 tag 上补跑静态分析；重跑同一 tag 会走 `gh release upload --clobber`，不会红。
 - **部署位置**：日常运行的不是本仓，而是 `scripts/deploy-local.ps1` 复制到管理员独占目录的副本
