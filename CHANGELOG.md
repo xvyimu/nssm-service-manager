@@ -19,8 +19,7 @@
   `Test-AclHasWideWrite`）与 `tests/test-acl.ps1`。此前三处各写一份名单：GUI 自检、注册表收紧脚本、
   部署门禁——deploy 那份只匹配 Users/Everyone，漏了 AppContainer SID（S-1-15-3-*），门禁等于没查全。
   归一时顺带修掉两个判据缺陷：显式 **Deny** ACE 不再被算成「过宽」；主体按 **SID** 取（真实 ACL 经
-  `GetAccessRules` 回来是 SID，德语等本地化名字不再漏判）。部署门禁改为 fail-closed：判不出 ACL 也算不通过。
-- **状态集合收敛**（先补覆盖再合并）：新增 `tests/test-state-sets.ps1`，把四组语义的成员用行为钉住——
+  `GetAccessRules` 回来是 SID，德语等本地化名字不再漏判）。部署门禁改为 fail-closed：判不出 ACL 也算不通过。- **状态集合收敛**（先补覆盖再合并）：新增 `tests/test-state-sets.ps1`，把四组语义的成员用行为钉住——
   过渡态（超时逃生 / 退出确认）、SCM 中间态（poll 加速）、切换态（时长后缀）、陈旧豁免（+待保存）、
   托盘计数。随后把散在 `card/xaml/tray/ui-status` 的字面量合并到 `config.ps1` 的四个常量
   （`TRANSITION_STATES` / `SCM_PENDING_STATES` / `SWITCHING_STATES` / `STALE_EXEMPT_STATES`）；

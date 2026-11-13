@@ -2,12 +2,14 @@
 #
 # UI 线程只做入队，实际 sc.exe/nssm.exe 调用由 lib/poll.ps1 的 runspace 执行。
 # 由 lib/util.ps1 聚合加载；$script:sync / $script:statusBar 由 GUI 入口创建。
+# 自加载 config：单独点源本文件时也要有 TRANSITION_STATES（与 card.ps1 同一写法，别再写第二份字面量）。
+if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
 
 # 退出确认要问的「在途卡片」：只算清单里还存在的服务。服务被删/被重载后残留的卡片
 # 永远等不到回执，拿它去问只会每次退出都弹一次「X 还在切换中」。§Get-ExitBusy
 function Get-ExitBusy($cards,$svc){
-  # config 未加载时（CLI/部分单测）回退同一份清单：只认三种会让「暂停中」静默漏掉。
-  $states = if ($script:TRANSITION_STATES) { $script:TRANSITION_STATES } else { @('启动中','停止中','删除中') }
+  # 只认过渡态三种：暂停中/继续中由 SCM 或外部操作引起，没有回执可丢，不拦退出（见 config.ps1）。
+  $states = $script:TRANSITION_STATES
   @($cards.Values | Where-Object {
     $_.ST -in $states -and ($null -eq $svc -or $svc.Contains($_.SvcName))
   })

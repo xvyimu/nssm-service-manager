@@ -36,9 +36,9 @@ function Test-AclHasWideWrite($acl){
   if ($null -eq $acl) { return $null }
   # 内存里新建的 ACL 对象 .Access 为 $null，只有从文件/键读回来的才有值：
   # 统一走 GetAccessRules，且按 SID 取（不翻译名字，避免本地化名与非映射 SID 抛异常）。
+  # 取不到就返回 $null：**不**回落到 .Access —— 那会用本地化名字套英文名单，静默 fail-open。
   $rules = $null
-  try { $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) } catch { $rules = $null }
-  if ($null -eq $rules) { try { $rules = $acl.Access } catch { return $null } }
+  try { $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) } catch { return $null }
   if ($null -eq $rules) { return $null }
   foreach ($a in $rules) {
     # 显式 Deny 不是漏洞：只判 Allow。此前三份实现都没管类型，Deny ACE 会把结论翻成「过宽」。

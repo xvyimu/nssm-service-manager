@@ -23,10 +23,7 @@ if (-not (Get-Command Test-WidePrincipal -EA SilentlyContinue)) { . (Join-Path $
 # （实测：APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES 与裸 SID
 # S-1-15-3-* = ALL RESTRICTED APPLICATION PACKAGES），脚本却报「已收紧到
 # Administrators + SYSTEM」——声明不成立。
-# 名单本体在 lib/acl.ps1 的 Test-WidePrincipal，本函数只保留旧名字给调用方。
-function Test-LeakyAce([string]$identity){
-  Test-WidePrincipal $identity
-}
+# 名单本体在 lib/acl.ps1 的 Test-WidePrincipal，本文件两处（移除/校验）直接用它。
 
 # 确保某主体对注册表键有 FullControl。用 SetAccessRule（存在则替换、不存在则添加）——
 # 只判「ACE 存在」不判权限，Administrators 只有 ReadKey 时脚本会不补却报成功。
@@ -64,10 +61,11 @@ $newAcl = Get-Acl -LiteralPath $keyPath  # 副本，用于改后写回
 # = 'Stop' 会让脚本在此中止——Set-Acl 从不执行，ACL 永远没被收紧却无人察觉。
 $newAcl.SetAccessRuleProtection($true, $false)
 
-# 移除「非管理员可读」主体的显式 ACE（继承的已随上一步丢弃）。判据集中在 Test-LeakyAce，
-# 与下面的校验共用。逐条 try/catch：个别主体名若无法翻译回 SID，RemoveAccessRule 会抛——
-# 不能让它中止整个脚本（那会导致 ACL 完全没改）；失败的记进 $removeFailed，由校验阶段兜底。
-$toRemove = @($newAcl.Access | Where-Object { Test-LeakyAce $_.IdentityReference.Value })
+# 移除「非管理员可读」主体的显式 ACE（继承的已随上一步丢弃）。判据是 lib/acl.ps1 的
+# Test-WidePrincipal，与下面的校验共用。逐条 try/catch：个别主体名若无法翻译回 SID，
+# RemoveAccessRule 会抛——不能让它中止整个脚本（那会导致 ACL 完全没改）；
+# 失败的记进 $removeFailed，由校验阶段兜底。
+$toRemove = @($newAcl.Access | Where-Object { Test-WidePrincipal $_.IdentityReference.Value })
 $removeFailed = @()
 foreach ($ace in $toRemove) {
   try { [void]$newAcl.RemoveAccessRule($ace) }
@@ -87,11 +85,11 @@ try {
 }
 
 # 校验：读回确认所有「非管理员可读」主体已移除（Allow 与 Deny 都查——Deny 不会授予读权限，
-# 但残留说明清理不干净，必须能证明）。判据与移除阶段共用 Test-LeakyAce，名单不会再漂移。
+# 但残留说明清理不干净，必须能证明）。判据与移除阶段共用 Test-WidePrincipal，名单不会再漂移。
 $verify = Get-Acl -LiteralPath $keyPath
 $after = ($verify.Access | ForEach-Object { "$($_.IdentityReference.Value) ($($_.RegistryRights) $($_.AccessControlType))" }) -join '; '
 Write-Host "改后 ACL: $after"
-$leaked = @($verify.Access | Where-Object { Test-LeakyAce $_.IdentityReference.Value })
+$leaked = @($verify.Access | Where-Object { Test-WidePrincipal $_.IdentityReference.Value })
 if ($leaked.Count -or $removeFailed.Count) {
   $parts = @()
   if ($leaked.Count) {

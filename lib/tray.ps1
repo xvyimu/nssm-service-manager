@@ -1,5 +1,7 @@
 # lib/tray.ps1 — 可选托盘图标（config.json 的 TrayEnabled 打开才加载 WinForms）
 # 决策（纯函数，只读 config）与副作用（Initialize-Tray 才 Add-Type WinForms）分离；默认 TrayEnabled=false：最小化进任务栏、关闭即退出。
+# 自加载 config：单独点源本文件时也要有 TRANSITION_STATES（与 card.ps1 同一写法）。
+if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
 
 # 关闭窗口时该做什么：两个开关都开才进托盘，只开 CloseToTray 而无 TrayEnabled 按退出处理。
 function Get-CloseAction($config){
@@ -27,9 +29,9 @@ function Get-TrayStatusText {
     if ($count -le 0) { return '服务管理' }
     $pending = 0
     if ($script:svcState) {
-      # 与 config.ps1 的 $script:TRANSITION_STATES 同值：这里拿不到 config（见上方「同一份在途清单」说明）。
-      # 只认三种会让「暂停中/继续中」在托盘计数里消失——它们由 SCM 或外部操作引起，本工具没有对应命令。
-      $states = if ($script:TRANSITION_STATES) { $script:TRANSITION_STATES } else { @('启动中','停止中','删除中') }
+      # 与退出确认同一份判定：只认过渡态三种。暂停中/继续中由 SCM 或外部操作引起，
+      # 本工具没有对应命令，计进「待处理」只会让托盘数字长期挂在 1。
+      $states = $script:TRANSITION_STATES
       $pending += @($script:svcState.Values | Where-Object { $_.st -and $_.st -in $states }).Count
     }
     if ($script:cards) {

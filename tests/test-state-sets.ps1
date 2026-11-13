@@ -56,6 +56,8 @@ try {
   Write-Output 'PASS: 退出确认只把「启动中/停止中/删除中」算作在途，待保存与 SCM 中间态不拦退出。'
 
   # ---- C. 陈旧豁免：过渡态 + 待保存 ----
+  # 显式钉住探测间隔：config.json 可能把这台机器的 ProbeIntervalMs 调过，阈值会跟着变。
+  $script:config.ProbeIntervalMs = 4000
   $exempt = @('启动中','停止中','删除中','待保存')
   foreach ($st in $allStates) {
     $card.ST = $st
@@ -112,6 +114,12 @@ try {
   $script:svcState = @{}
   $script:cards = $savedCards
   Write-Output 'PASS: 托盘待处理 = 过渡态 + 待保存（暂停中/继续中不计，与退出确认同一份判定）。'
+
+  # ---- G. 单独点源也要拿到状态集合（不再维护第二份字面量） ----
+  # 子进程里只点源 ui-status / tray：config 未加载时它们各自自加载，回落清单不会再单独漂一份。
+  $probe = & pwsh -NoProfile -Command "& { . '$RepoRoot\lib\ui-status.ps1'; . '$RepoRoot\lib\tray.ps1'; (@(`$script:TRANSITION_STATES) -join ',') }"
+  Assert ($probe -eq '启动中,停止中,删除中') "单独点源 ui-status/tray 时应自加载 config 得到三态，实际「$probe」"
+  Write-Output 'PASS: 单独点源 ui-status / tray 时自加载 config，状态集合仍只有一份。'
 } finally {
   $win.Close()
 }

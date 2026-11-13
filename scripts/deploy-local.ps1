@@ -201,12 +201,16 @@ if (-not (Test-Path -LiteralPath $nssmTarget)) { throw "NSSM 未就位：$nssmTa
 # Users/Everyone，漏掉 AppContainer SID（S-1-15-3-*）。
 if (-not (Get-Command Test-WidePrincipal -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot '..\lib\acl.ps1') }
 $broad = @()
+$unreadable = @()
 foreach ($item in Get-ChildItem -LiteralPath $Target -Recurse -Force) {
   $itemAcl = Get-Acl -LiteralPath $item.FullName
-  # 门禁 fail-closed：判不出来（$null）也算不通过——这是部署最后一道检查，宁可报错重跑。
+  # 门禁 fail-closed：判不出来（$null）也算不通过，但报错文案要分开——「读不到 ACL」和
+  # 「还有普通用户写权限」是两种完全不同的排查方向。
   $wideWrite = Test-AclHasWideWrite $itemAcl
-  if ($null -eq $wideWrite -or $wideWrite) { $broad += $item.FullName }
+  if ($null -eq $wideWrite) { $unreadable += $item.FullName }
+  elseif ($wideWrite) { $broad += $item.FullName }
 }
+if ($unreadable.Count) { throw "ACL 自检失败：$($unreadable.Count) 个条目的 ACL 读不出来（无法判定），例如 $($unreadable[0])" }
 if ($broad.Count) { throw "ACL 自检失败：$($broad.Count) 个条目仍有普通用户写权限，例如 $($broad[0])" }
 
 $version = (Get-Content -LiteralPath (Join-Path $Target 'VERSION') -Raw -Encoding UTF8).Trim()
