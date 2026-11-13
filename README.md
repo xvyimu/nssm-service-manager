@@ -172,6 +172,15 @@ Copy-Item services.example.json services.json
 | `auto`（默认） | TCP 通后再要求 HTTP 200 |
 | `tcp` | TCP 通即正常 |
 | `http` | 同 `auto`（显式写法，便于对照） |
+| `none` | 无端口服务（rclone mount / 纯守护进程）：不看端口，SCM 状态为运行中即算正常 |
+
+无端口服务（没有监听端口）用 `"probe": "none"`，`port` 写 0 或留空都行——这类条目里的 port 只是占位，不参与探测：
+
+```json
+{
+  "OpenList-Mount": { "probe": "none" }
+}
+```
 
 健康值只影响圆点颜色与双击切换；「关闭」按钮只看服务状态，不会因为探测不过而锁死。
 
@@ -248,7 +257,7 @@ pwsh -NoProfile -File scripts/deploy-local.ps1 -NoLaunch # 只部署
 
 ## 添加新服务
 
-**GUI**：工具栏「添加服务」→ 3 必填（服务名/端口/可执行文件）+ 高级折叠（探测方式/URL/工作目录/启动参数/环境变量/运行账户/GPU 勾选）。探测方式默认「自动（TCP 通且 HTTP 200）」；数据库 / gRPC / 纯 socket 选「只探测 TCP」，选了会把 URL 置空并禁用——非 HTTP 服务按 HTTP 探测必然失败，卡片会永远橙点。
+**GUI**：工具栏「添加服务」→ 3 必填（服务名/端口/可执行文件）+ 高级折叠（探测方式/URL/工作目录/启动参数/环境变量/运行账户/GPU 勾选）。探测方式默认「自动（TCP 通且 HTTP 200）」；数据库 / gRPC / 纯 socket 选「只探测 TCP」，选了会把 URL 置空并禁用——非 HTTP 服务按 HTTP 探测必然失败，卡片会永远橙点。无端口的服务（rclone mount、纯守护进程）选「无端口服务（进程在跑即正常）」，端口可以留空。
 
 运行账户只列三个内置账户——`LocalSystem`（默认）、`LocalService`、`NetworkService`，**都不需要密码**。CLI `-Add` 没有账户参数，注册的即默认 `LocalSystem`；要改走 GUI 或 `nssm set <服务> ObjectName <账户名>`。自定义用户账户不做：nssm 要求密码，而密码只能作为命令行参数传（同机管理员在进程列表里可见），这个暴露面不值得为一次性操作引入。勾选「GPU / 桌面交互程序」且账户仍是 `LocalSystem` 时弹提示（不阻断）：GPU 程序在 LocalSystem 下未必拿得到显卡，视驱动与会话形态而定。
 
@@ -258,7 +267,7 @@ pwsh -NoProfile -File scripts/deploy-local.ps1 -NoLaunch # 只部署
 pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,Port,Exe[,Url|tcp,Dir,Args,Env]
 ```
 
-不弹 GUI，注册 + 启动后退出。第 4 段写 `tcp` 是简写：等价于 `"probe": "tcp"` 且 URL 为空（数据库 / gRPC / 纯 socket 不用 HTTP 探测），完整形如 `-Add pg,5432,C:\pgsql\bin\pg_ctl.exe,tcp`。`Env` 多对用分号分隔（`KEY=VAL;KEY2=VAL2`），逗号也认。**值里自带分隔符不会拆坏**：只有「这一段含 `=`」才算新变量，不含 `=` 的片段并回上一个值，所以 `NO_PROXY=127.0.0.1,localhost`、`PATH=C:\a;C:\b` 都按一条处理；变量名不限于字母数字开头（`2FA_TOKEN=x`、`ProgramFiles(x86)=C:\PF` 照样识别）。
+不弹 GUI，注册 + 启动后退出。第 4 段写 `tcp` 是简写：等价于 `"probe": "tcp"` 且 URL 为空（数据库 / gRPC / 纯 socket 不用 HTTP 探测）；写 `none` 同理，表示无端口服务（`port` 给 `0` 即可）。完整形如 `-Add pg,5432,C:\pgsql\bin\pg_ctl.exe,tcp`。`Env` 多对用分号分隔（`KEY=VAL;KEY2=VAL2`），逗号也认。**值里自带分隔符不会拆坏**：只有「这一段含 `=`」才算新变量，不含 `=` 的片段并回上一个值，所以 `NO_PROXY=127.0.0.1,localhost`、`PATH=C:\a;C:\b` 都按一条处理；变量名不限于字母数字开头（`2FA_TOKEN=x`、`ProgramFiles(x86)=C:\PF` 照样识别）。
 
 `services.json` 解析失败时 `-Add` **直接退出（码 1）**而不是继续——继续会把回落的示例清单写回你的真实配置。GUI 侧也不示弱：`Save-Svc` 在同样的条件下拒绝落盘，免得点一次「添加」就把示例清单覆盖真实文件（写前会把上一版留成 `services.json.bak`，载入后文件被外部改过也拒写）。服务名限 `A-Za-z0-9_.-`；exe 必须是**存在的文件**的**完整本地路径**——UNC（含 `//host/share` 这种正斜杠写法）、目录、相对路径一律拒，因为注册成 LocalSystem 后，UNC 等于把提权面交给共享写者。两条入口共用 `Test-SvcInput`（校验顺序：名称 → exe → 端口 → 重名）；`Test-SvcAccount` 把关账户白名单；`Get-NssmSetSpec` 收口要 set 的全部键值，`Install-NssmService` 只负责执行与失败回滚。
 

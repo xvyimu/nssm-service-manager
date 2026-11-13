@@ -5,8 +5,16 @@
 
 ## [未发布]（2026-11-13）
 
-工程化整理，行为零变化（`tests/run-all.ps1` 27 项 + `tests/analyze.ps1` 全绿后交付）：
+工程化整理 + 一处行为补齐（`tests/run-all.ps1` 27 项 + `tests/analyze.ps1` 全绿后交付）：
 
+- **无端口服务可以从 GUI / CLI 添加了**（补 `probe=none` 的口径缺口）：添加对话框的探测方式
+  多一项「无端口服务（进程在跑即正常）」，选它端口可留空、URL 自动置空；CLI 第 4 段写 `none`
+  等价（`-Add Name,0,Exe,none`）。此前 `dialogs.ps1` 的白名单只有 auto/tcp/http，这类服务
+  （rclone mount、纯守护进程）只能注册完再手改 `services.json`——正是 1.0.7 那次「整份清单被判无效」事故的源头。
+  `Add-SvcEntry` 现在也把 `none` 落盘（原来只写 tcp/http，选了也会被丢成 auto）。
+- **探测口径归一**：新增 `$script:ProbeModes` 与 `Resolve-ProbeSpec`（`lib/svc-input.ps1`），
+  GUI 提交、CLI 简写、`Test-SvcInput` 共用一套取值与 URL 归一规则，不再各写一份分支；
+  `Test-SvcInput` 增加 `-probe`，`none` 口径不校验端口范围。
 - **`lib/util.ps1` 按职责拆分**：591 行、五类职责 → `svc-store`（清单读写）/ `ui-status`（命令入队 + 状态栏 + 每帧 tick）/
   `log-retention`（日志目录与轮转档清理）/ `security-check`（提权边界自检）/ `shutdown`（关窗收尾）；
   `util.ps1` 只剩加载顺序与两处兼容垫片。调用方（GUI 入口、单测）不用改 dot-source 行。
