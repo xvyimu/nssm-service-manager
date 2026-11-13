@@ -151,19 +151,22 @@ function Confirm-ExitBusy($owner,[string]$what){
 # 添加提交体（ok_Click 执行部分），$fields 各值已 trim；返回 $true 关弹窗、$false 保持打开。§Submit-AddService
 function Submit-AddService($owner,[hashtable]$fields){
   $n=[string]$fields.n; $exe=[string]$fields.exe
+  # 探测口径：auto（缺省，TCP 通且 HTTP 200）/ tcp（TCP 通即正常）/ http / none（无端口服务）。
+  # 非 HTTP 服务（数据库、gRPC、纯 socket）必须选 tcp，否则卡片永远不是绿点；白名单与 CLI 同一份。§Read-SvcFile
+  $probe=([string]$fields.probe).Trim().ToLowerInvariant()
+  if($probe -notin $script:ProbeModes){ $probe='auto' }
   # 端口先 TryParse 再进 Test-SvcInput：原来直接 [int] 强转，输入 "3000ms" 会在校验之前抛异常，
   # 异常冒到 Dispatcher 兜底只写状态栏（被模态窗盖住）= 点了什么都没发生。
+  # none 口径端口可留空（按 0 处理）：这类服务没有监听端口，强制填只会逼用户编一个。
   $p=0
-  if(-not [int]::TryParse([string]$fields.p,[ref]$p)){ Show-DialogError $owner '端口必须是 1-65535 的整数'; return $false }
+  if(-not ($probe -eq 'none' -and [string]::IsNullOrWhiteSpace([string]$fields.p))){
+    if(-not [int]::TryParse([string]$fields.p,[ref]$p)){ Show-DialogError $owner '端口必须是 1-65535 的整数'; return $false }
+  }
   $url=[string]$fields.url; $dir=[string]$fields.dir; $par=[string]$fields.par; $envRaw=[string]$fields.env
   $account=[string]$fields.account; $gpu=[bool]$fields.gpu
-  # 探测口径：auto（缺省，TCP 通且 HTTP 200）/ tcp（TCP 通即正常）/ http。
-  # 非 HTTP 服务（数据库、gRPC、纯 socket）必须选 tcp，否则卡片永远不是绿点。§Read-SvcFile
-  $probe=([string]$fields.probe).Trim().ToLowerInvariant()
-  if($probe -notin @('auto','tcp','http')){ $probe='auto' }
   if(-not $n -or -not $exe){ Show-DialogError $owner '服务名和可执行文件必填'; return $false }
   # 校验顺序与 CLI 同（Test-SvcInput）；端口文案 GUI 保留自己的措辞，按 code 覆盖
-  $bad = Test-SvcInput $n $p $exe $script:svc
+  $bad = Test-SvcInput $n $p $exe $script:svc $probe
   if($bad){
     $msg = if($bad.code -eq 'port'){ '端口必须是 1-65535' } else { $bad.msg }
     Show-DialogError $owner $msg; return $false
@@ -171,8 +174,10 @@ function Submit-AddService($owner,[hashtable]$fields){
   # 未知账户直接拒——静默回落到 LocalSystem 会让用户以为「按最小权限跑了」。
   $badAcct = Test-SvcAccount $account
   if($badAcct){ Show-DialogError $owner $badAcct.msg; return $false }
-  # tcp 口径不填 URL：非 HTTP 服务写面板地址只会让人以为探测按 HTTP 走。
-  if($probe -eq 'tcp'){ $url='' } elseif(-not $url){ $url="http://127.0.0.1:$p" }
+  # tcp/none 口径不填 URL：非 HTTP 服务写面板地址只会让人以为探测按 HTTP 走。
+  # 归一逻辑与 CLI 共用 Resolve-ProbeSpec，避免两处各写一套。
+  $resolved = Resolve-ProbeSpec $probe $url $p
+  $probe = $resolved.probe; $url = $resolved.url
   # GUI 的 env 以逗号分隔（字段分隔符），且多一层格式校验（CLI 不做）
   $envPairs = ConvertTo-EnvPairs $envRaw ','
   $envErr = Test-EnvPairs $envPairs
@@ -233,23 +238,24 @@ function New-AddDialog(){
   $inEnv.ToolTip='格式 KEY=VAL,KEY2=VAL2（一次传入；LocalSystem 服务勿填交互用户 APPDATA）'
 
   $stack.Children.Add((& $mkLabel '服务名 *')) | Out-Null; $stack.Children.Add($inName) | Out-Null
-  $stack.Children.Add((& $mkLabel '端口 *（1-65535）')) | Out-Null; $stack.Children.Add($inPort) | Out-Null
+  $stack.Children.Add((& $mkLabel '端口（1-65535；无端口服务可留空）')) | Out-Null; $stack.Children.Add($inPort) | Out-Null
   $stack.Children.Add((& $mkLabel '可执行文件 *')) | Out-Null; $stack.Children.Add($inExe) | Out-Null
 
   $adv=& $mkExp '高级（可选）'
   $advContent=New-Object System.Windows.Controls.StackPanel
-  # 探测方式：默认 auto；数据库/gRPC/纯 socket 选 tcp，否则 HTTP 探测必然失败、卡片永远橙点。
+  # 探测方式：默认 auto；数据库/gRPC/纯 socket 选 tcp；rclone mount 这类无端口服务选 none。
   $inProbe=New-Object System.Windows.Controls.ComboBox -Property @{ Margin='0,0,0,8'; FontFamily=$script:cjkFont }
   [void]$inProbe.Items.Add((New-Object System.Windows.Controls.ComboBoxItem -Property @{Content='自动（TCP 通且 HTTP 200）'; Tag='auto'}))
   [void]$inProbe.Items.Add((New-Object System.Windows.Controls.ComboBoxItem -Property @{Content='只探测 TCP（数据库 / gRPC / 纯 socket）'; Tag='tcp'}))
+  [void]$inProbe.Items.Add((New-Object System.Windows.Controls.ComboBoxItem -Property @{Content='无端口服务（进程在跑即正常）'; Tag='none'}))
   $inProbe.SelectedIndex=0
   $advContent.Children.Add((& $mkLabel '探测方式')) | Out-Null; $advContent.Children.Add($inProbe) | Out-Null
-  # 选 tcp 时置空并禁用 URL：非 HTTP 服务填了面板地址只会误导（GetNewClosure：闭包要持有 $inUrl）。
+  # 选 tcp/none 时置空并禁用 URL：这两种口径不看面板地址，填了只会误导（GetNewClosure：闭包要持有 $inUrl）。
   $inProbe.Add_SelectionChanged({
     param($sender,$eventArgs)
-    $tcp = ([string]$sender.SelectedItem.Tag -eq 'tcp')
-    if ($tcp) { $inUrl.Text = '' }
-    $inUrl.IsEnabled = -not $tcp
+    $noUrl = ([string]$sender.SelectedItem.Tag) -in @('tcp','none')
+    if ($noUrl) { $inUrl.Text = '' }
+    $inUrl.IsEnabled = -not $noUrl
   }.GetNewClosure())
   $advContent.Children.Add((& $mkLabel '面板URL（默认 http://127.0.0.1:端口）')) | Out-Null; $advContent.Children.Add($inUrl) | Out-Null
   $advContent.Children.Add((& $mkLabel '工作目录')) | Out-Null; $advContent.Children.Add($inDir) | Out-Null

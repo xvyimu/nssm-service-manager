@@ -143,11 +143,15 @@ try {
   Assert (($tags -join '|') -eq 'LocalSystem|NT AUTHORITY\LocalService|NT AUTHORITY\NetworkService') "账户选项不对：$($tags -join '|')"
   Assert ($d.Account.SelectedItem.Tag -eq 'LocalSystem') "默认账户应是 LocalSystem，got [$($d.Account.SelectedItem.Tag)]"
   Assert ($d.Gpu.IsChecked -eq $false) 'GPU 勾选默认应为未选'
-  Assert ($d.Probe.Items.Count -eq 2 -and (($d.Probe.Items | ForEach-Object { $_.Tag }) -join '|') -eq 'auto|tcp') '探测方式下拉应有 auto/tcp 两项'
+  Assert ($d.Probe.Items.Count -eq 3 -and (($d.Probe.Items | ForEach-Object { $_.Tag }) -join '|') -eq 'auto|tcp|none') '探测方式下拉应有 auto/tcp/none 三项'
   # 选 tcp：URL 置空并禁用；切回 auto 恢复可用（事件体不 GetNewClosure 会拿到 $null 控件）
   $d.Inputs.url.Text = 'http://127.0.0.1:1'
   $d.Probe.SelectedIndex = 1
   Assert ($d.Inputs.url.Text -eq '' -and -not $d.Inputs.url.IsEnabled) '选 tcp 应置空并禁用 URL'
+  # 选 none（无端口服务）：同样置空并禁用 URL
+  $d.Inputs.url.Text = 'http://127.0.0.1:1'
+  $d.Probe.SelectedIndex = 2
+  Assert ($d.Inputs.url.Text -eq '' -and -not $d.Inputs.url.IsEnabled) '选 none 应置空并禁用 URL'
   $d.Probe.SelectedIndex = 0
   Assert ($d.Inputs.url.IsEnabled) '切回 auto 应恢复 URL 输入'
 
@@ -205,7 +209,22 @@ try {
   Assert ($script:dialogErrors[0] -match '已.*注册.*没写入清单') '错误正文应说清「已在 NSSM 注册但没写入清单」。'
   Assert (-not $script:svc.Contains('SvcD')) 'Save 失败后内存清单不得留着 SvcD（下一次保存会把它写进磁盘）。'
 
-  Write-Output 'PASS: Submit-AddService covers required/port/env/account validation, sensitive-key OKCancel (cancel vs continue), account passthrough, GPU hint (non-blocking, suppressed for non-LocalSystem), success enqueue, probe=tcp shape, and Save-failure branch (window stays open); New-AddDialog builds a scrollable dialog with the 3 built-in accounts, LocalSystem preselected and an auto/tcp probe dropdown; clicking the real "注册并启动" button reaches Install-NssmService (guards the non-closure trap).'
+  # ---- probe=none：端口可留空，落盘 probe=none + port 0，URL 清空（rclone mount 这类服务） ----
+  # 上面几段把 Save-Svc 换成了抛错替身，这段要验落盘形状，先还原成记录型替身。
+  function Save-Svc($data) { $script:savedData = $data }
+  $script:installed = @(); $script:dialogErrors = @()
+  $ok = Submit-AddService $win @{ n='SvcP'; p=''; exe=$fakeExe; url='http://127.0.0.1:9000'; dir=''; par=''; env=''; probe='none' }
+  Assert ($ok) "probe=none 且端口留空应通过：$($script:dialogErrors -join ' | ')"
+  Assert ($script:svc.Contains('SvcP')) 'probe=none 应写入内存清单。'
+  Assert ($script:svc['SvcP'].probe -eq 'none') "落盘 probe 不对：$($script:svc['SvcP'].probe)"
+  Assert ($script:svc['SvcP'].port -eq 0) "落盘 port 应为 0：$($script:svc['SvcP'].port)"
+  Assert ($script:svc['SvcP'].url -eq '') "none 口径 url 应清空：$($script:svc['SvcP'].url)"
+  # 非 none 口径端口仍必填
+  $script:dialogErrors = @()
+  $ok = Submit-AddService $win @{ n='SvcQ'; p=''; exe=$fakeExe; url=''; dir=''; par=''; env='' }
+  Assert (-not $ok) 'auto 口径下端口留空仍应被拦下。'
+
+  Write-Output 'PASS: Submit-AddService covers required/port/env/account validation, probe=none (blank port accepted, probe/port/url persisted), sensitive-key OKCancel (cancel vs continue), account passthrough, GPU hint (non-blocking, suppressed for non-LocalSystem), success enqueue, probe=tcp shape, and Save-failure branch (window stays open); New-AddDialog builds a scrollable dialog with the 3 built-in accounts, LocalSystem preselected and an auto/tcp/none probe dropdown; clicking the real "注册并启动" button reaches Install-NssmService (guards the non-closure trap).'
 
   # ---- T2：Submit-RemoveCommand ----
   # 卡片在缓存：入队 remove 且置「删除中」过渡态

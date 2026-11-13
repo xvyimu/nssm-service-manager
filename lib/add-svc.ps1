@@ -11,18 +11,19 @@ function Add-SvcFromCli([string]$spec){
   # 先 TryParse：裸 [int] 强转会让端口写成 `8080ms` 时抛栈，用户看不到用法。
   $p=0
   if(-not [int]::TryParse($parts[1].Trim(),[ref]$p)){ Write-Host "端口必须是 1-65535 的整数：$($parts[1])"; Write-Host "用法: -Add Name,Port,Exe[,Url|tcp,Dir,Args,Env]"; exit 1 }
-  # 第 4 段写 tcp 是简写：等价于 probe=tcp 且 url 为空。数据库/gRPC/纯 socket 不需要 HTTP 探测，
-  # 不写这条就只能注册完再手改 services.json，否则卡片永远橙点。§Read-SvcFile
+  # 第 4 段除了 URL，还接受两个简写：tcp（TCP 通即正常）、none（无端口服务）。
+  # 不写简写就只能注册完再手改 services.json，否则卡片永远橙点。§Read-SvcFile
   $urlRaw=if($parts.Count -gt 3){$parts[3].Trim()}else{''}
   $probe=''
-  if($urlRaw -ieq 'tcp'){ $probe='tcp'; $url='' }
-  else { $url=if($urlRaw){$urlRaw}else{"http://127.0.0.1:$p"} }
+  if($urlRaw -ieq 'tcp' -or $urlRaw -ieq 'none'){ $probe=$urlRaw.ToLowerInvariant(); $urlRaw='' }
+  $resolved=Resolve-ProbeSpec $probe $urlRaw $p
+  $probe=$resolved.probe; $url=$resolved.url
   $dir=if($parts.Count -gt 4){$parts[4].Trim()}else{''}
   $par=if($parts.Count -gt 5){$parts[5].Trim()}else{''}
   # 第 7 段往后全属 Env；分号优先，逗号也能分（ConvertTo-EnvPairs 只在 KEY= 处断开）。
   $envRaw=if($parts.Count -gt 6){$parts[6].Trim()}else{''}
   # 校验顺序：名称 → 可执行文件 → 端口 → 重名（与 GUI 同，抽进 Test-SvcInput）
-  $bad = Test-SvcInput $n $p $exe $script:svc
+  $bad = Test-SvcInput $n $p $exe $script:svc $probe
   if($bad){ Write-Host $bad.msg; exit 1 }
   # 先按分号切再按逗号切：NO_PROXY 的多地址保留为一条，A=1,B=2 拆成两条。
   $envPairs = @(ConvertTo-EnvPairs $envRaw ';' | ForEach-Object { ConvertTo-EnvPairs $_ ',' })

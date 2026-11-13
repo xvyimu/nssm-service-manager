@@ -2,8 +2,22 @@
 # 可被单测直接点源（不加载 WPF / NSSM / 对话框）。Get-NssmSetSpec 读调用方作用域的 $logDir。
 # 实现细节与踩坑记录：docs/IMPLEMENTATION-NOTES.md
 
+# 探测口径白名单：清单解析（Read-SvcFile）、添加对话框、CLI 简写共用同一份取值。
+# auto=TCP 通且 HTTP 200；tcp=TCP 通即正常；http=只看 HTTP；none=无端口服务（在跑即正常）。§ProbeModes
+$script:ProbeModes = @('auto','tcp','http','none')
+
+# 把「探测方式 + 原始 URL + 端口」归一成要落盘的一对值，返回 @{ probe; url }。
+# tcp/none 不需要 URL（写了只会让人以为按 HTTP 探测）；未知口径回落 auto，与 Read-SvcFile 的降级方向一致。
+function Resolve-ProbeSpec([string]$probe,[string]$url,[int]$port){
+  $pv = ([string]$probe).Trim().ToLowerInvariant()
+  if ($pv -notin $script:ProbeModes) { $pv = 'auto' }
+  if ($pv -in @('tcp','none')) { return @{ probe = $pv; url = '' } }
+  if (-not $url) { $url = "http://127.0.0.1:$port" }
+  @{ probe = $pv; url = $url }
+}
+
 # CLI 与 GUI 共用的输入校验：通过返回 $null，否则 @{code; msg}（name|exe|port|dup）。§Test-SvcInput
-function Test-SvcInput([string]$n,[int]$p,[string]$exe,$existing){
+function Test-SvcInput([string]$n,[int]$p,[string]$exe,$existing,[string]$probe='auto'){
   if($n -notmatch '^[A-Za-z0-9_.-]+$'){ return @{code='name'; msg="服务名含非法字符（仅允许字母数字 . _ -）：$n"} }
   # 拒绝纯 . / ..：路径归一化会指到祖先注册表键。
   if($n -eq '.' -or $n -eq '..'){ return @{code='name'; msg="服务名不能是 . 或 ..（路径归一化会指错注册表键）：$n"} }
@@ -16,7 +30,9 @@ function Test-SvcInput([string]$n,[int]$p,[string]$exe,$existing){
   if(-not [IO.Path]::IsPathRooted($exe)){ return @{code='exe'; msg="请填完整路径（相对路径会按服务的工作目录解析）：$exe"} }
   # PathType Leaf：Test-Path 对目录也返回 true，填个文件夹能注册出必然 1053 的服务。
   if(-not (Test-Path -LiteralPath $exe -PathType Leaf)){ return @{code='exe'; msg="可执行文件不存在或不是文件：$exe"} }
-  if($p -lt 1 -or $p -gt 65535){ return @{code='port'; msg="端口非法: $p"} }
+  # 无端口口径（none）跳过端口范围校验：rclone mount / 守护进程本来就没有监听端口，
+  # 清单里的 port 只是占位，Read-SvcFile 对同样情况也不报警。
+  if (([string]$probe).Trim().ToLowerInvariant() -ne 'none' -and ($p -lt 1 -or $p -gt 65535)) { return @{code='port'; msg="端口非法: $p"} }
   if($existing -and $existing.Contains($n)){ return @{code='dup'; msg="$n 已存在"} }
   $null
 }

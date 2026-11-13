@@ -24,7 +24,7 @@ function Invoke-TestNssm {
   if ($args[0] -eq 'remove')  { [void]$script:nssmInstalled.Remove($args[1]) }
   $global:LASTEXITCODE=0
 }
-function Save-Svc($data) { $script:saved=$data.Contains('__sm_add_test__') }
+function Save-Svc($data) { $script:savedData=$data; $script:saved=$data.Contains('__sm_add_test__') }
 # sc.exe 替身：本测试不碰真服务数据库，但要模拟 Install-NssmService / Remove-NssmService
 # 新增的实证复核（Test-ServicePresent / Test-ServiceGone 都走 sc.exe query 的退出码）。
 # 语义：install 过的服务 query 返回 0，remove 过的返回 1060。
@@ -52,6 +52,16 @@ if ($exitSetting.Count -ne 1 -or ($exitSetting[0] -join '|') -ne 'set|__sm_add_t
   throw 'NSSM AppExit must receive both Default and Ignore.'
 }
 
+# CLI 简写 none：无端口服务（rclone mount / 守护进程）。第 4 段写 none、端口给 0，
+# 落盘必须是 probe=none + port 0 + 空 url——写错就又回到「卡片永远橙点」。
+$script:calls.Clear(); $script:saved=$false; $script:startArgs=$null
+Add-SvcFromCli "__sm_none_test__,0,$fakeExe,none"
+if (-not $script:savedData.Contains('__sm_none_test__')) { throw 'portless entry was not persisted.' }
+$noneEntry = $script:savedData['__sm_none_test__']
+if ($noneEntry.probe -ne 'none') { throw "probe=none not persisted: $($noneEntry.probe)" }
+if ([int]$noneEntry.port -ne 0) { throw "portless entry must keep port 0: $($noneEntry.port)" }
+if ([string]$noneEntry.url -ne '') { throw "portless entry must have empty url: $($noneEntry.url)" }
+if (($script:startArgs -join '|') -ne 'start|__sm_none_test__') { throw 'portless service start request missing.' }
 # 敏感键名提示分支：CLI 带敏感 env 时，stdout 应含「明文写入注册表」提示并点名该键。
 # 安全相关代码此前只有纯函数单测，这条补 CLI 端到端断言（mock NSSM，不碰真服务）。
 # Write-Host 走信息流（stream 6），用 6>&1 并入输出流才能被 Out-String 捕获。

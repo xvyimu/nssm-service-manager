@@ -212,7 +212,22 @@ try {
   } elseif (Test-Path -LiteralPath $cfg) {
     throw 'Test created services.json where none existed.'
   }
-  Write-Output 'PASS: Test-SvcInput (name/exe/port/dup + order), Test-SvcAccount (built-in whitelist, custom rejected), ConvertTo-EnvPairs (sep/trim/drop-empty, separator inside value kept), Test-EnvPairs (format/APPDATA), Find-SensitiveEnvKeys (sensitive-name detection + _FILE path-aware skip + expanded patterns), Get-LogFiles (regex-escaped service names), Get-NssmSetSpec (AppExit dual-token, env multi-token, ObjectName single token, optional-key omission, array-typed values, Start=SERVICE_DEMAND_START).'
+  # ---- 探测口径归一：白名单 / none 不校验端口 / URL 与 probe 的落盘值 ----
+  Assert ($script:ProbeModes -join ',' -eq 'auto,tcp,http,none') "ProbeModes 不对：$($script:ProbeModes -join ',')"
+  # none：端口无意义，0 与越界值都不拦（rclone mount / 守护进程没有监听端口）
+  Assert ($null -eq (Test-SvcInput 'Portless' 0 $fakeExe $null 'none')) 'probe=none 时 port=0 应通过'
+  Assert ($null -eq (Test-SvcInput 'Portless' 99999 $fakeExe $null 'none')) 'probe=none 时不校验端口范围'
+  Assert ((Test-SvcInput 'Portless' 0 $fakeExe $null).code -eq 'port') '默认口径下 port=0 仍应被拒'
+  $r = Resolve-ProbeSpec 'tcp' 'http://127.0.0.1:9000' 9000
+  Assert ($r.probe -eq 'tcp' -and $r.url -eq '') 'tcp 口径应清空 url'
+  $r = Resolve-ProbeSpec 'none' 'http://127.0.0.1:9000' 0
+  Assert ($r.probe -eq 'none' -and $r.url -eq '') 'none 口径应清空 url'
+  $r = Resolve-ProbeSpec 'auto' '' 8123
+  Assert ($r.url -eq 'http://127.0.0.1:8123') 'auto 缺 url 时应按端口补'
+  $r = Resolve-ProbeSpec 'bogus' 'http://x:1' 1
+  Assert ($r.probe -eq 'auto' -and $r.url -eq 'http://x:1') '未知口径应回落 auto 且保留 url'
+
+  Write-Output 'PASS: Test-SvcInput (name/exe/port/dup + order, probe=none skips port range), Test-SvcAccount (built-in whitelist, custom rejected), Resolve-ProbeSpec (tcp/none clear url, auto fills default, unknown falls back), ConvertTo-EnvPairs (sep/trim/drop-empty, separator inside value kept), Test-EnvPairs (format/APPDATA), Find-SensitiveEnvKeys (sensitive-name detection + _FILE path-aware skip + expanded patterns), Get-LogFiles (regex-escaped service names), Get-NssmSetSpec (AppExit dual-token, env multi-token, ObjectName single token, optional-key omission, array-typed values, Start=SERVICE_DEMAND_START).'
 } finally {
   Remove-Item -LiteralPath $fakeExe -Force -EA SilentlyContinue
 }

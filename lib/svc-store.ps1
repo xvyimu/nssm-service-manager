@@ -220,7 +220,7 @@ function Add-SvcEntry([string]$n,[int]$p,[string]$url,[string]$probe){
   $entry = @{ port = $p; url = $url }
   # probe 只在非默认口径时落盘：auto（TCP 通且 HTTP 200）是缺省，写出来只是噪声。§Read-SvcFile
   $pv = ([string]$probe).Trim().ToLowerInvariant()
-  if ($pv -in @('tcp','http')) { $entry['probe'] = $pv }
+  if ($pv -in @('tcp','http','none')) { $entry['probe'] = $pv }
   $next = [ordered]@{}
   [Threading.Monitor]::Enter($sync.gate)
   try {
