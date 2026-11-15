@@ -1,7 +1,7 @@
 <!-- doc-template: project/HANDOFF v1 -->
 # HANDOFF
 
-> **更新日：** 2026-10-30　**版本：** `VERSION` = 0.9.0
+> **更新日：** 2026-11-15　**版本：** `VERSION` = 1.0.7
 > **本文件只写接手指南**：当前状态 / 已知限制 / 下一步。改了什么看 `CHANGELOG.md`，
 > 为什么这么设计看 `docs/PROJECT.md`（技术栈与取舍的 SSOT），实现细节看
 > `docs/IMPLEMENTATION-NOTES.md`（代码里的 `§小节名` 指向那里）。
@@ -15,7 +15,7 @@
   健康历史在 `logs/health/health-YYYYMMDD.ndjson`（留 30 天，只记变化）。
 - **质量门**（两条都要绿，改动后各跑一次）：
   ```powershell
-  pwsh -NoProfile -File tests/run-all.ps1     # parser + 20 项回归（自动收集 tests/test-*.ps1）
+  pwsh -NoProfile -File tests/run-all.ps1     # parser + 30 项回归（自动收集 tests/test-*.ps1）
   pwsh -NoProfile -File tests/analyze.ps1     # PSScriptAnalyzer，Error/Warning 必须为 0
   ```
   `analyze.ps1` 需要一次性 `Install-Module PSScriptAnalyzer -Scope CurrentUser`；规则集与每条
@@ -27,7 +27,7 @@
   `git tag v<版本>` → `git push origin main --tags`。`release.yml` 会校验 `VERSION` 与 tag 一致，
   并在 tag 上补跑静态分析；重跑同一 tag 会走 `gh release upload --clobber`，不会红。
 - **部署位置**：日常运行的不是本仓，而是 `scripts/deploy-local.ps1` 复制到管理员独占目录的副本
-  （默认 `C:\Program Files\ServiceManager`，NSSM 固定在 `C:\Program Files\nssm\nssm.exe`）。
+  （默认 `C:\Program Files\ServiceManager`；NSSM 按序取 `C:\Program Files\nssm\nssm.exe` → `C:\Program Files\nssm\win64\nssm.exe`，部署脚本只放第一个）。
   本仓是开发副本：改完代码要重跑部署脚本才生效。快捷方式指向运行时副本的 `launch.vbs`。
 - **本轮（2026-10-30 优化方案 A/B/C 批）落地**：
   - A1 `Add-SvcEntry` 改 copy-on-write：保存失败不再让内存与磁盘分叉（`lib/util.ps1`）。
@@ -61,11 +61,12 @@
 4. **`launch.vbs` 必须保持纯 ASCII**：Windows Script Host 按系统 ANSI 代码页读，中文注释在部分
    系统上触发 `800A0400`。
 5. **ACL 判定是启发式**：安全检查只看 ACE 里是否出现宽面 SID（含 `S-1-15-3-*` / AppContainer），
-   不解析完整 ACL 继承链；`NSSM_PATH` 只校验文件名与目录可写，不验签。
+   不解析完整 ACL 继承链；NSSM 所在目录只做 ACL 可写判定，不验签。
 6. **健康历史只记变化**：平稳期没有记录是设计（否则一天几万行噪声），别当成"漏记"来查。
 7. **批量启停只碰终态**（已停止 / 运行中），并跳过过期探测值；`启动中/停止中/暂停` 一律不碰，
    免得和手动命令打架。
 8. **Web 只读视图默认关闭**（`WebViewEnabled`），开启后只绑 `127.0.0.1` + token 门禁，GET only。
+9. **（2026-11-16 已修）后台探测的服务状态查询**：原 `lib/poll.ps1` 四处 `Get-Service` 无超时，SCM 挂起时 runspace 永久阻塞、不抛异常、crash log 无痕。现在改走 `sc.exe query` 的 `Get-SvcStateQuiet` / `Get-SvcStateMapQuiet`（`Invoke-ExternalQuiet` 的 硬超时 + Kill），超时值 `SvcStateTimeoutMs`（默认 3000ms，经 `$sync` 注入 runspace）；`Wait-Stopped` 同步改造。超时表现为状态「未知」并写一条 60s 限频提示，不再卡死探测。
 
 ## 3. 下一步
 
@@ -74,9 +75,9 @@
 1. **可选优化（批次 D，等真实痛点再做）**：跨页过滤/排序（服务数 > 12 才值得）、
    两份 `services.json` 的差异对比（换机迁移用）、健康历史可视化、Web 只读拓扑图。
    这四项都是新需求而非修复，没有实际使用反馈前不要开工。
-2. **首次发布**：打 `v0.9.0` tag → 确认 Release 附件能解压即跑（zip 里 `launch.vbs` + `lib/` +
+2. **发布**：已发布至 `v1.0.6`，下一步打 `v1.0.7` tag → 确认 Release 附件能解压即跑（zip 里 `launch.vbs` + `lib/` +
    example 配置齐）。之后每次发版只改 `VERSION` + CHANGELOG 再打 tag。
 3. **文档漂移巡检**：改了行为就同步 `README.md`（功能/文件表/CLI 用法）与
    `docs/PROJECT.md`（取舍、已知限制）；根 `CHANGELOG.md` 的 `[未发布]` 段在发版时改成版本号。
 4. **测试数量**：`tests/run-all.ps1` 自动收集，新增用例不必登记；README 与 PROJECT.md 里
-   写死的「20 项」在新增 `test-*.ps1` 时要一起改（本轮只加了用例内断言，数量未变）。
+   写死的「30 项」在新增 `test-*.ps1` 时要一起改。

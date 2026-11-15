@@ -21,7 +21,7 @@ assignees: ''
 **环境**
 - Windows 版本：Win+R 输 `winver` 查看
 - PowerShell 版本：`pwsh --version`
-- NSSM 版本：`nssm --version`，或 `$env:NSSM_PATH` 指向的版本
+- NSSM 版本：先跑 `& "$env:ProgramFiles\nssm\nssm.exe" version`，失败再试 `& "$env:ProgramFiles\nssm\win64\nssm.exe" version`（只认这两个固定候选，不再读 `NSSM_PATH`）
 - 本工具 commit：`git log --oneline -1`
 
 **涉及的服务**

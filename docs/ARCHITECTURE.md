@@ -15,17 +15,18 @@ UI 层       lib/xaml.ps1                窗口外壳 · 分页 · 状态栏
             lib/logview.ps1             日志窗口 · 健康历史窗口
             lib/tray.ps1                可选托盘（WinForms 按需加载）
             lib/theme.ps1               字体 · 语义色 · 按钮模板 · Mica P/Invoke
-领域层      lib/util.ps1                聚合加载点（按依赖顺序点源下列五模块）
+领域层      lib/util.ps1                聚合加载点（按依赖顺序点源下列 5 个模块：svc-store → ui-status → log-retention → security-check → shutdown）
             lib/svc-store.ps1           清单读写 · 外部修改检测 · 重载 · 新增条目
             lib/ui-status.ps1           命令入队 · 状态栏与租约 · 每帧 tick · 单实例检测
             lib/log-retention.ps1       日志目录解析 · 轮转档清理
-            lib/security-check.ps1      exe 目录可写性 · ACL 宽面判定
-            lib/acl.ps1                 ACL 判据唯一来源（宽面主体 + 写能力，三处共用）
+            lib/security-check.ps1      exe 目录可写性 · ACL 宽面判定（按需点源 acl.ps1）
+            lib/acl.ps1                 ACL 判据唯一来源（宽面主体 + 写能力，三处共用；不在 util 那 5 个里）
             lib/shutdown.ps1            关窗收尾
             lib/add-svc.ps1             CLI 添加服务
             lib/nssm.ps1                NSSM 命令包装（install / set / remove）
             lib/svc-input.ps1           纯函数：输入校验 · env 解析 · NSSM set 规格
             lib/svc-common.ps1          UI 与后台共用原语：sc 解析 · 外部命令 · 状态映射 · 删除流程
+lib/poll.ps1                后台 runspace 探测循环：sc.exe query（带超时）+ TCP/HTTP 分片探测 + 结果校验；
             lib/health.ps1              健康历史纯函数（NDJSON）
             lib/webview*.ps1            可选只读 Web（回环 + token）
 数据层      services.json               服务清单（本机实配，git 忽略）
@@ -34,6 +35,8 @@ UI 层       lib/xaml.ps1                窗口外壳 · 分页 · 状态栏
 ```
 
 依赖方向单向：入口 → UI → 领域 → 数据。领域层不认识 UI；`svc-input.ps1` 与 `health.ps1` 是纯函数族，可单独点源测试。
+
+加载点有两处，行数与代码对齐：入口先单独点源 `lib/config.ps1`（`service-manager-gui.ps1:35`，早于一切），再按 `service-manager-gui.ps1:183-195` 点源 13 个（theme → health → util → svc-input → nssm → add-svc → logview → webview → dialogs → tray → poll → card → xaml）；`lib/util.ps1:23` 再点源上表那 5 个领域模块，`lib/acl.ps1` 由 `security-check.ps1` 与三个独立脚本按 `Get-Command` 守卫按需点源。
 
 ## 2. 三种事实，分开存放
 
@@ -50,7 +53,7 @@ UI 层       lib/xaml.ps1                窗口外壳 · 分页 · 状态栏
 ```
 UI 线程 (STA)                          后台 runspace (STA)
   DispatcherTimer 400ms                 探测循环 + 命令执行
-    ├ 排空 $queue（结果/回执）           ├ Get-Service 批量查询
+  │ 派活 $queue，回收结果/跑推进           │ sc query 枚举服务状态
     ├ 排空 $msgQueue（失败文案）          ├ ForEach-Object -Parallel 探测 TCP/HTTP
     ├ 排空 $healthQueue → 落盘            └ 执行 $cmdQueue 里的启停/删除
     └ 刷新卡片/时钟/新鲜度

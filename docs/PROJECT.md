@@ -51,15 +51,15 @@ service-manager-gui.ps1（主入口：CLI 分支 + 提权 + 模块加载 + 窗�
 │                     sc.exe 路径解析（Get-ScExe，见设计决策 10）
 │                     （Convert-ScExitCode / Convert-ServiceStatus）、删除序列（Invoke-ServiceRemove）、
 │                     删除/注册的实证复核（Test-ServiceGone / Test-ServicePresent）——均只此一份
-├─ lib/poll.ps1       后台 runspace 脚本块：Get-Service 批量 + TcpClient + HttpClient 并行探测
+├─ lib/poll.ps1        后台 runspace 脚本块：sc.exe query 状态（硬超时）+ TcpClient + HttpClient 分片探测
 ├─ lib/add-svc.ps1    CLI 入口 Add-SvcFromCli（-Add 分支用）
 ├─ lib/tray.ps1       可选托盘（纯函数 Get-CloseAction/Get-MinimizeAction + 惰性 Initialize-Tray）
 ├─ lib/card.ps1       卡片构建 + 双击防抖 + 过渡态保护（Set-CardTransition）+ 右键菜单
 └─ lib/xaml.ps1       主窗口外壳（标题栏 + 工具栏 + 分页 + 状态栏）
 ```
 
-加载顺序在 `service-manager-gui.ps1` 里固定：config → theme → util → svc-input → nssm →
-add-svc → logview → dialogs → tray → poll → card → xaml。config 必须最早（Write-CrashLog
+加载顺序在 `service-manager-gui.ps1` 里固定：config → theme → health → util → svc-input → nssm →
+add-svc → logview → webview → dialogs → tray → poll → card → xaml。config 必须最早（Write-CrashLog
 首次调用在提权检测处，早于模块加载区）。`nssm.ps1` 与 `add-svc.ps1` 自加载其依赖
 （`svc-input.ps1` / `svc-common.ps1`），单独点源也能工作。card 与 xaml 自加载 config
 是为单测 dot-source 时不依赖完整顺序。
@@ -78,7 +78,7 @@ PowerShell 函数体内符号是**调用时**解析，只要全部模块加载�
 
 ```
 后台 runspace（poll.ps1 脚本块）
-  循环：Invoke-PendingCommands → 拷 svc 快照 → 批量 Get-Service → 收集 → 并行探测 → 入队
+循环：Invoke-PendingCommands → 取 svc 键 → sc query 枚举状态 → 收集 → 分片探测 → 回调
                                         ↓
                           ConcurrentQueue $sync.queue
                                         ↓
@@ -110,7 +110,7 @@ UI DispatcherTimer → ack 分支 → 解封按钮 + 冷却
 
 ### 1. UI 线程不碰 I/O
 
-`Get-Service` 拉 NetTCPIP CIM provider（常驻 +10MB）、`TcpClient` 可能阻塞、`HttpClient` 可能超时 3 秒——任何一个放 UI 线程都会冻结界面。全部挪到后台 runspace，结果经 ConcurrentQueue 回 UI 侧 DispatcherTimer 取。
+服务状态查询（`Get-Service` 走 CIM provider，常驻 +10MB；`sc.exe query` 起进程阻塞但可加硬超时），`TcpClient` 连接、`HttpClient` 默认超时 3 秒——任何一个在 UI 线程都会冻界面。全部挪到后台 runspace，结果经 ConcurrentQueue 由 UI 的 DispatcherTimer 取走。
 
 ### 2. svc-common.ps1 只此一份
 
@@ -184,7 +184,7 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 
 ### 10. 外部命令按全路径解析，不裸调
 
-`nssm.exe` 走三档解析（`$env:NSSM_PATH` → `Get-Command` → scoop 默认路径），`sc.exe` 由 `Get-ScExe` 解析（`$sync.scExe` 注入 → `%SystemRoot%\System32\sc.exe` → 裸名兜底）。
+`nssm.exe` 按两个固定候选解析，顺序取先存在的 `C:\Program Files\nssm\nssm.exe` → `C:\Program Files\nssm\win64\nssm.exe`（见下方「NSSM 与 pwsh 只认固定路径」），`sc.exe` 由 `Get-ScExe` 解析（`$sync.scExe` 注入 → `%SystemRoot%\System32\sc.exe` → 裸名兜底）。
 
 起因（2026-10-28 实测）：本机 `C:\Windows\System32` **既不在机器 PATH 也不在用户 PATH**，`Get-Command` 对 `sc.exe` / `cmd.exe` / `where.exe` 全部返回空。而裸调一个不存在的命令时，PowerShell 抛 CommandNotFoundException 的同时 **`$LASTEXITCODE` 保留的是上一条命令的码**——`Test-ServiceGone` / `Test-ServicePresent` / `Invoke-Sc` 全靠退出码下结论，假码会把「删失败」判成成功。实测：裸调后 `$LASTEXITCODE` 停在伪造的 42，经 `Get-ScExe` 解析后才是真实的 1060。
 
@@ -206,10 +206,10 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 - **外部命令有 60s 超时（`$sync.extCommandTimeoutMs`）**：2026-10-29 加。原来 `ReadToEnd()` 同步读，`sc.exe` / `nssm.exe` 卡住时后台命令队列永久停摆，且不抛异常、crash log 里没有线索。现在异步读 + `WaitForExit(timeout)`，超时 `Kill(entireProcessTree)` 并返回 `exit=-1`。
 - **后台 runspace 死亡会被检测**：每帧判 `$script:bgHandle.IsCompleted`，完成即写一行 crash log、状态栏提示「后台已停止响应，状态不可用」，并把**所有**卡片收敛到「未知」且禁用动作——只改「查询中」会让其余卡继续显示上一次的「运行中/正常」，等于整屏在说谎。另外「陈旧样本」（超过 `2 × ProbeIntervalMs` 没新结果）走独立判定 `Update-CardFreshness`，同样降级为未知。
 - **`Show-SecurityCheck` 的 ACL 判定是启发式**：只认 `Users`/`Everyone`/`Authenticated Users`/AppContainer SID 这几类宽泛主体 + `Write|Modify|FullControl`。目录若被改写为其它宽松形态（如某个具体用户账户 FullControl），判定为「否」。不是权威审计。
-- **NSSM 与 pwsh 只认固定路径**：2026-11-04 改。原先按 `NSSM_PATH` → PATH → scoop 三档探测，`launch.vbs` 也有 scoop 回退；两者都让标准用户能决定管理员进程执行哪个二进制（预置一个副本，等你下次 UAC 同意）。现在 GUI 只认 `C:\Program Files\nssm\nssm.exe`，启动器只认 `C:\Program Files\PowerShell\7\pwsh.exe`，缺失时明确报错并给出该路径。**不加签名校验**：本机 scoop 包的 `nssm.exe` 实测 `NotSigned`，加了会误报所有正常安装。
+- **NSSM 与 pwsh 只认固定路径**：2026-11-04 改。原先按 `NSSM_PATH` → PATH → scoop 三档探测，`launch.vbs` 也有 scoop 回退；两者都让标准用户能决定管理员进程执行哪个二进制（预置一个副本，等你下次 UAC 同意）。现在 GUI 只认两个固定候选（按序取先存在的 `C:\Program Files\nssm\nssm.exe` → `C:\Program Files\nssm\win64\nssm.exe`），启动器只认 `C:\Program Files\PowerShell\7\pwsh.exe`，缺失时明确报错并给出第一个候选路径。**不加签名校验**：本机 scoop 包的 `nssm.exe` 实测 `NotSigned`，加了会误报所有正常安装。
 - **提权面的真实边界是 ACL，不是自检**：启动时对程序目录、`lib`、NSSM 目录跑 `Test-DirAclPermissive`，可写则写 crash log + 状态栏提示；添加服务时若 `LocalSystem` + exe 目录可写，再弹一次告警。这些都只是「装错能被发现」。真正的边界由 `scripts/deploy-local.ps1` 建立：程序放管理员独占目录，`Users` 只读执行。
 - **`Open-PanelUrl` 只放行 `http` / `https`**：2026-10-29 改为白名单。原实现直接 `Start-Process` 任意 URI，`file:///` 或自定义协议在提权 GUI 下等于以管理员**执行**任意程序（不只是「打开网页」）。非 http/https 的地址现在只更新状态栏，不启动。
-- **健康探测有 `probe` 口径（`auto` / `tcp` / `http`），关闭按钮不再看健康**：2026-10-30 加。原实现只有「TCP 通 + HTTP 200」一条路，非 HTTP 服务（数据库、gRPC、纯 socket）永远不是绿点；更糟的是 `Test-CardCanStop` 把健康一起判进去，这类服务的「关闭」按钮被永久禁用，只剩右键菜单。现在 `probe: tcp`（或 `url` 为空）时 TCP 通即正常，健康门闩只留在双击路径。
+- **健康探测有 `probe` 口径（`auto` / `tcp` / `http` / `none`），关闭按钮不再看健康**：2026-10-30 加。原实现只有「TCP 通 + HTTP 200」一条路，非 HTTP 服务（数据库、gRPC、纯 socket）永远不是绿点；更糟的是 `Test-CardCanStop` 把健康一起判进去，这类服务的「关闭」按钮被永久禁用，只剩右键菜单。现在 `probe: tcp`（或 `url` 为空）时 TCP 通即正常，健康门闩只留在双击路径。
 - **`services.json` 的三道写入门闩**：解析失败拒写（原有）、顶层形状必须是对象（2026-10-30 加：`[]` / `"x"` 这类合法 JSON 取不到键，旧实现返回空清单并当成功，下一次保存把原文件覆盖成 `{}`）、载入后 mtime 变化拒写（手改或另一个会话抢先写时不让全量写回抹掉别人的改动）。写前顺手把上一版留成 `services.json.bak`。
 - **`config.json` 数值有区间校验**：2026-10-30 加。`TryParse` 只证明是整数，`TcpTimeoutMs: -1` 会让 `WaitOne` / `CancellationTokenSource` 变成无限等待（后台 runspace 从此不返回），`PerPage: 0` 会让分页做除零（窗口根本起不来）。越界回落默认值 + 弹提示。
 - **健康历史只在「变化」时记一条**：`logs/health/health-YYYYMMDD.ndjson`，没有心跳/采样点，所以「一直平稳」在历史里是空白而不是一行行「正常」。这是刻意的——4 秒一拍全记一天几万行，读的时候全是噪声。写入在后台 runspace（UI 线程不碰 I/O），`HealthHistory=false` 时连队列都不建。保留天数用 `HealthKeepDays` 按天删文件。
@@ -230,6 +230,6 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 
 ## 测试
 
-`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 自动收集的 `tests/test-*.ps1`（当前 20 项；`test-helpers.ps1` 是夹具）。详见 README「测试与截图」节。
+`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 自动收集的 `tests/test-*.ps1`（当前 30 项；`test-helpers.ps1` 是夹具）。详见 README「测试与截图」节。
 
 CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）。

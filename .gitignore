@@ -32,3 +32,6 @@ dist/
 
 # PowerShell
 *.ps1.bak
+
+# 一次性过程记录（任务规范卡 / 会话草稿），不进 git
+docs/session/

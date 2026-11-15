@@ -45,7 +45,7 @@ pwsh -NoProfile -File scripts/deploy-local.ps1
 
 **UAC 与提权后的行为**：UAC 被拒时 `launch.vbs` 弹「需要管理员权限」提示并以退出码 1 结束，非管理员入口原样透传，日志里有 `Elevation launcher exited: code=1`。提权后的 GUI 由管理员进程持有，普通权限的任务管理器**结束不掉**它（UIPI 限制）——退出请用窗口 ✕ 或托盘「退出」。
 
-NSSM 只从 `C:\Program Files\nssm\nssm.exe` 加载（部署脚本负责放过去与收 ACL）；找不到时弹窗给出固定路径，不回落到用户可写的副本。进程声明 PerMonitorV2，多屏不同缩放下不糊。
+NSSM 按两个固定候选加载，取先命中的：`C:\Program Files\nssm\nssm.exe`（`scripts/deploy-local.ps1` 放这里并收 ACL）→ `C:\Program Files\nssm\win64\nssm.exe`；两个都不存在时弹窗「未找到 NSSM」并给出第一个候选路径，退出码 1，不回落到用户可写的副本。进程声明 PerMonitorV2，多屏不同缩放下不糊。
 
 **提权面**：`launch.vbs` 优先用 `C:\Program Files\PowerShell\7\pwsh.exe`，scoop 的 shim 只是次选——scoop 装在用户目录，中等完整性进程能替换它，下一次双击 + UAC 就是管理员权限。NSSM 也一样：启动时检查 `nssm.exe` 所在目录的 ACL，普通用户可写就在状态栏提示「建议改装到系统目录」（不阻断，scoop 默认就这么装）。
 
@@ -63,7 +63,7 @@ NSSM 只从 `C:\Program Files\nssm\nssm.exe` 加载（部署脚本负责放过�
 | `lib/security-check.ps1` | 提权边界自检：exe 目录可写性、引号、ACL 宽面判定 |
 | `lib/acl.ps1` | ACL 判据唯一来源：宽面主体名单 + 写能力（GUI 自检 / 注册表收紧脚本 / 部署门禁共用） |
 | `lib/shutdown.ps1` | 关窗收尾：停后台 runspace、等回执、清日志档 |
-| `lib/poll.ps1` | 后台 runspace 探测脚本块（Get-Service 批量 + TcpClient + HttpClient 健康探测）+ 命令执行 |
+| `lib/poll.ps1` | 后台 runspace 探测脚本块（`sc.exe query` 状态，带硬超时 + TcpClient + HttpClient 分片探测）+ 命令执行 |
 | `lib/svc-common.ps1` | UI 线程与后台 runspace 共用的原语（`Wait-Stopped` / `Invoke-ServiceRemove` / 退出码与状态中文映射 / `Invoke-ExternalQuiet`）——poll.ps1 构造 runspace 时前置其文本 |
 | `lib/svc-input.ps1` | 纯函数族：输入校验、env 解析、敏感键名检测、NSSM set 参数组装（可单独点源，不加载 WPF/config） |
 | `lib/nssm.ps1` | NSSM 注册/删除：`nssm-set` / `Install-NssmService` / `Remove-NssmService` |
@@ -83,6 +83,9 @@ NSSM 只从 `C:\Program Files\nssm\nssm.exe` 加载（部署脚本负责放过�
 | `config.example.json` | 可调常量示例（复制为 `config.json`；后者已 git 忽略） |
 | `scripts/set-service-params-acl.ps1` | 收紧 NSSM 服务 `Parameters` 注册表键 ACL（见下） |
 | `scripts/package-release.ps1` | 打发布 zip（`dist/service-manager-<VERSION>.zip`，不含本机清单/配置） |
+| `scripts/deploy-local.ps1` | 一键部署到 `C:\Program Files\ServiceManager`：备份 → 复制 → 逐文件 SHA256 → ACL → 自检（模块清单从入口 dot-source 派生） |
+| `scripts/deploy.cmd` | 双击入口：转调 `deploy-local.ps1`（普通权限即可，脚本自己提权） |
+| `scripts/lib-entry-modules.ps1` | 部署与打包共用的入口解析 + 完整性断言（正负向夹具见 `tests/test-entry-modules.ps1`） |
 | `VERSION` | 当前版本号；打 tag `v<version>` 触发 `.github/workflows/release.yml` |
 | `PSScriptAnalyzerSettings.psd1` | 静态分析规则集与每条豁免的理由（CI 与本地共用） |
 | `tests/run-all.ps1` | 语法检查 + 全部回归测试 |
@@ -90,7 +93,11 @@ NSSM 只从 `C:\Program Files\nssm\nssm.exe` 加载（部署脚本负责放过�
 | `tests/make-screenshot.ps1` | 离屏渲染主窗口导出 `assets/screenshot.png` |
 | `tests/make-demo.ps1` | 离屏渲染 12 帧 PNG 序列，供 ffmpeg 合成 `assets/demo.gif` |
 | `docs/IMPLEMENTATION-NOTES.md` | 实现注记：代码里的 `§小节名` 指针指向这里（踩坑记录、实测数据、为什么这么写） |
+| `docs/PROJECT.md` | 架构与决策真相：模块拓扑、状态机、为什么这么做 |
+| `docs/ARCHITECTURE.md` | 运行时结构图（线程/runspace、数据流、状态来源） |
+| `CHANGELOG.md` | 每个版本改了什么、为什么；0.9.0 及以前已拆到 `docs/CHANGELOG-archive.md` |
 | `logs/` | NSSM 服务运行日志（`.out.log` / `.err.log`，git 忽略） |
+| `docs/`、`CHANGELOG.md` | 只在仓库内：发布包（`scripts/package-release.ps1`）与部署目录（`scripts/deploy-local.ps1`）都不含它们 |
 
 ## 功能
 
@@ -101,7 +108,7 @@ NSSM 只从 `C:\Program Files\nssm\nssm.exe` 加载（部署脚本负责放过�
 - 按钮各管一个方向（启动只在未运行时可点、关闭只在运行中可点，过渡态两个都禁用，**不看健康**——非 HTTP 服务也要能关）；双击卡片仍是切换（8 秒冷却 + 健康门闩：只有运行中且健康正常才允许双击关闭，健康未过时提示改用按钮或右键）
 - 过渡态保护：启动中/停止中时，在途的旧探测不覆盖用户刚触发的过渡态，直到同方向终态探测到达才收尾
 - 右键卡片 = 启动/停止/重启/面板/日志/安全检查/删除（删除需输入完整服务名；走后台命令队列，UI 不冻结）
-- 后台 runspace 探测（批量 `Get-Service` + 并行 TCP/HTTP），UI 线程只取结果刷卡片；命令入队并唤醒后台，每次探测之间优先处理
+- 后台 runspace 探测（批量 `sc query` 枚举状态 + 端口 TCP/HTTP），UI 线程只取结果刷卡片；慢接口有硬上限，后台与前台互不等待。
 - 后台不会因为一条命令而瘫痪：单条命令抛异常、外部进程挂住（`ExtCommandTimeoutMs` 超时即 Kill）、runspace 整个退出——三种情况都有对应处理，最后一种会在状态栏提示重启
 - 中间态（启动中/停止中/暂停中/继续中）状态查询 1 秒一次，健康探测仍按 4 秒限流，不互相拖累
 - `sc.exe` 失败时状态栏给中文原因（1056 已在运行 / 1060 服务未安装 等），不是裸数字
@@ -237,7 +244,7 @@ pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName <服务名
 ## 依赖
 
 - PowerShell 7（`pwsh`，必须在 `C:\Program Files\PowerShell\7\`）
-- NSSM 2.24（必须在 `C:\Program Files\nssm\nssm.exe`，由 `scripts/deploy-local.ps1` 固定）
+- NSSM 2.24（两个候选，按序取先存在的：`C:\Program Files\nssm\nssm.exe` 优先、`C:\Program Files\nssm\win64\nssm.exe` 次选；第一个由 `scripts/deploy-local.ps1` 放置并收 ACL，都没有时启动弹窗并退出 1）
 - `services.json` 里的可执行文件若是 `LocalSystem` 服务，应放在仅管理员可写的目录；添加时会告警
 
 ## 升级与回滚
@@ -275,7 +282,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 ## 测试与截图
 
 ```powershell
-pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 自动收集 tests/test-*.ps1（当前 29 项）
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 自动收集 tests/test-*.ps1（当前 30 项）
 pwsh -NoProfile -File tests/analyze.ps1              # PSScriptAnalyzer（Error/Warning 必须为 0）
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-tmp/，已 git 忽略）
@@ -308,6 +315,14 @@ pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-t
 | `test-reload` | F5 重载：检测外部改动、复用缓存卡、增删差异；过渡态与坏清单拒绝重载 |
 | `test-health` | 只在变化时落一条、按天分文件、最新在前、坏行跳过、按天清理、后台 runspace 消费队列落盘 |
 | `test-batch` | 批量启停按最近探测值筛目标（含翻页外）、只碰终态、停止需确认、无目标不误发 |
+| `test-entry-modules` | 入口模块解析：只认 "$root\lib\*.ps1"、空输入不抛、真实入口逐项存在、deploy/package 共用同一份解析 |
+| `test-add-idempotent` | 已注册但清单缺失时只补参数不重复 install；补参失败弹原因且不下发 start；参数失败时不改 Application；install 跳过 Application 并在失败时回滚 |
+| `test-bg-death` | 后台 runspace 死亡：全卡转未知、按钮禁用、第二帧不重复报告、改按钮也不误刷新 |
+| `test-exit-confirm` | 退出确认只拦过渡态；无可见窗口或 `NSSM_SM_HEADLESS=1` 时不弹框 |
+| `test-freshness` | 30 秒新鲜度、`Stale` 判定、时钟回拨提示、超时转「无响应」 |
+| `test-probe-none` | `probe=none` 无端口服务：注册/启停/端口占用提示/状态显示不发 HTTP |
+| `test-remove-save-fail` | 删除后保存失败回滚、待保存态提示、右键菜单项随状态启用/禁用 |
+| `test-shutdown` | 关窗收尾：后台 runspace 3 秒内停、日志落盘、重复调用幂等 |
 | `test-webview` | token 校验、快照/HTML 转义、loopback 服务器 200/403、非 GET 拒绝、端口占用报错 |
 
 NSSM、服务启停、配置保存及菜单的外部操作都用替身，不会注册测试服务或改 `services.json`。真实 UAC、Mica 效果与 NSSM 生命周期需本机交互验证。

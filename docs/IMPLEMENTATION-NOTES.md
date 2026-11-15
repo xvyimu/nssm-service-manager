@@ -59,7 +59,7 @@ New-Card 与 Update-CardInfo 都要算它——写成一份，免得将来改判
 不能复用 Invoke-CardToggle 的方向推导：失败时服务状态没变，要的是「回到原样」。
 
 $toState / $toHealth 可选覆盖目标态：删除中回执丢失时服务实际状态不明，调用方传
-'未知' 收敛（见 Update-CardData 的删除中分支与 util.ps1 的过渡态 sweep）——回滚到
+'未知' 收敛（见 Update-CardData 的删除中分支与 ui-status.ps1 的过渡态 sweep）——回滚到
 删除前的终态会让卡片显示「运行中」，但服务可能已被删掉。
 
 先落回目标终态，再交给 Update-CardData 走常规渲染——否则过渡态守卫会按旧 ST 拦下这个值。
@@ -259,7 +259,7 @@ server 是顶层循环；拼的是这两份。第一版把 `webview.ps1` 全文�
 窗口刚打开、后台 runspace 死掉或探测被限流时，旧值会让批量朝「其实已经停了」的服务再发 stop，
 刷一串 1056/1062。`at` 缺失的条目当新鲜处理（旧夹具/外部直接写 `svcState` 时不该被静默跳过）。
 
-### 健康历史（health.ps1 + poll.ps1 + util.ps1）
+### 健康历史（health.ps1 + poll.ps1）
 
 事件形状 `{ts,n,st,h}`，一天一个 `health-YYYYMMDD.ndjson`。`Test-HealthChanged` 只放行变化：
 首次观测（prev 都为 `$null`）算变化，之后按 `"$prevState|$prevHealth"` 字符串比对——用对象比较
@@ -286,7 +286,7 @@ server 是顶层循环；拼的是这两份。第一版把 `webview.ps1` 全文�
 扫完，实测 8.8s；只加行级预筛是 1.9s；两层都加后 22MB/30 万行里捞 1 条是 237ms，密集场景（尾部 200
 条）55ms。`test-health` 固定两条断言：20MB 尾部 200 条 < 500ms、4.5MB 稀疏 1 条 < 500ms。
 
-### Test-SvcFileChanged / Invoke-SvcReload（util.ps1）
+### Test-SvcFileChanged / Invoke-SvcReload（svc-store.ps1）
 
 mtime 门闩挡住「手改后全量写回」，但原来只把用户挡在「关闭重开 GUI」。补的出口是 F5：
 tick 里一次 `stat`（不读文件）判外部改动，命中就提示一次并置 `$script:svcFileHintShown`；
@@ -576,6 +576,8 @@ $nssmExe 必须传参——runspace 里 $script:nssm 不可见（NSSM 路径经 
 
 ### Get-ServiceQueryCode
 
+解析只依赖 `SERVICE_NAME:` 与 `STATE : <n>` 两个英文关键字（状态码按 `SERVICE_STATUS.dwCurrentState` 1..7 映射）。2026-11-16 在 zh-CN 系统实测：`sc query` 输出 1140 行，非 ASCII 31 行全部落在 `DISPLAY_NAME`，`SERVICE_NAME` 为 ASCII、`STATE` 行恒为英文数字——所以本地化不会打乱解析。
+
 sc.exe query 的退出码——删除/注册复核共用的**底层原语**（两个谓词只解释码，不重抄调用）。
 0 = 服务存在；1060 = 不存在；1072 = 已标记删除（句柄未全关，内核里已在消失路径上）。
 非管理员也能 query（实测）。
@@ -607,10 +609,13 @@ nssm install 失败也返回 0，见上）。
 单实例互斥名（GUI 占用 + CLI -Add 前检测是否已有 GUI 常驻）。定义在此供两处共用，
 避免 CLI 分支与 GUI 分支各写一份字符串而漂移。
 
-NSSM 探测：优先 env > Get-Command > scoop 安装路径，避免硬编码 scoop。
-NSSM_PATH 只做「存在 + 文件名是 nssm.exe」两项校验，不校验签名/路径——它随后会以管理员
-身份被调用（install/set/remove），只做 Test-Path 会让「指向任意 exe」直接以管理员运行。
-文件名校验挡住最直接的滥用，又不破坏 README 明写的「自备 NSSM 后设 NSSM_PATH」用法。
+NSSM 路径：按顺序取两个固定候选 `C:\Program Files\nssm\nssm.exe` → `C:\Program Files\nssm\win64\nssm.exe`（固定路径；不读 `NSSM_PATH` / PATH / scoop）。部署脚本负责把 nssm.exe 放到第一个候选并收 ACL。
+目录与 ACL 的判据在 `lib/acl.ps1`；模型是「管理员独占目录」，普通用户可写时状态栏提示，不自动修。
+启动时 NSSM 不存在则弹窗给出固定路径并退出，不回落到用户可写的副本。
+
+**2026-11-15 实测（nssm 2.24-103-gdee49fc，临时服务 `sm-smoke-*`，验完立即 `remove`，`sc query` 返回 1060）**：
+`nssm set <服务> Application <新 exe>` 返回 0，`nssm get <服务> Application` 回读为新值；同一服务的 `AppParameters` / `AppDirectory` 实测未被清空或改写。
+因此 `Set-NssmServiceParams` 先写其余参数、`Application` 最后写：参数阶段失败时 exe 还是旧的，服务不会被指向半新状态；重试会把整份参数重写一遍（幂等）。不做逐键快照——`nssm get` 对 `AppExit` 要 subparameter、环境变量是多行，读不全反而会还原错。
 
 ### config 的最先加载与日志根
 
@@ -628,7 +633,7 @@ NSSM_PATH 只做「存在 + 文件名是 nssm.exe」两项校验，不校验签�
 CLI -Add 与 GUI 都全量写回 services.json（Save-Svc 无合并语义，见 PROJECT.md 决策 3）。
 若 GUI 常驻，它的内存副本是启动时读的；CLI 加完服务后 GUI 下一次保存会把这条覆盖掉
 ——NSSM 服务仍在跑，但配置里没了、界面也不显示。故 GUI 在跑时拒绝 CLI 写入，让调用方
-改用 GUI「添加」或先关 GUI。判据见 util.ps1 的 Test-GuiInstanceRunning。
+改用 GUI「添加」或先关 GUI。判据见 ui-status.ps1 的 Test-GuiInstanceRunning。
 
 services.json 解析失败时 Load-Svc 会回落到 services.example.json。GUI 有弹框，CLI 没有——
 若继续执行，Add-SvcFromCli 末尾的 Save-Svc 会把**示例清单 + 新服务**写回真实文件，
@@ -879,7 +884,7 @@ type: 2=Mica(主窗口) 3=Acrylic(瞬时) 4=TabbedMica
 
 ### LogKeepCount
 
-轮转日志保留份数（util.ps1 Remove-RotatedLogs）——
+轮转日志保留份数（log-retention.ps1 Remove-RotatedLogs）——
 口径是**按日志目录**各留前 N 份：共用 $logDir 的服务算一个目录，
 有独立 AppStdout 目录的服务（如 ComfyUI）各算一份配额
 
@@ -919,7 +924,7 @@ AppRotateFiles=1 会在**每次服务启动**时轮转一次：频繁重启的�
 连异常都没有。取结果本身也给了 2 秒上界：`WaitForExit` 只等进程退出、不等管道 EOF，
 孙进程继承了 stdout 句柄时 `.Result` 仍会一直等。
 
-### 清单解析失败时拒绝写盘（util.ps1）
+### 清单解析失败时拒绝写盘（svc-store.ps1）
 
 `Save-Svc` 开头判 `$script:svcLoadFailed`，为真直接抛。修前只有 CLI 分支有门闩，
 GUI 在清单解析失败后点一次增删，就把「示例清单 + 新服务」写回真实文件——当时 `File.Replace`
@@ -936,9 +941,9 @@ GUI 在清单解析失败后点一次增删，就把「示例清单 + 新服务�
 从此不返回），`PerPage: 0` 会让分页做除零（窗口起不来，只留一行 crash log）。
 未知键也从静默忽略改成提示——拼错 `TcpTimeout` 时原来毫无反馈。
 
-### 健康口径 auto / tcp（poll.ps1 + util.ps1）
+### 健康口径 auto / tcp（poll.ps1 + card.ps1）
 
-`services.json` 每服务可选 `probe`: `auto`（缺省）/ `tcp` / `http`。`tcp` 或 `url` 为空时
+`services.json` 每个服务可选 `probe`: `auto`（缺省）/ `tcp` / `http` / `none`（无端口服务，跳过端口与 HTTP 判定）。`tcp` 或 `url` 为空时
 TCP 通即「正常」，不发 HTTP；其余照旧 TCP 通后 `GET url` 要 200。
 
 修前只有 HTTP 一条路，非 HTTP 服务（数据库、gRPC、纯 socket 守护）永远不是绿点；更糟的是
@@ -952,17 +957,17 @@ TCP 通即「正常」，不发 HTTP；其余照旧 TCP 通后 `GET url` 要 200
 `IsPathRooted` 说 true 但它相对的是 C: 盘当前目录）、非文件（`-PathType Leaf`，
 `Test-Path` 对目录也返回 true）。UNC 注册成 LocalSystem 服务后，共享写者即可在本机拿到 SYSTEM。
 
-### 面板地址只放行 http/https（util.ps1）
+### 面板地址只放行 http/https（ui-status.ps1）
 
 `Open-PanelUrl` 对非 http/https 只更新状态栏、不启动。修前直接 `Start-Process` 任意 URI，
 `file:///` 或自定义协议在提权 GUI 下等于以管理员**执行**任意程序，不只是「打开网页」。
 
-### 轮转档正则锚到结尾（util.ps1）
+### 轮转档正则锚到结尾（log-retention.ps1）
 
 `'\.(out|err)-\d{8}(T\d{6}\.\d{3})?$'`。修前不锚定，服务名本身含 `.err-20260101` 时，
 当前日志 `MySvc.err-20260101.out.log` 也会命中，服务停着时当前日志被真删。
 
-### 后台死亡检测（util.ps1）
+### 后台死亡检测（ui-status.ps1）
 
 每帧判 `$script:bgHandle.IsCompleted`，完成即写 crash log、状态栏提示「后台已停止响应，
 请重启工具」、把仍停在「查询中」的卡片收敛到「未知」，并让自动刷新不再覆盖这条提示——

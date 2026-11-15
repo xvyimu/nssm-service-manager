@@ -21,7 +21,7 @@ pwsh -NoProfile -File scripts/deploy-local.ps1
 # 启动 GUI（会弹 UAC；NSSM/sc.exe 需要管理员）
 pwsh -NoProfile -File service-manager-gui.ps1
 
-# 装依赖（NSSM 走 scoop，或自行放置后设 NSSM_PATH）
+# 装依赖（NSSM 只认 C:\Program Files\nssm\nssm.exe；deploy-local.ps1 从 scoop 或已装位置复制过去）
 scoop install nssm
 ```
 
@@ -35,7 +35,7 @@ service-manager-gui.ps1   # 主入口：CLI 分支 + 提权 + 模块加载 + 窗
 launch.vbs                # 双击入口（wscript 无控制台 → runas pwsh → 管理员 GUI）
 lib/                      # 模块（config/theme/util/acl/poll/svc-common/svc-input/nssm/add-svc/dialogs/logview/tray/card/xaml/health/webview*；
                           #  util.ps1 只是聚合点，清单读写/状态栏/日志清理/安全自检/关窗收尾分别在 svc-store/ui-status/log-retention/security-check/shutdown）
-scripts/                  # 独立脚本（set-service-params-acl.ps1 / package-release.ps1）
+scripts/                  # 独立脚本（deploy-local.ps1 / deploy.cmd / package-release.ps1 / set-service-params-acl.ps1）
 tests/                    # 回归测试（run-all.ps1 汇总；test-*.ps1 单项）
 docs/                     # PROJECT.md（架构与决策）/ CHANGELOG.md / HANDOFF.md
 config.example.json       # 配置示例（实配 config.json 已 gitignore）
