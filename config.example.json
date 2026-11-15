@@ -9,6 +9,7 @@
   "TransitionHardCapFactor": 10,
   "WaitStoppedTimeoutMs": 6000,
   "ExtCommandTimeoutMs":  60000,
+  "SvcStateTimeoutMs":    3000,
   "LogKeepCount":         10,
   "LogKeepDays":          14,
   "HealthHistory":        true,

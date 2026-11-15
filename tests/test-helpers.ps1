@@ -1,6 +1,24 @@
 # tests/test-helpers.ps1 — 跨测试共享的 runspace 夹具
 # 被 dot-source，不需 #requires（避免被 run-all.ps1 当独立脚本解析）。
 
+# GUI 入口（service-manager-gui.ps1）定义的副作用函数：单测只需要符号存在，不落盘、不动后台。
+# Stop-Background 的空桩会盖掉 lib/shutdown.ps1 的真实现——要真实现的用例（test-shutdown.ps1）
+# 必须先点源本文件、再点源 lib。
+function Write-CrashLog([string]$m) { }
+function Stop-Background { }
+
+# 临时目录 / 假 exe：先建后用的夹具，前缀由调用方给，排障时一眼看出归属。
+function New-TestTempDir([string]$prefix) {
+  $dir = Join-Path ([IO.Path]::GetTempPath()) "$prefix-$([guid]::NewGuid().ToString('N'))"
+  New-Item -ItemType Directory -Path $dir -Force | Out-Null
+  $dir
+}
+function New-FakeExe([string]$prefix = 'sm-fake') {
+  $exe = Join-Path ([IO.Path]::GetTempPath()) "$prefix-$([guid]::NewGuid().ToString('N')).exe"
+  [IO.File]::WriteAllText($exe, 'placeholder', [Text.UTF8Encoding]::new($false))
+  $exe
+}
+
 # 起 runspace 跑 poll 脚本块，mock Get-Service 返回指定 Status。
 # $count=服务数，$serviceStatus=mock 返回状态（'Stopped'/'Running'），$delayMs=每次 Get-Service 延迟。
 # $extraSyncKeys=额外塞进 $shared 的键（如 waitStoppedTimeoutMs），BeginInvoke 前合并——poll 开头只读一次。
@@ -43,8 +61,8 @@ function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$d
   $mocks = @"
 function Get-Service {
   [CmdletBinding()]param([string[]]`$Name)
-  `$sync.probeCount++
-  [void]`$sync.probeStarted.Set()
+  # 探测计数不在这里：poll 已改用 Get-SvcStateQuiet(sc query) 拿状态，
+  # 计数点移到下面 Invoke-TestSc 的 query 分支。这里只剩 Wait-Stopped 的轮询会用。
   if (`$sync.delayMs) { Start-Sleep -Milliseconds `$sync.delayMs }
   `$map = @{ $statusLiteral }
   foreach (`$n in `$Name) {
@@ -55,17 +73,44 @@ function Get-Service {
 function Invoke-ThrowingSc {
   # 每次调用都抛，模拟 sc.exe 启动失败（路径失效/EDR 拦子进程/句柄耗尽）。
   # 用 extraSyncKeys @{ scExe = 'Invoke-ThrowingSc' } 注入，验「单条命令抛异常不许终结轮询」。
+  # 状态查询也走这个替身，所以计数要在这里做——否则 probeStarted 永远等不到，测的就不是原命题了。
+  `$sync.probeCount++
+  [void]`$sync.probeStarted.Set()
   throw 'simulated sc.exe failure'
 }
 function Invoke-TestSc {
-  `$sync.executed.Enqueue([pscustomobject]@{action=`$args[0];name=`$args[1];probes=`$sync.probeCount})
-  [void]`$sync.executedReady.Set()
   if (`$args[0] -eq 'query') {
+    # 状态探测的计数点（poll 的 Get-SvcStateMapQuiet / Get-SvcStateQuiet 都落到这里）。
+    # 不带名字 = 全量枚举：把全部夹具服务连成 sc.exe query 的块；带名字 = 单个服务。
+    `$sync.probeCount++
+    [void]`$sync.probeStarted.Set()
+    if (`$sync.delayMs) { Start-Sleep -Milliseconds `$sync.delayMs }
     # Test-ServicePresent / Test-ServiceGone 走这里。$sync.serviceGone=$true 时模拟
     # 「服务已从 SCM 消失」（1060）；否则当它存在。默认 $null -> 存在（0）。
-    `$global:LASTEXITCODE = if (`$sync.serviceGone) { 1060 } else { 0 }
+    if (`$sync.serviceGone) { `$global:LASTEXITCODE = 1060; return }
+    `$map = @{ $statusLiteral }
+    `$names = @()
+    if (`$args.Count -gt 1 -and `$args[1]) { `$names = @([string]`$args[1]) } else { `$names = @(`$sync.svc.Keys) }
+    `$global:LASTEXITCODE = 0
+    foreach (`$n in `$names) {
+      `$st = if (`$map.ContainsKey([string]`$n)) { `$map[[string]`$n] } else { '$serviceStatus' }
+      `$code = switch (`$st) {
+        'Running'         { 4 }
+        'StartPending'    { 2 }
+        'StopPending'     { 3 }
+        'ContinuePending' { 5 }
+        'PausePending'    { 6 }
+        'Paused'          { 7 }
+        default           { 1 }
+      }
+      "SERVICE_NAME: `$n"
+      '        TYPE               : 10  WIN32_OWN_PROCESS'
+      "        STATE              : `$code  `$(`$st.ToUpper())"
+    }
     return
   }
+  `$sync.executed.Enqueue([pscustomobject]@{action=`$args[0];name=`$args[1];probes=`$sync.probeCount})
+  [void]`$sync.executedReady.Set()
   `$global:LASTEXITCODE = if (`$sync.scExitCode) { `$sync.scExitCode } else { 0 }
 }
 # 故意不再定义 sc.exe 的替身：生产代码必须经 Get-ScExe 解析（本机 System32 不在 PATH，
@@ -111,3 +156,6 @@ function Wait-FakePollAck($worker, [int]$TimeoutSec = 4) {
   }
   $null
 }
+
+# 断言：各测试不再各自复制一份；dot-source 本文件后即可使用。
+function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }

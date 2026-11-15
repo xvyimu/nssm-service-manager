@@ -5,7 +5,7 @@
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 . (Join-Path $RepoRoot 'lib/poll.ps1')
-function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
 # 只 listen、从不回话的端口：TCP 握手由内核 backlog 完成，HTTP 永远等不到响应。
 # 这正是数据库端口的形态——旧实现下 HTTP 那档必然卡满超时。
@@ -29,12 +29,19 @@ $shared = [hashtable]::Synchronized(@{
   httpTimeoutMs = 6000
 })
 $mock = @'
-function Get-Service {
-  [CmdletBinding()]param([string[]]$Name)
-  foreach ($n in $Name) { [pscustomobject]@{ Name = $n; Status = 'Running' } }
+function Invoke-TestSc {
+  # poll 用 Get-SvcStateQuiet / Get-SvcStateMapQuiet 拿状态（sc.exe query），
+  # 不再调 Get-Service：这里必须吐 STATE 块，否则服务被判「未安装」，根本不进健康探测。
+  $global:LASTEXITCODE = 0
+  if ($args[0] -ne 'query') { return }
+  $names = @()
+  if ($args[1]) { $names = @([string]$args[1]) } else { $names = @($sync.svc.Keys) }
+  foreach ($n in $names) {
+    "SERVICE_NAME: $n"
+    '        STATE              : 4  RUNNING'
+  }
 }
 function Invoke-TestNssm { 0 }
-function Invoke-TestSc { $global:LASTEXITCODE = 0 }
 '@
 
 $rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState = 'STA'; $rs.Open()

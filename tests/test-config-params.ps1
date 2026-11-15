@@ -4,14 +4,10 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $RepoRoot 'lib/config.ps1')
 . (Join-Path $RepoRoot 'lib/poll.ps1')
 . (Join-Path $RepoRoot 'tests/test-helpers.ps1')
-function Assert($condition, [string]$message) {
-  if (-not $condition) { throw $message }
-}
 
 # 任务 C 配置参数化回归：超时/冷却/轮转阈值从 config.json 读，
 # 同时确认 runspace 脚本块对未注入的键回落默认值（向后兼容测试夹具）。
-$testsPath = Join-Path ([IO.Path]::GetTempPath()) "sm-config-param-test-$([guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Force $testsPath | Out-Null
+$testsPath = New-TestTempDir 'sm-config-param-test'
 $originalRepoConfig = Join-Path $RepoRoot 'config.json'
 $backupRepoConfig = $null
 try {
@@ -43,7 +39,7 @@ try {
   Assert ($script:config.LogKeepCount -eq 3) 'LogKeepCount not overridden.'
   Assert ($script:config.LogKeepDays -eq 2) 'LogKeepDays not overridden.'
   Assert ($script:config.LogDir -eq 'C:\sm-test-logs') 'LogDir not overridden.'
-  # 轮询/探测节奏与 NSSM 参数收口键（原硬编码在 poll.ps1 / svc-common.ps1 / Get-NssmSetSpec）
+  # 轮询/探测节奏与 NSSM 参数收口键
   Assert ($script:config.ProbeThrottleLimit -eq 4) 'ProbeThrottleLimit not overridden.'
   Assert ($script:config.ProbeIntervalMs -eq 1111) 'ProbeIntervalMs not overridden.'
   Assert ($script:config.ProbeIdleMs -eq 2222) 'ProbeIdleMs not overridden.'

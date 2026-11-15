@@ -13,7 +13,7 @@ $ErrorActionPreference='Stop'
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Xaml
 foreach ($module in 'theme','util','card','xaml','dialogs') { . (Join-Path $RepoRoot "lib/$module.ps1") }
 . (Join-Path $RepoRoot 'lib/poll.ps1')
-function Assert($condition,[string]$message) { if (-not $condition) { throw $message } }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
 # ---- 1. Read-SvcFile 保留 per-service 字段 ----
 $tmp = Join-Path ([IO.Path]::GetTempPath()) "sm-per-svc-$([guid]::NewGuid().ToString('N')).json"
@@ -71,8 +71,7 @@ try {
 } finally { Remove-Item -LiteralPath $tmpCaps -Force -EA SilentlyContinue }
 
 # ---- 1b. 一个坏字段不得让整份清单退回示例（这是会丢数据的路径）----
-$dir = Join-Path ([IO.Path]::GetTempPath()) "sm-loadsvc-$([guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$dir = New-TestTempDir 'sm-loadsvc'
 try {
   $cfg = Join-Path $dir 'services.json'
   [IO.File]::WriteAllText($cfg, @'
@@ -151,7 +150,6 @@ Write-Output 'PASS: per-service overrides survive read/save round-trip; a bad ov
 # ---- 2/3. 卡片阈值与 StartPending 刷新 ----
 $script:sync = @{ wake = [Threading.AutoResetEvent]::new($false) }
 $script:cmdQueue = [Collections.Concurrent.ConcurrentQueue[object]]::new()
-function Stop-Background {}
 $script:svc = [ordered]@{
   SlowAI = @{ port=8188; url='http://127.0.0.1:8188'; toggleTimeoutMs=180000 }
   Quick  = @{ port=8081; url='http://127.0.0.1:8081' }
@@ -219,15 +217,26 @@ $shared = [hashtable]::Synchronized(@{
   msg   = [Collections.Concurrent.ConcurrentQueue[string]]::new()
   wake  = [Threading.AutoResetEvent]::new($false)
   nssm  = 'Invoke-TestNssm'
+  # 状态查询走 sc.exe：必须注入替身名，否则 runspace 拿全路径调真 sc.exe →
+  # 假服务被判「未安装」，这条用例就变成了假绿（探测根本没跑）。
+  scExe = 'Invoke-TestSc'
   httpTimeoutMs = 6000
   tcpTimeoutMs  = 1000
 })
 $rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState='STA'; $rs.Open()
 $rs.SessionStateProxy.SetVariable('sync', $shared)
 $mocks = @"
-function Get-Service {
-  [CmdletBinding()]param([string[]]`$Name)
-  foreach (`$n in `$Name) { [pscustomobject]@{ Name=`$n; Status='Running' } }
+function Invoke-TestSc {
+  # poll 用 Get-SvcStateQuiet / Get-SvcStateMapQuiet 拿状态（sc.exe query），不再调 Get-Service：
+  # 必须吐 STATE 块，否则服务被判「未安装」，健康探测根本不跑（这条断言会变成假绿）。
+  `$global:LASTEXITCODE = 0
+  if (`$args[0] -ne 'query') { return }
+  `$names = @()
+  if (`$args[1]) { `$names = @([string]`$args[1]) } else { `$names = @(`$sync.svc.Keys) }
+  foreach (`$n in `$names) {
+    "SERVICE_NAME: `$n"
+    '        STATE              : 4  RUNNING'
+  }
 }
 "@
 $ps = [powershell]::Create().AddScript($mocks).AddScript($script:poll)
@@ -236,6 +245,7 @@ $handle = $ps.BeginInvoke()
 try {
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $seen = 0
+  $stray = ''
   # 8s > 全局 6000ms：per-service 被忽略时让「测出 6000ms」这条断言先报，而不是超时先说「没结果」
   $deadline = [datetime]::UtcNow.AddSeconds(8)
   while ($seen -lt 2 -and [datetime]::UtcNow -lt $deadline) {
@@ -244,10 +254,14 @@ try {
     while ($shared.queue.TryDequeue([ref]$item)) {
       if ($item.done) { continue }
       $seen++
+      # 只有「运行中」的服务才会进健康探测：状态查询没被替身接住时这里会是「未安装」，
+      # 而那种情形下 $seen 也会涨、耗时也短——恰好是假绿。
+      if ($item.st -ne '运行中' -and -not $stray) { $stray = [string]$item.st }
     }
     Start-Sleep -Milliseconds 20
   }
   $sw.Stop()
+  Assert (-not $stray) "探测跑在「$stray」的服务上：状态查询没被 sc 替身接住"
   Assert ($seen -ge 2) "探测未返回结果（$seen/2），已等 $([int]$sw.ElapsedMilliseconds)ms"
   Assert ($sw.ElapsedMilliseconds -lt 3000) "per-service httpTimeoutMs 未生效：本轮 $([int]$sw.ElapsedMilliseconds)ms（全局 6000ms 说明走的是全局值）"
   Write-Output "PASS: per-service httpTimeoutMs applied ($([int]$sw.ElapsedMilliseconds)ms < 3000ms; global would be 6000ms)."
@@ -261,7 +275,7 @@ try {
   Assert ($errs.Count -eq 0) "后台探测有错误：$($errs -join '; ')"
 }
 
-# ---- 6. 并行块的超时变量必须经 $using: 传入（静态扫描，等价于被删的 test-probe-timeout-scope）----
+# ---- 6. 并行块的超时变量必须经 $using: 传入（静态扫描）----
 # ForEach-Object -Parallel 开新 runspace，不继承父作用域变量：裸用 $tcpMs / $httpMs 会取到
 # $null，WaitOne(0) 立刻返回，运行中的服务被误判「无响应」变红。行为段造不出这个场景
 #（端口真监听时 0ms 也可能握手成功），只能静态扫；只扫并行块内部，主作用域的用法是合法的。

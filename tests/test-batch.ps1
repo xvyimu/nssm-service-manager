@@ -5,7 +5,7 @@ param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Xaml
 foreach ($module in 'theme','util','card','xaml','dialogs') { . (Join-Path $RepoRoot "lib/$module.ps1") }
-function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
 $script:svc = [ordered]@{
   A = @{ port = 1; url = '' }; B = @{ port = 2; url = '' }
@@ -20,7 +20,6 @@ $script:cards = @{}
 $script:curPage = 0
 $script:batchConfirm = $true
 function Confirm-BatchStop($owner, [int]$count) { $script:batchConfirm }
-function Stop-Background {}
 function Drain-Queue { $out = @(); $c = $null; while ($script:cmdQueue.TryDequeue([ref]$c)) { $out += $c }; $out }
 
 $win = New-MainWindow

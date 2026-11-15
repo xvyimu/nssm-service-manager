@@ -39,6 +39,7 @@ $script:config = [ordered]@{
   TransitionHardCapFactor = 10   # 过渡计时刷新的硬上限倍数：累计超过 ToggleTimeoutMs × 本值就强制逃生。
   WaitStoppedTimeoutMs = 6000    # 重启/删除前轮询 Stopped 的上限（svc-common.ps1 Wait-Stopped）
   ExtCommandTimeoutMs = 60000    # 外部命令（sc.exe / nssm.exe）超时；超时即 Kill 并返回 exit=-1
+  SvcStateTimeoutMs   = 3000     # 服务状态探测查询（sc.exe query）的硬超时；只管探测，不改命令超时（见上一项）
   LogKeepCount        = 10       # 轮转日志保留份数（util.ps1 Remove-RotatedLogs），按日志目录各留前 N 份。§LogKeepCount
   LogKeepDays         = 14       # 轮转日志保留天数：删除须同时满足「不在全局前 N 份」且「早于 N 天」。
   HealthHistory       = $true    # 健康状态历史（logs/health/health-YYYYMMDD.ndjson）；只在状态变化时落一条
@@ -78,6 +79,7 @@ $script:configRanges = @{
   TransitionHardCapFactor = @(1, 100)
   WaitStoppedTimeoutMs    = @(100, 600000)
   ExtCommandTimeoutMs     = @(100, 600000)
+  SvcStateTimeoutMs       = @(100, 600000)
   LogKeepCount            = @(0, 1000)
   LogKeepDays             = @(0, 3650)
   HealthKeepDays          = @(1, 365)

@@ -3,7 +3,6 @@ param([string]$RepoRoot=(Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference='Stop'
 . (Join-Path $RepoRoot 'lib/poll.ps1')
 . (Join-Path $RepoRoot 'tests/test-helpers.ps1')
-function Assert($condition,[string]$message) { if (-not $condition) { throw $message } }
 
 $worker=Start-FakePoll 1
 try {
@@ -34,8 +33,7 @@ try {
   $second=$null; [void]$worker.Sync.executed.TryDequeue([ref]$second)
   Assert ($second.action -eq 'stop') 'Second FIFO command missing.'
   Assert ($worker.PowerShell.Streams.Error.Count -eq 0) 'Background errors present.'
-  # 并行化行为覆盖（Spec-c3）：并行探测期间不插 Invoke-PendingCommands，
-  # 第二条 stop 的 probes 不应小于第一条 start——说明 stop 没在并行段抢跑。
+  # 并行化行为覆盖（Spec-c3）：并行探测期间不插 Invoke-PendingCommands。
   Assert ($second.probes -ge $first.probes) "FIFO second command probes ($($second.probes)) < first ($($first.probes)); parallel round boundary not respected."
   Write-Output "FIFO across parallel round: first.probes=$($first.probes) second.probes=$($second.probes)"
 } finally { Close-FakePoll $worker }

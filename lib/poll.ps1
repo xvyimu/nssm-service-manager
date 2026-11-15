@@ -12,6 +12,9 @@ $http = [System.Net.Http.HttpClient]::new()
 $tcpMs  = if ($sync.tcpTimeoutMs)        { [int]$sync.tcpTimeoutMs }        else { 200 }
 $httpMs = if ($sync.httpTimeoutMs)       { [int]$sync.httpTimeoutMs }       else { 3000 }
 $waitMs = if ($sync.waitStoppedTimeoutMs){ [int]$sync.waitStoppedTimeoutMs } else { 6000 }
+# 服务状态探测查询的硬超时：UI 侧注入 config.SvcStateTimeoutMs，未注入传 0 让 Get-SvcStateQuiet
+# 自己回落（runspace 里没有 config，注入是唯一通路）。
+$svcStateMs = if ($sync.svcStateTimeoutMs) { [int]$sync.svcStateTimeoutMs } else { 0 }
 # 节奏与并行度也从 $sync 读（UI 线程从 config 注入），测试夹具未设时回落原硬编码值。
 $probeIntervalMs = if ($sync.probeIntervalMs) { [int]$sync.probeIntervalMs } else { 4000 }
 $probeIdleMs     = if ($sync.probeIdleMs)     { [int]$sync.probeIdleMs }     else { 15000 }
@@ -55,10 +58,10 @@ function Invoke-ServiceStart([string]$n,[string]$fail='启动失败'){
     return $true
   } catch {
     # 慢启动：Start() 等满 30s 才抛，此时服务其实已在起——先看真实状态，别回落 sc.exe（会弹黑框）。
-    try {
-      $real = [string](Get-Service -Name $n -EA Stop).Status
-      if ($real -in @('StartPending','Running')) { return $true }
-    } catch {}
+    # 不再用 Get-Service：它没有超时参数，SCM 挂起时这里会第二次永久阻塞（Start() 已经等满 30s），
+    # 整个命令队列和探测一起停摆。Get-SvcStateQuiet 走 sc.exe query + 硬超时，查不到返回 $null。
+    $real = Get-SvcStateQuiet $n $svcStateMs
+    if ($real -in @('StartPending','Running')) { return $true }
     return (Invoke-Sc 'start' $n $fail)           # 取退出码文案，比内层英文异常友好
   } finally {
     if ($svc) { try { $svc.Dispose() } catch {} }
@@ -136,19 +139,15 @@ while(-not $sync.stop){
   [Threading.Monitor]::Enter($sync.gate)
   try { $snap = @($sync.svc.Keys) } finally { [Threading.Monitor]::Exit($sync.gate) }
 
-  # 批量查询（发现 7）：一次 Get-Service 拿全部。任一名字不存在会整批抛 ObjectNotFound，
-  # 故 catch 退回逐个查询，在那里区分「未安装」与「未知」。
+  # 状态查询（发现 7）：一次 sc query 枚举拿全部。为什么不再用 Get-Service：
+  # 它没有超时参数——SCM 挂起（句柄等不到、被安全软件挂起）时整批调用永久阻塞，后台 runspace
+  # 就此停摆，且不抛异常、crash log 留不下线索。这正是本条要消除的已知限制。
+  # sc.exe 没有「多服务名查询」，全量枚举是它唯一的一次性口径；枚举失败/超时 → $null，
+  # 由收集阶段逐个回落 Get-SvcStateQuiet，在那里区分「未安装」与「未知」。
   $svcStatus = @{}
   if ($snap.Count) {
-    try {
-      # Get-Service 可能返回单个对象或数组；统一成数组再按 Name 索引
-      foreach ($s in @(Get-Service -Name $snap -EA Stop)) { $svcStatus[$s.Name] = [string]$s.Status }
-    } catch {
-      # 整批失败（任一服务未安装即触发）：退回逐个查询
-      foreach ($n in $snap) {
-        try { $svcStatus[$n] = [string](Get-Service -Name $n -EA Stop).Status } catch { $svcStatus[$n] = $null }
-      }
-    }
+    $allStatus = Get-SvcStateMapQuiet $svcStateMs
+    foreach ($n in $snap) { $svcStatus[$n] = if ($allStatus) { [string]$allStatus[$n] } else { '' } }
   }
 
   # 收集阶段：运行中的留待并行探测，其余直接入队。并行化（发现 4）：6 服务串行最坏 ~19s，
@@ -166,9 +165,17 @@ while(-not $sync.stop){
 
     $st = Convert-ServiceStatus ([string]$svcStatus[$n])
     if (-not $svcStatus[$n]) {
-      # 批量查询未返回此服务：单独查一次，区分未安装与未知
-      try { $st = Convert-ServiceStatus ([string](Get-Service -Name $n -EA Stop).Status) }
-      catch { if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { $st='未安装' } else { $st='未知' } }
+      # 批量枚举未返回此服务：单独查一次。Get-SvcStateQuiet 的 $null 同时覆盖「服务不存在」
+      # 与「查询超时/失败」——再用一次 query 退出码把两者分开（只有这条异常路径才付这次调用）：
+      # 1060/1072 = SCM 里没有这个服务 → 未安装；其余（含 -1 超时）= 未知。
+      $one = Get-SvcStateQuiet $n $svcStateMs
+      if ($one) {
+        $st = Convert-ServiceStatus $one
+      } else {
+        $code = -1
+        try { $code = Get-ServiceQueryCode $n $svcStateMs } catch { $code = -1 }
+        $st = if ($code -in @(1060,1072)) { '未安装' } else { '未知' }
+      }
     }
 
     if ($st -eq '运行中') {
