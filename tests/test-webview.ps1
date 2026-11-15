@@ -4,7 +4,7 @@
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 . (Join-Path $RepoRoot 'lib/webview.ps1')
-function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
 # ---- 1. token：正确/错误/空/长度不同都判对 ----
 $tok = 'a1b2c3d4e5f60718'

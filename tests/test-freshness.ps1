@@ -8,10 +8,7 @@ param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 foreach ($module in 'theme','util','card','xaml') { . (Join-Path $RepoRoot "lib/$module.ps1") }
-function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
-# Write-CrashLog 由 GUI 入口定义（service-manager-gui.ps1）；单测不落盘。
-function Write-CrashLog([string]$m) { }
-function Stop-Background { }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
 $script:svc = @{ A = @{ port = 1; url = '' } }
 $script:sync = @{ gate = [object]::new(); svc = $script:svc }

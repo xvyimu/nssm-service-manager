@@ -6,7 +6,6 @@ $ErrorActionPreference = 'Stop'
 # 原写法把优先级写成字符串 'Background'，Dispatcher 没有 (Delegate, DispatcherPriority)
 # 这个重载，PowerShell 会退回 BeginInvoke(Delegate, Object[] args)，把字符串当成委托的
 # 实参数组——委托被以 1 个参数调用，抛 TargetParameterCountException，清理永远不执行。
-#
 # 这类 bug 的特征是「不抛错、不执行、只留一行日志」，眼睛看不出来。故这里不看源码文本，
 # 而是真排一个队、真跑帧循环，验委托确实被执行了。
 Add-Type -AssemblyName WindowsBase, PresentationCore, PresentationFramework

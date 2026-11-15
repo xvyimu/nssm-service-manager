@@ -6,14 +6,12 @@ param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Xaml
 foreach ($module in 'theme','util','card','xaml') { . (Join-Path $RepoRoot "lib/$module.ps1") }
-function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
-$dir = Join-Path ([IO.Path]::GetTempPath()) "sm-reload-$([guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Force $dir | Out-Null
+$dir = New-TestTempDir 'sm-reload'
 $cfg = Join-Path $dir 'services.json'
 $utf8 = [Text.UTF8Encoding]::new($false)
 function Write-Cfg([string]$text) { Start-Sleep -Milliseconds 30; [IO.File]::WriteAllText($cfg, $text, $utf8) }
-function Stop-Background {}
 try {
   Write-Cfg '{"A":{"port":1111,"url":""}}'
   $script:svc = Load-Svc

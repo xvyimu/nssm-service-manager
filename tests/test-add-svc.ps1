@@ -11,6 +11,7 @@ $cfgExisted = Test-Path -LiteralPath $cfg
 $before = if ($cfgExisted) { (Get-FileHash -LiteralPath $cfg).Hash } else { $null }
 . (Join-Path $RepoRoot 'lib/util.ps1')
 . (Join-Path $RepoRoot 'lib/add-svc.ps1')
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 $script:svc=Load-Svc
 $script:sync=@{gate=[object]::new(); scExe='sc.exe'}
 $logDir=Join-Path $RepoRoot 'logs'
@@ -41,8 +42,7 @@ function sc.exe {
 $script:nssmInstalled=[System.Collections.Generic.HashSet[string]]::new()
 $script:nssm='Invoke-TestNssm'
 # Add-SvcFromCli 现在做 Test-Path 校验，需要一个真实存在的 exe（NSSM 被 mock，不碰真 exe）
-$fakeExe = Join-Path ([IO.Path]::GetTempPath()) "sm-test-$([guid]::NewGuid().ToString('N')).exe"
-[IO.File]::WriteAllText($fakeExe, 'placeholder', [Text.UTF8Encoding]::new($false))
+$fakeExe = New-FakeExe 'sm-test'
 try {
 Add-SvcFromCli "__sm_add_test__,8080,$fakeExe"
 if (-not $script:saved) { throw 'Service was not handed to persistence.' }
@@ -138,7 +138,7 @@ function Invoke-TestNssmRemove {
   $global:LASTEXITCODE=0
 }
 # sc.exe 替身需先让服务"存在"，否则 Test-ServiceGone 会判删除失败。
-# 不再单独重定义 sc.exe：第 28 行那个统一替身已含 query 分支（stop 也记进 $script:startArgs），
+# 不再单独重定义 sc.exe：上面那个统一替身已含 query 分支（stop 也记进 $script:startArgs），
 # 这里再定义一个无 query 分支的会把它覆盖掉，Test-ServiceGone 就只能拿到假的 0。
 [void]$script:nssmInstalled.Add('__sm_remove_test__')
 $script:nssm='Invoke-TestNssmRemove'

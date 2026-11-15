@@ -4,10 +4,9 @@
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 . (Join-Path $RepoRoot 'lib/logview.ps1')
-function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
-$dir = Join-Path ([IO.Path]::GetTempPath()) "sm-tail-$([guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Force $dir | Out-Null
+$dir = New-TestTempDir 'sm-tail'
 $file = Join-Path $dir 'Svc.out.log'
 try {
   # 约 4MB：前 4000 行是填充，尾部 600 行带序号

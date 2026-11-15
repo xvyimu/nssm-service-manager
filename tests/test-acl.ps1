@@ -5,7 +5,7 @@
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 . (Join-Path $RepoRoot 'lib/acl.ps1')
-function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
 # ---- A. 宽面主体名单 ----
 $wide = @(

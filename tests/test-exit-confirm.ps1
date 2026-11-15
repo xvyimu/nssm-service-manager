@@ -7,7 +7,7 @@
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 foreach ($module in 'config','util','dialogs') { . (Join-Path $RepoRoot "lib/$module.ps1") }
-function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
 # ---- 在途清单：残留卡片不算 ----
 $cards = [ordered]@{

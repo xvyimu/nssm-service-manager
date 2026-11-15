@@ -6,6 +6,11 @@
 # ---- 配置层（services.json 是 SSOT，services.example.json 是兜底）----
 # 兜底读示例清单，不在源码里抄服务名；不要在此初始化 $script:configWarning（会清掉 config.ps1 写入的原因）。
 
+# 探测口径白名单唯一定义在 svc-input.ps1（§ProbeModes）。util.ps1 的加载顺序是 svc-store 先于 svc-input，
+# 函数体虽晚于两者求值，但只点源本文件时 $script:ProbeModes 会缺失，故这里按需补一次点源；
+# util.ps1 先点 svc-store 再点 svc-input，所以正常加载时这里的守卫会执行一次；
+if (-not (Get-Command Resolve-ProbeSpec -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'svc-input.ps1') }
+
 function Read-SvcFile([string]$path){
   # 可选字段写错的收集箱。不能抛：抛会让 Load-Svc 落到 catch，整份清单退回示例并被 Save-Svc 写回。§Read-SvcFile
   $script:svcFieldWarnings = @()
@@ -34,7 +39,8 @@ function Read-SvcFile([string]$path){
     if ($actualProbe) {
       $rawProbe = [string]$j[$k][$actualProbe]
       $pv = $rawProbe.Trim().ToLowerInvariant()
-      if ($pv -in @('auto','tcp','http','none')) { $probe = $pv; $entryProbe = $pv }
+      # 白名单只认 svc-input.ps1 的 §ProbeModes，别在这里复写字面量（加口径只改一处）。
+      if ($pv -in $script:ProbeModes) { $probe = $pv; $entryProbe = $pv }
       else { $script:svcFieldWarnings += "$k 的 probe 无效（$rawProbe），已回落 auto（TCP 通且 HTTP 200）" }
     }
     # port 可选：缺 port 不再整份抛错——一条配错不该让其它服务一起退回示例清单。§Read-SvcFile
@@ -154,7 +160,7 @@ function Save-Svc($s) {
 
 # 重试保存清单：把「待保存」的删除重新落盘。状态栏菜单与卡片右键共用这一份，
 # 免得两处各写一套后在「谁该被移除」上漂移。§Invoke-RetrySaveSvc
-function Invoke-RetrySaveSvc([string]$name){
+function Invoke-RetrySaveSvc {
   $pending = @($script:cards.Values | Where-Object { $_.PendingSave } | ForEach-Object { $_.SvcName })
   if (-not $pending.Count) { Set-StatusMessage '没有待保存的清单变更'; return }
   $next = [ordered]@{}
@@ -220,7 +226,8 @@ function Add-SvcEntry([string]$n,[int]$p,[string]$url,[string]$probe){
   $entry = @{ port = $p; url = $url }
   # probe 只在非默认口径时落盘：auto（TCP 通且 HTTP 200）是缺省，写出来只是噪声。§Read-SvcFile
   $pv = ([string]$probe).Trim().ToLowerInvariant()
-  if ($pv -in @('tcp','http','none')) { $entry['probe'] = $pv }
+  # 非默认口径 = §ProbeModes 去掉 auto（从白名单派生，不在这里抄字面量）
+  if ($pv -in @($script:ProbeModes | Where-Object { $_ -ne 'auto' })) { $entry['probe'] = $pv }
   $next = [ordered]@{}
   [Threading.Monitor]::Enter($sync.gate)
   try {

@@ -4,10 +4,9 @@
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 . (Join-Path $RepoRoot 'lib/health.ps1')
-function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
+. (Join-Path $RepoRoot 'tests/test-helpers.ps1')
 
-$dir = Join-Path ([IO.Path]::GetTempPath()) "sm-health-$([guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Force $dir | Out-Null
+$dir = New-TestTempDir 'sm-health'
 try {
   # ---- 1. 变化判定：首次观测算变化，之后比「状态+健康」二元组 ----
   Assert (Test-HealthChanged $null $null '已停止' '') '首次观测应算变化'

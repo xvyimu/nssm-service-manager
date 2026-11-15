@@ -5,7 +5,6 @@ Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System
 foreach ($module in 'theme','util','card','xaml','dialogs') { . (Join-Path $RepoRoot "lib/$module.ps1") }
 $script:sync=@{wake=[Threading.AutoResetEvent]::new($false)}
 $script:svc=[ordered]@{TestService=@{port=8080;url='http://127.0.0.1:8080'}}
-function Stop-Background {}
 function Invoke-CardInput($card,[string]$source,[string]$action,[int]$clicks=2) {
   if ($source -eq 'Button') {
     # 两个按钮各管一个方向：点哪个按 $action 决定（启动键只启动、关闭键只关闭）
@@ -18,7 +17,7 @@ function Invoke-CardInput($card,[string]$source,[string]$action,[int]$clicks=2) 
     $card.RaiseEvent($eventArgs)
   }
 }
-function Assert($condition,[string]$message) { if (-not $condition) { throw $message } }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 $win=New-MainWindow
 try {
   # ---- 「打开面板」只放行 http/https ----
@@ -145,7 +144,7 @@ try {
   Assert (-not $card.Btn.IsEnabled -and -not $card.BtnStop.IsEnabled) 'Paused must disable both buttons.'
   Assert ($card.LblUp.Text -like '*右键*') "Paused hint missing: $($card.LblUp.Text)"
 
-  # 配置变更后，命中缓存的旧卡片要跟着换端口/URL（原 test-card-cache 的覆盖，删文件后并入本项）
+  # 配置变更后，命中缓存的旧卡片要跟着换端口/URL
   $card=New-Card 'TestService' $script:svc.TestService
   $script:cards=@{ TestService=$card }
   Update-CardInfo 'TestService' @{ port=9090; url='http://127.0.0.1:9090' }

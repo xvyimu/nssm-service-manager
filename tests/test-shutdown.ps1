@@ -7,13 +7,12 @@
 # 这里用真 runspace 跑一条 30 秒的 Start-Sleep，模拟「后台不肯结束」。
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
+# 本测试只验 runspace 回收，点源夹具里空壳 Stop-Background（真实实现在 lib/shutdown.ps1，
+# 依赖 GUI 句柄，这里不点源）；需要真实现的测试先点夹具再点 lib/shutdown.ps1。
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 foreach ($module in 'config','util','health') { . (Join-Path $RepoRoot "lib/$module.ps1") }
-function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
-# Write-CrashLog 由 GUI 入口定义（service-manager-gui.ps1）；单测不落盘。
-function Write-CrashLog([string]$m) { }
 
-$tmpDir = Join-Path ([IO.Path]::GetTempPath()) "sm-shutdown-$([guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+$tmpDir = New-TestTempDir 'sm-shutdown'
 
 $rs = $null
 $ps = $null

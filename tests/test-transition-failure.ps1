@@ -1,18 +1,15 @@
 #requires -Version 7.0
 # T1 的红测试：过渡态必须有失败出口，否则卡片永久卡死。
-#
 # 三段链路（修前全红）：
 #   1. 根因（后台侧）：失败命令必须发回执。修前 poll.ps1 只在 $ok 时 Enqueue，
 #      失败即静默——UI 侧根本没有失败出口可言。
 #   2. 启动 ack 失败 / 停止失败：回执 ok=$false 时须回滚到命令前的终态并解封按钮。
 #   3. 回执彻底丢失：超过 ToggleTimeoutMs 后须按到达的探测值收敛，不得永久卡在过渡态。
 #      （修前启动中只认运行中、停止中只认已停止，反向探测一律丢弃 → 永久卡死。）
-#
 # 测试顺序刻意把根因排在最前：HEAD 版本上它会因「失败命令没有回执」而红（行为红），
 # 而不是先撞上「新字段/新函数不存在」的报错——后者虽是红，却说明不了行为差异。
 param([string]$RepoRoot=(Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference='Stop'
-function Assert($condition,[string]$message) { if (-not $condition) { throw $message } }
 
 # ---- 1. 根因：失败命令必须发回执 ----
 . (Join-Path $RepoRoot 'lib/poll.ps1')
@@ -42,7 +39,6 @@ $script:sync=@{wake=[Threading.AutoResetEvent]::new($false); gate=[object]::new(
 $script:svc=[ordered]@{TestService=@{port=8080;url='http://127.0.0.1:8080'}}
 $script:cmdQueue=[Collections.Concurrent.ConcurrentQueue[object]]::new()
 $script:cmdEpoch=0
-function Stop-Background {}
 
 $win=New-MainWindow
 try {
@@ -77,7 +73,6 @@ try {
   # 失败回执（ok=$false）：修前只解封按钮、文字仍是「停止中」（红）
   Update-CardData 'TestService' $null $null -e $card.PendingEpoch -ack -ok $false
   Assert ($card.ST -eq '运行中') "Failed stop did not roll back to 运行中: ST=$($card.ST)."
-  # 回滚到「运行中+健康正常」→ 可用的是**关闭**按钮（启动键此刻应当禁用）
   Assert ($card.BtnStop.IsEnabled) 'Failed stop left the close button disabled.'
   Assert (-not $card.Btn.IsEnabled) 'Failed stop wrongly enabled the start button.'
   Assert ($card.ReadyToToggle) 'Failed stop did not restore toggle readiness.'

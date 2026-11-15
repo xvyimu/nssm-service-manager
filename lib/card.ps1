@@ -60,17 +60,6 @@ function Set-CardTransition($card, [string]$state, [int]$epoch, [datetime]$at){
   Update-CardAutomationName $card
 }
 
-# 把时长格式化成「12s / 3分12秒 / 2小时05分」。负值（时钟回拨）返回空串。
-function Format-Elapsed([datetime]$since, [datetime]$now) {
-  $s = [int](($now - $since).TotalSeconds)
-  if ($s -lt 0) { return '' }
-  if ($s -lt 60) { return "${s}s" }
-  $m = [int][math]::Floor($s / 60); $r = $s % 60
-  if ($m -lt 60) { return "${m}分${r}秒" }
-  $h = [int][math]::Floor($m / 60); $m = $m % 60
-  return "${h}小时${m}分"
-}
-
 # 每帧刷新时长后缀，只改后缀不重算正文。§Update-CardClock
 function Update-CardClock($card, [datetime]$now) {
   if (-not $card -or -not $card.LblUp) { return }
@@ -82,7 +71,7 @@ function Update-CardClock($card, [datetime]$now) {
   }
   $suffix = ''
   if ($label -and $card.StateSince -and $card.StateSince -ne [datetime]::MinValue) {
-    $e = Format-Elapsed $card.StateSince $now
+    $e = Format-Duration $card.StateSince $now
     if ($e) { $suffix = " · $label $e" }
   }
   $base = if ($null -ne $card.LblUpBase) { [string]$card.LblUpBase } else { '' }
@@ -94,7 +83,7 @@ function Resolve-ToggleTimeoutMs($info){
   if($info -and $info.toggleTimeoutMs){ [int]$info.toggleTimeoutMs } else { $script:TOGGLE_TIMEOUT_MS }
 }
 
-# 取卡片自己的覆盖，缺省回落全局；旧夹具没该字段，$null 即回落。§Test-TransitionTimedOut
+# 旧夹具没该字段，$null 即回落（阈值来源见 Resolve-ToggleTimeoutMs）。§Test-TransitionTimedOut
 function Test-TransitionTimedOut($card, [datetime]$now){
   if ($card.ST -notin $script:TRANSITION_STATES) { return $false }
   if ($card.TransitionAt -eq [datetime]::MinValue) { return $false }
@@ -202,7 +191,7 @@ function Invoke-CardToggle($card, [string]$source='DoubleClick') {
 # 「停止中」，否则卡片仍显示「运行中」、按钮可用，双击会再下发一条反向命令——后到的 stop
 # 落在 start 之后，服务被停掉，卡片却先显示过「运行中」。停止阶段结束后 poll 会补发
 # phase='start' 的中间回执，见 Update-CardRestartPhase。§Invoke-CardRestart
-function Invoke-CardRestart($card, [string]$source='Menu') {
+function Invoke-CardRestart($card) {
   if (-not $card) { return }
   $name = $card.SvcName
   $now = [datetime]::Now
@@ -318,7 +307,7 @@ function New-Card([string]$name, $info){
   [void]$grid.Children.Add($state); [System.Windows.Controls.Grid]::SetRow($state,2)
 
   $actions=New-Object System.Windows.Controls.Grid
-  # 无 url 的服务没有面板可开：整个按钮收起（原来只是禁用，还留着一行灰字占位）。
+  # 无 url 的服务没有面板可开：整个按钮收起。
   $hasUrl=(-not [string]::IsNullOrWhiteSpace($info.url))
   $open=New-Object System.Windows.Controls.Button -Property @{
     Content='打开面板'; FontFamily=$script:cjkFont; FontSize=12; Padding='10,6'
@@ -444,10 +433,10 @@ function New-CardContextMenu($card){
     [void]$ctx.Items.Add($mi)
   }
   # 待保存卡自带恢复入口：卡片红字写着「右键重试保存清单」，这里就必须真有这一项，
-  # 否则提示把用户指向一个不存在的菜单（之前只有状态栏汇总标签上有）。
+  # 否则提示把用户指向一个不存在的菜单。
   if ($card.PendingSave) {
-    $miRetry = New-Object System.Windows.Controls.MenuItem -Property @{ Header='重试保存清单'; Tag=@{act='retrysave'; name=$n} }
-    $miRetry.Add_Click({ Invoke-RetrySaveSvc $this.Tag.name })
+    $miRetry = New-Object System.Windows.Controls.MenuItem -Property @{ Header='重试保存清单' }
+    $miRetry.Add_Click({ Invoke-RetrySaveSvc })
     [void]$ctx.Items.Add($miRetry)
   }
   $ctx
@@ -673,7 +662,7 @@ function Update-CardFreshness($card, [datetime]$now){
   # 卡片继续显示「运行中」而时间戳其实来自未来。只在 [−1 个周期, 2 个周期] 内算新鲜。
   if ($ageMs -ge -$interval -and $ageMs -le (2 * $interval)) { $card.Stale = $false; return }
   $card.Stale = $true
-  $age = Format-Elapsed ([datetime]$at) $now
+  $age = Format-Duration ([datetime]$at) $now
   $card.LblSt.Text = '状态未知'
   $card.LblSt.Foreground = $script:T.BrushStale
   $card.Dot.Fill = $script:T.BrushStale

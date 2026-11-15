@@ -2,22 +2,20 @@
 # T2/T3 回归：dialogs.ps1 的两个提交体此前零覆盖——弹模态框在测试里够不着，而 Click handler
 # 内联体（校验顺序、Test-EnvPairs、敏感键 OKCancel 分支、Save 失败分支、删除入队与过渡态）
 # 全在 GUI 里，没有测试缝。现抽成 Submit-AddService / Submit-RemoveCommand，本测试直测真函数。
-#
 # MessageBox 是 WPF 静态调用，无头跑会阻塞——故替身掉 Show-DialogError / Confirm-SensitiveEnvKeys
 # / Show-DialogWarning（生产里就是 MessageBox 的薄包装，见 dialogs.ps1）。
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 foreach ($module in 'theme','util','svc-input','nssm','card','xaml','dialogs') { . (Join-Path $RepoRoot "lib/$module.ps1") }
-function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
 # ---- 夹具：队列/卡片缓存/svc，替身掉弹框与副作用 ----
 $script:cmdQueue = [Collections.Concurrent.ConcurrentQueue[object]]::new()
 $script:sync = @{ gate = [object]::new(); wake = [Threading.AutoResetEvent]::new($false) }
 $script:cmdEpoch = 0
 $script:svc = [ordered]@{}
-$fakeExe = Join-Path ([IO.Path]::GetTempPath()) "sm-dlg-$([guid]::NewGuid().ToString('N')).exe"
-[IO.File]::WriteAllText($fakeExe, 'placeholder', [Text.UTF8Encoding]::new($false))
+$fakeExe = New-FakeExe 'sm-dlg'
 
 # 弹框替身：记录调用，返回可编程结果（敏感键确认默认放行）
 $script:dialogErrors = @(); $script:dialogWarnings = @(); $script:confirmAnswer = $true; $script:confirmSeen = $null
@@ -32,7 +30,6 @@ $script:installed = @()
 function Install-NssmService($n, $exe, $dir, $par, $envPairs, $account) { $script:installed += $n; $script:lastEnvPairs = @($envPairs); $script:lastAccount = $account }
 $script:saved = $false
 function Save-Svc($data) { $script:saved = $true }
-function Stop-Background {}
 $win = New-MainWindow
 try {
   Render-Page
@@ -50,7 +47,7 @@ try {
   Assert (-not $ok) '端口越界应被拦下。'
   Assert ($script:dialogErrors[0] -eq '端口必须是 1-65535') "端口文案错误：$($script:dialogErrors[0])"
 
-  # ---- T3-b2：端口不是数字 —— 原来在 Test-SvcInput 之前就 [int] 强转，抛异常只写状态栏 ----
+  # ---- T3-b2：端口不是数字 ----
   $script:dialogErrors = @()
   $ok = Submit-AddService $win @{ n='SvcA'; p='3000ms'; exe=$fakeExe; url=''; dir=''; par=''; env='' }
   Assert (-not $ok) '非数字端口应被拦下（而不是抛异常）。'
@@ -143,14 +140,18 @@ try {
   Assert (($tags -join '|') -eq 'LocalSystem|NT AUTHORITY\LocalService|NT AUTHORITY\NetworkService') "账户选项不对：$($tags -join '|')"
   Assert ($d.Account.SelectedItem.Tag -eq 'LocalSystem') "默认账户应是 LocalSystem，got [$($d.Account.SelectedItem.Tag)]"
   Assert ($d.Gpu.IsChecked -eq $false) 'GPU 勾选默认应为未选'
-  Assert ($d.Probe.Items.Count -eq 3 -and (($d.Probe.Items | ForEach-Object { $_.Tag }) -join '|') -eq 'auto|tcp|none') '探测方式下拉应有 auto/tcp/none 三项'
+  Assert ($d.Probe.Items.Count -eq 4 -and (($d.Probe.Items | ForEach-Object { $_.Tag }) -join '|') -eq 'auto|tcp|http|none') '探测方式下拉应有 auto/tcp/http/none 四项'
   # 选 tcp：URL 置空并禁用；切回 auto 恢复可用（事件体不 GetNewClosure 会拿到 $null 控件）
   $d.Inputs.url.Text = 'http://127.0.0.1:1'
   $d.Probe.SelectedIndex = 1
   Assert ($d.Inputs.url.Text -eq '' -and -not $d.Inputs.url.IsEnabled) '选 tcp 应置空并禁用 URL'
-  # 选 none（无端口服务）：同样置空并禁用 URL
+  # 选 http（只看 HTTP 200）：URL 保留且可用
   $d.Inputs.url.Text = 'http://127.0.0.1:1'
   $d.Probe.SelectedIndex = 2
+  Assert ($d.Inputs.url.Text -eq 'http://127.0.0.1:1' -and $d.Inputs.url.IsEnabled) '选 http 应保留 URL'
+  # 选 none（无端口服务）：同样置空并禁用 URL
+  $d.Inputs.url.Text = 'http://127.0.0.1:1'
+  $d.Probe.SelectedIndex = 3
   Assert ($d.Inputs.url.Text -eq '' -and -not $d.Inputs.url.IsEnabled) '选 none 应置空并禁用 URL'
   $d.Probe.SelectedIndex = 0
   Assert ($d.Inputs.url.IsEnabled) '切回 auto 应恢复 URL 输入'
@@ -224,7 +225,7 @@ try {
   $ok = Submit-AddService $win @{ n='SvcQ'; p=''; exe=$fakeExe; url=''; dir=''; par=''; env='' }
   Assert (-not $ok) 'auto 口径下端口留空仍应被拦下。'
 
-  Write-Output 'PASS: Submit-AddService covers required/port/env/account validation, probe=none (blank port accepted, probe/port/url persisted), sensitive-key OKCancel (cancel vs continue), account passthrough, GPU hint (non-blocking, suppressed for non-LocalSystem), success enqueue, probe=tcp shape, and Save-failure branch (window stays open); New-AddDialog builds a scrollable dialog with the 3 built-in accounts, LocalSystem preselected and an auto/tcp/none probe dropdown; clicking the real "注册并启动" button reaches Install-NssmService (guards the non-closure trap).'
+  Write-Output 'PASS: Submit-AddService covers required/port/env/account validation, probe=none (blank port accepted, probe/port/url persisted), sensitive-key OKCancel (cancel vs continue), account passthrough, GPU hint (non-blocking, suppressed for non-LocalSystem), success enqueue, probe=tcp shape, and Save-failure branch (window stays open); New-AddDialog builds a scrollable dialog with the 3 built-in accounts, LocalSystem preselected and an auto/tcp/http/none probe dropdown; clicking the real "注册并启动" button reaches Install-NssmService (guards the non-closure trap).'
 
   # ---- T2：Submit-RemoveCommand ----
   # 卡片在缓存：入队 remove 且置「删除中」过渡态

@@ -10,10 +10,7 @@ param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 foreach ($module in 'config','theme','util','card','xaml','tray') { . (Join-Path $RepoRoot "lib/$module.ps1") }
-function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
-# GUI 入口定义的副作用函数；单测只需要它们存在。
-function Write-CrashLog([string]$m) { }
-function Stop-Background { }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
 $script:svc = [ordered]@{ A = @{ port = 1; url = '' }; B = @{ port = 2; url = '' }; C = @{ port = 3; url = '' }; D = @{ port = 4; url = '' }; E = @{ port = 5; url = '' } }
 $script:sync = @{ gate = [object]::new(); svc = $script:svc }

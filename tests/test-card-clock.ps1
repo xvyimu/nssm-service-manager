@@ -5,18 +5,18 @@ param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Xaml
 foreach ($module in 'theme','util','card','xaml','dialogs') { . (Join-Path $RepoRoot "lib/$module.ps1") }
-function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
-# ---- 1. Format-Elapsed ----
+# ---- 1. Format-Duration ----
 $now = [datetime]::Now
-Assert ((Format-Elapsed $now.AddSeconds(-5)   $now) -eq '5s')          "5 秒应为 5s，got $(Format-Elapsed $now.AddSeconds(-5) $now)"
-Assert ((Format-Elapsed $now.AddSeconds(-59)  $now) -eq '59s')         '59 秒仍走 s 档'
-Assert ((Format-Elapsed $now.AddSeconds(-60)  $now) -eq '1分0秒')      '整分钟边界'
-Assert ((Format-Elapsed $now.AddSeconds(-90)  $now) -eq '1分30秒')     '1 分 30 秒'
-Assert ((Format-Elapsed $now.AddSeconds(-3600) $now) -eq '1小时0分')   '整小时边界'
-Assert ((Format-Elapsed $now.AddSeconds(-3900) $now) -eq '1小时5分')   '1 小时 5 分'
-Assert ((Format-Elapsed $now.AddSeconds(10)   $now) -eq '')            '负值（时钟回拨）应返回空串'
-Write-Output 'PASS: Format-Elapsed 的秒/分/时边界与负值。'
+Assert ((Format-Duration $now.AddSeconds(-5)   $now) -eq '5s')          "5 秒应为 5s，got $(Format-Duration $now.AddSeconds(-5) $now)"
+Assert ((Format-Duration $now.AddSeconds(-59)  $now) -eq '59s')         '59 秒仍走 s 档'
+Assert ((Format-Duration $now.AddSeconds(-60)  $now) -eq '1分0秒')      '整分钟边界'
+Assert ((Format-Duration $now.AddSeconds(-90)  $now) -eq '1分30秒')     '1 分 30 秒'
+Assert ((Format-Duration $now.AddSeconds(-3600) $now) -eq '1小时0分')   '整小时边界'
+Assert ((Format-Duration $now.AddSeconds(-3900) $now) -eq '1小时5分')   '1 小时 5 分'
+Assert ((Format-Duration $now.AddSeconds(10)   $now) -eq '')            '负值（时钟回拨）应返回空串'
+Write-Output 'PASS: Format-Duration 的秒/分/时边界与负值。'
 
 # ---- 2. 卡片上的后缀 ----
 $script:sync = @{ wake = [Threading.AutoResetEvent]::new($false) }
@@ -26,7 +26,6 @@ $script:cmdQueue = [Collections.Concurrent.ConcurrentQueue[object]]::new()
 # 断言时钟真被接进了 400ms 的 DispatcherTimer 回调，而不只是「函数单独调用时对」。
 $script:queue = [Collections.Concurrent.ConcurrentQueue[object]]::new()
 $script:msgQueue = [Collections.Concurrent.ConcurrentQueue[string]]::new()
-function Stop-Background {}
 $win = New-MainWindow
 try {
   Render-Page

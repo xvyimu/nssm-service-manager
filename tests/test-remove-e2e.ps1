@@ -1,12 +1,10 @@
 #requires -Version 7.0
 # 端到端接缝：**真 runspace 产出的删除回执 → 真 UI tick 消费**。
-#
 # 为什么单开一份：此前两半是分开测的——runspace 侧测产出什么回执，UI 侧测拿到
 # （手搓的）回执怎么处理。中间那一跳（worker 的回执真的落进 UI 队列）从没被验过：
 # 两段用的是不同队列对象。
 # 提示词建议「手动点一次删除服务走完整流程（含失败注入）」验的正是这个接缝；
 # 这里用共享队列把两半接起来，比人工点击更可复现，也不需要可交互的提权 GUI。
-#
 # 两个方向都覆盖：
 #   删除成功（服务真消失）    -> UI 清 svc/cards 并落盘
 #   删除失败（nssm 谎报 0 而服务仍在） -> UI 回滚卡片、保留服务、不落盘
@@ -15,7 +13,6 @@ $ErrorActionPreference='Stop'
 Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Xaml
 foreach ($module in 'theme','util','svc-input','nssm','card','xaml','dialogs','poll') { . (Join-Path $RepoRoot "lib/$module.ps1") }
 . (Join-Path $RepoRoot 'tests/test-helpers.ps1')
-function Assert($condition,[string]$message) { if (-not $condition) { throw $message } }
 
 function Invoke-RemoveSeam([bool]$serviceGone, [string]$label) {
   # 探测间隔拉长，避免整轮探测结果挤进队列干扰断言
@@ -32,7 +29,6 @@ function Invoke-RemoveSeam([bool]$serviceGone, [string]$label) {
     $script:cmdEpoch = 0
     $script:saved    = $null
     function Save-Svc($data) { $script:saved=$data }
-    function Stop-Background {}
 
     Assert ($worker.Sync.probeStarted.WaitOne(3000)) "${label}: worker did not start."
     $win = New-MainWindow

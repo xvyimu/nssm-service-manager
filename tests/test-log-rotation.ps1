@@ -5,10 +5,9 @@
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 . (Join-Path $RepoRoot 'lib/util.ps1')
-function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
-$dir = Join-Path ([IO.Path]::GetTempPath()) "sm-rot-$([guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Force $dir | Out-Null
+$dir = New-TestTempDir 'sm-rot'
 try {
   $old = (Get-Date).AddDays(-20)
   # 当前档：服务名本身叫 MySvc.err-20260101

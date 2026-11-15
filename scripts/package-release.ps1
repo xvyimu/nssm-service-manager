@@ -10,6 +10,8 @@ param(
   [string]$OutDir
 )
 $ErrorActionPreference = 'Stop'
+# 与 deploy-local.ps1 共用同一份入口解析
+. (Join-Path $PSScriptRoot 'lib-entry-modules.ps1')
 $version = (Get-Content -LiteralPath (Join-Path $RepoRoot 'VERSION') -Raw -Encoding UTF8).Trim()
 if (-not $version) { throw 'VERSION 文件为空' }
 if (-not $OutDir) { $OutDir = Join-Path $RepoRoot 'dist' }
@@ -29,15 +31,8 @@ try {
   New-Item -ItemType Directory -Force (Join-Path $stage 'assets') | Out-Null
   Copy-Item -LiteralPath $icon -Destination (Join-Path $stage 'assets') -Force
 
-  # 自检 1（正向）：清单从主入口的 dot-source 列表派生，新增 lib 模块自动被覆盖。
-  # 解析不到任何项说明格式变了，必须 throw —— 否则退化成空检查，漏文件到解压才发现。
-  $entry = Get-Content -LiteralPath (Join-Path $RepoRoot 'service-manager-gui.ps1') -Raw -Encoding UTF8
-  $modules = @([regex]::Matches($entry, '(?m)^\s*\.\s+"\$root\\(lib\\[^"]+\.ps1)"') |
-      ForEach-Object { $_.Groups[1].Value })
-  if (-not $modules.Count) { throw '未能从 service-manager-gui.ps1 解析出 lib 模块 dot-source 列表' }
-  foreach ($must in @('service-manager-gui.ps1') + $modules) {
-    if (-not (Test-Path -LiteralPath (Join-Path $stage $must))) { throw "打包缺文件：$must" }
-  }
+  # 与部署共用完整性断言：入口直接引用与源 lib 全集都必须在 staging 中存在。
+  Assert-EntryLibFiles -SourceRoot $RepoRoot -TargetRoot $stage
 
   $zip = Join-Path $OutDir "service-manager-$version.zip"
   if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }

@@ -5,10 +5,9 @@
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 . (Join-Path $RepoRoot 'lib/util.ps1')
-function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
-$dir = Join-Path ([IO.Path]::GetTempPath()) "sm-shape-$([guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Force $dir | Out-Null
+$dir = New-TestTempDir 'sm-shape'
 $cfg = Join-Path $dir 'services.json'
 $utf8 = [Text.UTF8Encoding]::new($false)
 function Write-Cfg([string]$text) { [IO.File]::WriteAllText($cfg, $text, $utf8) }

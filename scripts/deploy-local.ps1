@@ -22,6 +22,8 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # 随程序一起走、需要校验的条目：改这里就同时改了「复制 / 备份 / 校验」三处。
+# 与 scripts/package-release.ps1 的复制清单刻意不共享：部署要整目录覆盖（含 scripts/、assets/ 全量）
+# 且带 README/VERSION 便于现场查看；打包只取运行所需 + assets/icon.ico。语义不同，合并会互相牵制。
 $FileList = 'service-manager-gui.ps1', 'launch.vbs', 'VERSION', 'README.md', 'LICENSE', 'config.example.json', 'services.example.json'
 $DirList = 'lib', 'scripts', 'assets'
 
@@ -107,6 +109,8 @@ New-Item -ItemType Directory -Force -Path $Target | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $Target 'logs') | Out-Null
 
 $files = Get-DeployFiles $SourceRoot
+# 完整性断言与打包共用；放在复制 try 之前定义，失败时由 catch 走还原。
+. (Join-Path $PSScriptRoot 'lib-entry-modules.ps1')
 
 # -- 备份旧程序文件（失败可整份搬回；配置与日志不备份，它们本来就不覆盖）-----------
 # 目录全量备份，而不只是「源里还有的文件」：新版本删掉的旧模块也能回滚，避免版本漂移残留。
@@ -141,6 +145,7 @@ try {
     if ($h1 -ne $h2) { $mismatch += $f }
   }
   if ($mismatch.Count) { throw "复制校验失败（内容不一致）：$($mismatch -join ', ')" }
+  Assert-EntryLibFiles -SourceRoot $SourceRoot -TargetRoot $Target
 } catch {
   Restore-Backup $copied $backup $Target
   Write-Host "部署失败，已按备份还原 $($copied.Count) 个文件。备份仍在：$backup"
@@ -188,12 +193,6 @@ if (-not (Test-Path -LiteralPath $nssmTarget)) {
 }
 Set-AdminOnlyAcl $nssmTargetDir
 
-# 自检：程序文件齐全 + 标准用户不可写。
-$missing = @()
-foreach ($must in 'service-manager-gui.ps1', 'launch.vbs', 'lib\config.ps1', 'lib\util.ps1', 'lib\acl.ps1', 'lib\svc-store.ps1', 'lib\ui-status.ps1', 'lib\log-retention.ps1', 'lib\security-check.ps1', 'lib\shutdown.ps1', 'lib\card.ps1', 'assets\icon.ico') {
-  if (-not (Test-Path -LiteralPath (Join-Path $Target $must))) { $missing += $must }
-}
-if ($missing.Count) { throw "部署不完整，缺：$($missing -join ', ')" }
 if (-not (Test-Path -LiteralPath $nssmTarget)) { throw "NSSM 未就位：$nssmTarget" }
 
 # 自检要递归：/reset /T 若因占用跳过某个子文件，只看根目录的 ACL 会漏掉它。

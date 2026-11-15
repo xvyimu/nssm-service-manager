@@ -6,16 +6,19 @@ if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
 function Add-SvcFromCli([string]$spec){
   # 只切前 6 段：第 7 段 Env 里的逗号必须原样保留。
   $parts = $spec -split ',', 7
-  if ($parts.Count -lt 3) { Write-Host "用法: -Add Name,Port,Exe[,Url|tcp,Dir,Args,Env]"; exit 1 }
+  # 第 4 段的简写集合与用法串都从 §ProbeModes 派生（白名单只在 svc-input.ps1 写一次）
+  $probeShorts = @($script:ProbeModes | Where-Object { $_ -ne 'auto' })
+  $probeUsage = $probeShorts -join '|'
+  if ($parts.Count -lt 3) { Write-Host "用法: -Add Name,Port,Exe[,Url|$probeUsage,Dir,Args,Env]"; exit 1 }
   $n=$parts[0].Trim(); $exe=$parts[2].Trim()
   # 先 TryParse：裸 [int] 强转会让端口写成 `8080ms` 时抛栈，用户看不到用法。
   $p=0
-  if(-not [int]::TryParse($parts[1].Trim(),[ref]$p)){ Write-Host "端口必须是 1-65535 的整数：$($parts[1])"; Write-Host "用法: -Add Name,Port,Exe[,Url|tcp,Dir,Args,Env]"; exit 1 }
-  # 第 4 段除了 URL，还接受两个简写：tcp（TCP 通即正常）、none（无端口服务）。
+  if(-not [int]::TryParse($parts[1].Trim(),[ref]$p)){ Write-Host "端口必须是 1-65535 的整数：$($parts[1])"; Write-Host "用法: -Add Name,Port,Exe[,Url|$probeUsage,Dir,Args,Env]"; exit 1 }
+  # 第 4 段除了 URL，还接受简写：tcp（TCP 通即正常）、http（只看 HTTP 200）、none（无端口服务）。
   # 不写简写就只能注册完再手改 services.json，否则卡片永远橙点。§Read-SvcFile
   $urlRaw=if($parts.Count -gt 3){$parts[3].Trim()}else{''}
   $probe=''
-  if($urlRaw -ieq 'tcp' -or $urlRaw -ieq 'none'){ $probe=$urlRaw.ToLowerInvariant(); $urlRaw='' }
+  if($probeShorts -contains $urlRaw.ToLowerInvariant()){ $probe=$urlRaw.ToLowerInvariant(); $urlRaw='' }
   $resolved=Resolve-ProbeSpec $probe $urlRaw $p
   $probe=$resolved.probe; $url=$resolved.url
   $dir=if($parts.Count -gt 4){$parts[4].Trim()}else{''}

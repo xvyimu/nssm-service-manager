@@ -6,14 +6,13 @@ $cfgExisted = Test-Path -LiteralPath $cfg
 $before = if ($cfgExisted) { (Get-FileHash -LiteralPath $cfg).Hash } else { $null }
 . (Join-Path $RepoRoot 'lib/util.ps1')
 . (Join-Path $RepoRoot 'lib/add-svc.ps1')
-. (Join-Path $RepoRoot 'lib/logview.ps1')   # Get-LogFiles 随拆分移来（util.ps1 只留配置持久化）
+. (Join-Path $RepoRoot 'lib/logview.ps1')
 $script:svc = Load-Svc
 $script:sync = @{gate=[object]::new()}
 $logDir = Join-Path $RepoRoot 'logs'
-function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
-$fakeExe = Join-Path ([IO.Path]::GetTempPath()) "sm-neg-$([guid]::NewGuid().ToString('N')).exe"
-[IO.File]::WriteAllText($fakeExe, 'placeholder', [Text.UTF8Encoding]::new($false))
+$fakeExe = New-FakeExe 'sm-neg'
 try {
   # ---- Test-SvcInput：四个 code 与通过路径 ----
   # 名称非法：Windows 服务名禁止 / \ : 等保留字符
@@ -133,8 +132,7 @@ try {
   Assert ((Find-SensitiveEnvKeys $null).Count -eq 0) 'null should yield no hits'
 
   # ---- Get-LogFiles：服务名含点号时正则转义，不跨服务串台 ----
-  $logTmp = Join-Path ([IO.Path]::GetTempPath()) "sm-log-test-$([guid]::NewGuid().ToString('N'))"
-  New-Item -ItemType Directory -Force $logTmp | Out-Null
+  $logTmp = New-TestTempDir 'sm-log-test'
   try {
     # 造两个名字相近的服务日志：My.Service 与 MyxService，点号若不转义会互相匹配
     'a' | Set-Content -LiteralPath (Join-Path $logTmp 'My.Service.out.log') -Encoding UTF8
@@ -226,8 +224,28 @@ try {
   Assert ($r.url -eq 'http://127.0.0.1:8123') 'auto 缺 url 时应按端口补'
   $r = Resolve-ProbeSpec 'bogus' 'http://x:1' 1
   Assert ($r.probe -eq 'auto' -and $r.url -eq 'http://x:1') '未知口径应回落 auto 且保留 url'
+  # http 与 auto 同族：保留 probe 值并按端口补 url（探测侧同样要求 HTTP 200，见 poll.ps1 §probe）
+  $r = Resolve-ProbeSpec 'http' '' 8123
+  Assert ($r.probe -eq 'http' -and $r.url -eq 'http://127.0.0.1:8123') 'http 口径应按端口补 url（与 auto 同）'
+  # ---- 口径白名单单一来源：三个消费点都派生自 $script:ProbeModes（文本 + AST 双查）----
+  # 文本查：不得再内联四值/三值字面量（AST 只证「引用过」，复制字面量才是要防的漂移）。
+  foreach ($probeFile in 'lib/svc-store.ps1','lib/dialogs.ps1','lib/add-svc.ps1') {
+    $probeSrc = Join-Path $RepoRoot $probeFile
+    $probeTxt = Get-Content -LiteralPath $probeSrc -Raw -Encoding UTF8
+    Assert ($probeTxt -notmatch "auto'\s*,\s*'tcp'\s*,\s*'http'") "$probeFile 仍内联 ProbeModes 四值字面量"
+    Assert ($probeTxt -notmatch "tcp'\s*,\s*'http'\s*,\s*'none'") "$probeFile 仍内联非默认口径字面量"
+    # AST 查：必须实际引用 $script:ProbeModes（防「字面量删了、白名单也没接上」）
+    $probeTokens = $null; $probeErrors = $null
+    $probeAst = [System.Management.Automation.Language.Parser]::ParseFile($probeSrc, [ref]$probeTokens, [ref]$probeErrors)
+    $probeRefs = @($probeAst.FindAll({
+      param($node)
+      $node -is [System.Management.Automation.Language.VariableExpressionAst] -and
+        $node.VariablePath.UserPath -eq 'script:ProbeModes'
+    }, $true))
+    Assert ($probeRefs.Count -ge 1) "$probeFile 没有引用 `$script:ProbeModes"
+  }
 
-  Write-Output 'PASS: Test-SvcInput (name/exe/port/dup + order, probe=none skips port range), Test-SvcAccount (built-in whitelist, custom rejected), Resolve-ProbeSpec (tcp/none clear url, auto fills default, unknown falls back), ConvertTo-EnvPairs (sep/trim/drop-empty, separator inside value kept), Test-EnvPairs (format/APPDATA), Find-SensitiveEnvKeys (sensitive-name detection + _FILE path-aware skip + expanded patterns), Get-LogFiles (regex-escaped service names), Get-NssmSetSpec (AppExit dual-token, env multi-token, ObjectName single token, optional-key omission, array-typed values, Start=SERVICE_DEMAND_START).'
+  Write-Output 'PASS: Test-SvcInput (name/exe/port/dup + order, probe=none skips port range), Test-SvcAccount (built-in whitelist, custom rejected), Resolve-ProbeSpec (tcp/none clear url, auto/http fill default, unknown falls back, consumer files derive from ProbeModes), ConvertTo-EnvPairs (sep/trim/drop-empty, separator inside value kept), Test-EnvPairs (format/APPDATA), Find-SensitiveEnvKeys (sensitive-name detection + _FILE path-aware skip + expanded patterns), Get-LogFiles (regex-escaped service names), Get-NssmSetSpec (AppExit dual-token, env multi-token, ObjectName single token, optional-key omission, array-typed values, Start=SERVICE_DEMAND_START).'
 } finally {
   Remove-Item -LiteralPath $fakeExe -Force -EA SilentlyContinue
 }

@@ -6,7 +6,7 @@
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
 . (Join-Path $RepoRoot 'lib/util.ps1')
-function Assert($c, [string]$m) { if (-not $c) { throw $m } }
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
 $tmp = Join-Path ([IO.Path]::GetTempPath()) "sm-probe-none-$([guid]::NewGuid().ToString('N')).json"
 try {
