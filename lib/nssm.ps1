@@ -16,13 +16,21 @@ function nssm-set([string]$n,[string]$k,[Parameter(ValueFromRemainingArguments=$
 
 # 只跑 nssm set，不 install：注册已存在时补写参数（「注册成功、清单没写成」的重试走这里）。
 # 回滚策略由调用方决定——单独补参数失败不该 remove 一个本来就在用的服务。
-function Set-NssmServiceParams([string]$n,[string]$exe,[string]$dir,[string]$par,$envPairs,[string]$account=''){
-  # 阈值从 config 取，缺则回落默认值（不靠 [int]$null=0）。
+function Set-NssmServiceParams([string]$n,[string]$exe,[string]$dir,[string]$par,$envPairs,[string]$account='',[switch]$SkipApplication){
+  # Application 不在 Get-NssmSetSpec 里（那是纯函数，不含 install 阶段的应用路径），
+  # 但重试补参必须同步它：install 时写死的路径不会随用户改正 exe 而变化。
+  # 顺序刻意让 Application 最后写：前面任一 set 失败时 exe 还是旧的，服务不会「新 exe + 旧参数」；
+  # 参数写了一半也没关系，重试会把整份 spec 重新写一遍（幂等）。
+  # 不做逐键快照还原：nssm get 对 AppExit 要 subparameter、AppEnvironmentExtra 是多行，
+  # 读不全就会还原出错误值，比半更新更糟。
+  # install 已写 Application，新装通过 -SkipApplication 避免重复启动外部进程。
+  # 阈值先读 config；下面的字面量只是「单文件点源、没有 config」时的兜底，与 config.ps1 同名默认值保持一致。
   $rotateBytes = if ($script:config -and $script:config.AppRotateBytes) { [int]$script:config.AppRotateBytes } else { 5242880 }
   $stopMethod  = if ($script:config -and $script:config.AppStopMethodConsole) { [int]$script:config.AppStopMethodConsole } else { 5000 }
   # 轮转年龄门槛：不设的话「每次启动轮转一次」会把频繁重启的服务的日志堆成几十个档
   $rotateSecs  = if ($script:config -and $script:config.AppRotateSeconds) { [int]$script:config.AppRotateSeconds } else { 86400 }
   foreach($s in Get-NssmSetSpec $n $dir $par $envPairs $rotateBytes $stopMethod $account $rotateSecs){ nssm-set $n $s.k $s.v }
+  if ($exe -and -not $SkipApplication) { nssm-set $n 'Application' $exe }
 }
 
 # GUI/CLI 共用 NSSM 注册与配置；输入校验、错误显示、保存和启动仍由调用方处理。
@@ -37,7 +45,7 @@ function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$
   }
   # set 失败会留半注册残骸，失败时尽力 remove 回滚再抛原始错误。
   try {
-    Set-NssmServiceParams $n $exe $dir $par $envPairs $account
+    Set-NssmServiceParams $n $exe $dir $par $envPairs $account -SkipApplication
   } catch {
     # 回滚失败不盖掉原始错误，但也不能静默——残骸服务还留在服务数据库里，用户需要知道。
     try {

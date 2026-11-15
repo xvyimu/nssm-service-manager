@@ -203,7 +203,13 @@ function Submit-AddService($owner,[hashtable]$fields){
   $alreadyRegistered = $false
   try { $alreadyRegistered = Test-ServicePresent $n } catch {}
   try {
-    if ($alreadyRegistered) { Set-NssmServiceParams $n $exe $dir $par $envPairs $account }
+    if ($alreadyRegistered) {
+      Set-NssmServiceParams $n $exe $dir $par $envPairs $account
+      # Application 只在下一次启动时生效。这里刻意不查服务状态：UI 线程不能调 Get-Service
+      # （可能阻塞，违反 PROJECT.md「UI 线程绝不碰 I/O」），而「注册成功、清单没写成」的重试场景
+      # 往往连卡片缓存都没有。无状态可读，就无条件提示一句。
+      Show-DialogWarning $owner "「$n」参数已更新。若服务已在运行，需重启后才生效（右键卡片「重启」）；未运行会自动启动。" '参数已更新'
+    }
     else { Install-NssmService $n $exe $dir $par $envPairs $account }
   } catch {
     Show-DialogError $owner $_.Exception.Message; return $false
@@ -243,17 +249,27 @@ function New-AddDialog(){
 
   $adv=& $mkExp '高级（可选）'
   $advContent=New-Object System.Windows.Controls.StackPanel
-  # 探测方式：默认 auto；数据库/gRPC/纯 socket 选 tcp；rclone mount 这类无端口服务选 none。
+  # 探测方式：默认 auto；数据库/gRPC/纯 socket 选 tcp；面板型（只看 HTTP 200）选 http；
+  # rclone mount 这类无端口服务选 none。可选项从 §ProbeModes 派生（白名单只在 svc-input.ps1 写一次），
+  # 这里只补显示文案；新增口径只改 svc-input.ps1 一处。
+  $probeLabels = @{
+    auto = '自动（TCP 通且 HTTP 200）'
+    tcp  = '只探测 TCP（数据库 / gRPC / 纯 socket）'
+    http = '同自动（显式写出，便于对照）'
+    none = '无端口服务（进程在跑即正常）'
+  }
   $inProbe=New-Object System.Windows.Controls.ComboBox -Property @{ Margin='0,0,0,8'; FontFamily=$script:cjkFont }
-  [void]$inProbe.Items.Add((New-Object System.Windows.Controls.ComboBoxItem -Property @{Content='自动（TCP 通且 HTTP 200）'; Tag='auto'}))
-  [void]$inProbe.Items.Add((New-Object System.Windows.Controls.ComboBoxItem -Property @{Content='只探测 TCP（数据库 / gRPC / 纯 socket）'; Tag='tcp'}))
-  [void]$inProbe.Items.Add((New-Object System.Windows.Controls.ComboBoxItem -Property @{Content='无端口服务（进程在跑即正常）'; Tag='none'}))
+  foreach ($pm in $script:ProbeModes) {
+    $probeText = if ($probeLabels.ContainsKey($pm)) { $probeLabels[$pm] } else { $pm }
+    [void]$inProbe.Items.Add((New-Object System.Windows.Controls.ComboBoxItem -Property @{Content=$probeText; Tag=$pm}))
+  }
   $inProbe.SelectedIndex=0
   $advContent.Children.Add((& $mkLabel '探测方式')) | Out-Null; $advContent.Children.Add($inProbe) | Out-Null
-  # 选 tcp/none 时置空并禁用 URL：这两种口径不看面板地址，填了只会误导（GetNewClosure：闭包要持有 $inUrl）。
+  # 不看面板地址的口径要置空并禁用 URL，填了只会误导（GetNewClosure：闭包要持有 $inUrl）。
+  # 「哪些口径不看 URL」由 Resolve-ProbeSpec 判定——与落盘归一同一条规则，不在这里抄字面量。
   $inProbe.Add_SelectionChanged({
     param($sender,$eventArgs)
-    $noUrl = ([string]$sender.SelectedItem.Tag) -in @('tcp','none')
+    $noUrl = -not (Resolve-ProbeSpec ([string]$sender.SelectedItem.Tag) '' 1).url
     if ($noUrl) { $inUrl.Text = '' }
     $inUrl.IsEnabled = -not $noUrl
   }.GetNewClosure())
