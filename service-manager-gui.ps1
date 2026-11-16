@@ -256,6 +256,7 @@ $script:sync = [hashtable]::Synchronized(@{
   tcpTimeoutMs         = [int]$script:config.TcpTimeoutMs
   httpTimeoutMs        = [int]$script:config.HttpTimeoutMs
   waitStoppedTimeoutMs = [int]$script:config.WaitStoppedTimeoutMs
+  waitStoppedNoticeMs  = [int]$script:config.WaitStoppedNoticeMs
   extCommandTimeoutMs  = [int]$script:config.ExtCommandTimeoutMs
   svcStateTimeoutMs    = [int]$script:config.SvcStateTimeoutMs
   scmPendingStates     = [string[]]$script:SCM_PENDING_STATES

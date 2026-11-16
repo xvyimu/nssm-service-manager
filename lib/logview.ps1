@@ -111,7 +111,7 @@ function Show-Log([string]$n, $owner){
                     elseif ($fi.Length -ge 1KB) { '{0:N0} KB' -f ($fi.Length / 1KB) }
                     else { "$($fi.Length) B" }
         $whenText = $fi.LastWriteTime.ToString('HH:mm:ss')
-      } catch {}
+      } catch { Write-Verbose "logview.ps1: 读日志文件大小/修改时间失败（元数据留空），忽略：$($_.Exception.Message)" }
     }
     $meta.Text = "最近 500 行" + $(if ($sizeText) { " · 文件 $sizeText" } else { '' }) + $(if ($whenText) { " · 更新于 $whenText" } else { '' })
   }.GetNewClosure()
@@ -179,11 +179,11 @@ function Show-Log([string]$n, $owner){
       [System.Windows.MessageBox]::Show('还没有日志目录。','打开文件夹','OK','Information') | Out-Null
       return
     }
-    try { Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$p`"" } catch {}
+    try { Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$p`"" } catch { Write-Verbose "logview.ps1: 用资源管理器打开日志文件夹失败，忽略：$($_.Exception.Message)" }
   }.GetNewClosure())
   $copyPath.Add_Click({
     if (-not $state.File) { return }
-    try { [System.Windows.Clipboard]::SetText([string]$state.File) } catch {}
+    try { [System.Windows.Clipboard]::SetText([string]$state.File) } catch { Write-Verbose "logview.ps1: 复制日志路径到剪贴板失败，忽略：$($_.Exception.Message)" }
   }.GetNewClosure())
 
   [void]$lt.Children.Add($combo); [void]$lt.Children.Add($refreshBtn); [void]$lt.Children.Add($follow)

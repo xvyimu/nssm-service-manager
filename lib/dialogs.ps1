@@ -196,7 +196,7 @@ function Submit-AddService($owner,[hashtable]$fields){
   # 幂等续做：上次注册成功但清单没写成时，重试会走到这里。再 install 只会报「已存在」，
   # 因此已存在就只补写参数——用户点重试即可收敛，不必先 nssm remove 再重来。
   $alreadyRegistered = $false
-  try { $alreadyRegistered = Test-ServicePresent $n } catch {}
+  try { $alreadyRegistered = Test-ServicePresent $n } catch { Write-Verbose "dialogs.ps1: 检测服务是否已注册失败（按未注册处理）：$($_.Exception.Message)" }
   try {
     if ($alreadyRegistered) {
       Set-NssmServiceParams $n $exe $dir $par $envPairs $account

@@ -158,7 +158,7 @@ if ($script:removed -ne '__sm_remove_test__') { throw 'Remove-NssmService did no
 $script:removeCalled = $false
 function Invoke-TestNssmRemoveBusy { $a = $args; if ($a[0] -eq 'remove') { $script:removeCalled = $true }; $global:LASTEXITCODE = 0 }
 $realWaitStopped = ${function:Wait-Stopped}
-function Wait-Stopped([string]$n) { $false }
+function Wait-Stopped([string]$n, [int]$TimeoutMs = 0) { $false }
 try {
   $rBusy = Invoke-ServiceRemove '__sm_busy__' 'Invoke-TestNssmRemoveBusy'
 } finally { ${function:Wait-Stopped} = $realWaitStopped }

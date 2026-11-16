@@ -48,6 +48,7 @@ function Update-TrayText {
     $t = Get-TrayStatusText
     if ($t -and $t.Length -gt 63) { $t = $t.Substring(0,63) }
     if ($script:trayIcon.Text -ne $t) { $script:trayIcon.Text = $t }
+  # 空 catch 有意：Update-TrayText 由 Update-FreshnessPill 每帧调用，Text 赋值失败只影响一次 tooltip 显示（每帧路径，加日志会刷屏）
   } catch {}
 }
 
@@ -57,17 +58,17 @@ function Show-TrayHint {
   $script:trayHintShown = $true
   try {
     $script:trayIcon.ShowBalloonTip(4000, '服务管理', '仍在后台运行。要彻底退出，请用托盘菜单的「退出」。', [System.Windows.Forms.ToolTipIcon]::Info)
-  } catch {}
+  } catch { Write-Verbose "tray.ps1: 首次收进托盘的提示气泡失败，忽略：$($_.Exception.Message)" }
 }
 
 # 打开日志目录（托盘菜单）。目录取自调用方脚本作用域的 $logDir；没有就提示一句。
 function Invoke-TrayOpenLogs {
   $dir = if ($script:logDir) { [string]$script:logDir } else { $null }
   if (-not $dir -or -not (Test-Path -LiteralPath $dir)) {
-    try { $script:trayIcon.ShowBalloonTip(3000, '服务管理', '还没有日志目录。', [System.Windows.Forms.ToolTipIcon]::Info) } catch {}
+    try { $script:trayIcon.ShowBalloonTip(3000, '服务管理', '还没有日志目录。', [System.Windows.Forms.ToolTipIcon]::Info) } catch { Write-Verbose "tray.ps1: 「没有日志目录」提示气泡失败，忽略：$($_.Exception.Message)" }
     return
   }
-  try { Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$dir`"" } catch {}
+  try { Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$dir`"" } catch { Write-Verbose "tray.ps1: 用资源管理器打开日志目录失败，忽略：$($_.Exception.Message)" }
 }
 
 # 创建托盘图标（幂等）。WinForms 程序集在此按需加载——未启用托盘的机器不加载。
@@ -78,7 +79,7 @@ function Initialize-Tray($window){
   Add-Type -AssemblyName System.Windows.Forms, System.Drawing
   $ni = [System.Windows.Forms.NotifyIcon]::new()
   if($script:iconPath -and (Test-Path -LiteralPath $script:iconPath)){
-    try { $ni.Icon = [System.Drawing.Icon]::new($script:iconPath) } catch {}
+    try { $ni.Icon = [System.Drawing.Icon]::new($script:iconPath) } catch { Write-Verbose "tray.ps1: 托盘图标文件加载失败（用默认图标），忽略：$($_.Exception.Message)" }
   }
   $ni.Text = Get-TrayStatusText
 
@@ -126,12 +127,12 @@ function Initialize-Tray($window){
 # 移除托盘图标（退出时调用；幂等）。
 function Remove-Tray {
   if($script:trayIcon){
-    try { $script:trayIcon.Visible = $false } catch {}
-    try { $script:trayIcon.Dispose() } catch {}
+    try { $script:trayIcon.Visible = $false } catch { Write-Verbose "tray.ps1: 隐藏托盘图标失败，忽略：$($_.Exception.Message)" }
+    try { $script:trayIcon.Dispose() } catch { Write-Verbose "tray.ps1: 释放托盘图标失败，忽略：$($_.Exception.Message)" }
     $script:trayIcon = $null
   }
   if($script:trayMenu){
-    try { $script:trayMenu.Dispose() } catch {}
+    try { $script:trayMenu.Dispose() } catch { Write-Verbose "tray.ps1: 释放托盘菜单失败，忽略：$($_.Exception.Message)" }
     $script:trayMenu = $null
   }
   $script:trayWindow = $null

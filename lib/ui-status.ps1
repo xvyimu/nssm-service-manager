@@ -35,8 +35,8 @@ function Open-PanelUrl([string]$url){
   try { Start-Process $url -EA Stop }
   catch {
     # 先提示再记日志，各自包住；走 Set-StatusMessage 带租约，否则会被下一帧自动刷新吞掉。§Open-PanelUrl
-    try { Set-StatusMessage "打开面板失败：$($_.Exception.Message)" } catch {}
-    try { Write-CrashLog "Open-PanelUrl 失败: $($_.Exception.GetType().FullName): $($_.Exception.Message)" } catch {}
+    try { Set-StatusMessage "打开面板失败：$($_.Exception.Message)" } catch { Write-Verbose "ui-status.ps1: 连「打开面板失败」的状态栏提示也没写进去，忽略：$($_.Exception.Message)" }
+    try { Write-CrashLog "Open-PanelUrl 失败: $($_.Exception.GetType().FullName): $($_.Exception.Message)" } catch { Write-Verbose "ui-status.ps1: 记录「打开面板失败」崩溃日志时又失败，忽略：$($_.Exception.Message)" }
   }
 }
 
@@ -62,8 +62,8 @@ function Set-UiErrorStatus([string]$message){
 
 # Dispatcher 未处理异常的兜底体。每步各自包住；必须置 Handled，否则单次异常=整窗消失。§Invoke-DispatcherErrorFallback
 function Invoke-DispatcherErrorFallback($e){
-  try { Set-UiErrorStatus ([string]$e.Exception.Message) } catch {}
-  try { Write-CrashLog "DispatcherUnhandled: $($e.Exception.GetType().FullName): $($e.Exception.Message)" } catch {}
+  try { Set-UiErrorStatus ([string]$e.Exception.Message) } catch { Write-Verbose "ui-status.ps1: Dispatcher 兜底的状态栏提示失败，忽略：$($_.Exception.Message)" }
+  try { Write-CrashLog "DispatcherUnhandled: $($e.Exception.GetType().FullName): $($e.Exception.Message)" } catch { Write-Verbose "ui-status.ps1: 记录 Dispatcher 未处理异常时崩溃日志写失败，忽略：$($_.Exception.Message)" }
   $e.Handled = $true
 }
 
@@ -150,7 +150,7 @@ function Update-StatusTick {
   # 而状态栏还在每 4 秒打「状态自动刷新」，看起来是活的——用户只能杀进程重开。
   if ($script:bgHandle -and $script:bgHandle.IsCompleted -and -not $script:bgDeathReported) {
     $script:bgDeathReported = $true
-    try { Write-CrashLog 'Background runspace completed unexpectedly' } catch {}
+    try { Write-CrashLog 'Background runspace completed unexpectedly' } catch { Write-Verbose "ui-status.ps1: 记录后台 runspace 异常结束失败，忽略：$($_.Exception.Message)" }
     Set-StatusMessage '后台已停止响应，状态不可用；请关闭重开'
     foreach ($card in @($script:cards.Values)) {
       # 所有卡片都必须承认「不知道」：只把「查询中」改成未知，其余卡会继续显示上一次的
@@ -170,7 +170,7 @@ function Update-StatusTick {
   # 单独包 try：胶囊是「数据还可不可信」的唯一常驻指示，不能让上游一条坏数据把它连累停更——
   # 停更的表现是数字冻结在最后一帧，看起来比「离线」更可信。
   try { if (Get-Command Update-FreshnessPill -EA SilentlyContinue) { Update-FreshnessPill } }
-  catch { try { Write-CrashLog "Freshness pill failed: $($_.Exception.Message)" } catch {} }
+  catch { try { Write-CrashLog "Freshness pill failed: $($_.Exception.Message)" } catch { Write-Verbose "ui-status.ps1: 记录新鲜度胶囊失败原因时又失败，忽略：$($_.Exception.Message)" } }
 }
 
 # 探测单实例 mutex 是否被 GUI 持有。OpenExisting 抛 = 无 GUI（正常）；抢到要立即释放。§Test-GuiInstanceRunning

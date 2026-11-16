@@ -38,6 +38,7 @@ $script:config = [ordered]@{
   WaitHealthyTimeoutMs = 120000  # 「运行中但健康探测不通过」超过此时长：从「等待中」升级为「无响应」+ 红点
   TransitionHardCapFactor = 10   # 过渡计时刷新的硬上限倍数：累计超过 ToggleTimeoutMs × 本值就强制逃生。
   WaitStoppedTimeoutMs = 12000  # 停止/删除前轮询 Stopped 的总预算上限；实际返回时刻 ≤ 本值（内部按 1/4 预留 Kill 收尾）。取值依据：AppStopMethodConsole 5000 + Window/Threads 各 1500 = 8000ms，再留余量
+  WaitStoppedNoticeMs  = 3000   # 停止等待超过此时长写一条阶段提示（Wait-Stopped 读 $sync.waitStoppedNoticeMs，只写一次）
   ExtCommandTimeoutMs = 60000    # 外部命令（sc.exe / nssm.exe）超时；超时即 Kill 并返回 exit=-1
   SvcStateTimeoutMs   = 3000     # 服务状态探测查询（sc.exe query）的硬超时；只管探测，不改命令超时（见上一项）
   LogKeepCount        = 10       # 轮转日志保留份数（util.ps1 Remove-RotatedLogs），按日志目录各留前 N 份。§LogKeepCount
@@ -78,6 +79,7 @@ $script:configRanges = @{
   WaitHealthyTimeoutMs    = @(1000, 3600000)
   TransitionHardCapFactor = @(1, 100)
   WaitStoppedTimeoutMs    = @(100, 600000)
+  WaitStoppedNoticeMs     = @(100, 600000)
   ExtCommandTimeoutMs     = @(100, 600000)
   SvcStateTimeoutMs       = @(100, 600000)
   LogKeepCount            = @(0, 1000)

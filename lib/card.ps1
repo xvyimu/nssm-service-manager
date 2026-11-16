@@ -22,6 +22,7 @@ function Update-CardAutomationName($card){
     if ([System.Windows.Automation.AutomationProperties]::GetName($card) -ne $label) {
       [System.Windows.Automation.AutomationProperties]::SetName($card, $label)
     }
+  # 空 catch 有意：Update-CardAutomationName 每帧（陈旧扫描）都会调，SetName 失败只影响读屏名字（每帧路径，加日志会刷屏）
   } catch {}
 }
 

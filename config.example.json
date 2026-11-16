@@ -8,6 +8,7 @@
   "WaitHealthyTimeoutMs": 120000,
   "TransitionHardCapFactor": 10,
   "WaitStoppedTimeoutMs": 12000,
+  "WaitStoppedNoticeMs":  3000,
   "ExtCommandTimeoutMs":  60000,
   "SvcStateTimeoutMs":    3000,
   "LogKeepCount":         10,

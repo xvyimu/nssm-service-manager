@@ -9,7 +9,7 @@ function Get-SvcLogDir([string]$n){
     $p = Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$n\Parameters" -Name AppStdout -EA Stop
     $dir = Split-Path ([string]$p.AppStdout) -Parent
     if ($dir -and (Test-Path -LiteralPath $dir)) { return $dir }
-  } catch {}
+  } catch { Write-Verbose "log-retention.ps1: 读服务日志目录注册表失败（回落默认日志目录）：$($_.Exception.Message)" }
   $logDir
 }
 

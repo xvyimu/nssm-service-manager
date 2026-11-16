@@ -289,4 +289,102 @@ foreach ($v in 'tcpMs','httpMs') {
   Assert ($bare -eq 0) ('并行块里裸用 $' + $v + ' ' + $bare + ' 处：必须经 $using: 传入，否则子 runspace 取到 $null。')
   Assert ($block -match ('\$using:' + $v)) ('并行块里找不到 $using:' + $v + '。')
 }
+# ---- 7. per-service waitStoppedTimeoutMs：解析 / 区间 / 回写 / 非法值 ----
+$tmpW = Join-Path ([IO.Path]::GetTempPath()) "sm-wstop-$([guid]::NewGuid().ToString('N')).json"
+[IO.File]::WriteAllText($tmpW, '{"SlowStop":{"port":8081,"waitStoppedTimeoutMs":45000},"Big":{"port":8082,"waitStoppedTimeoutMs":600000},"Edge":{"port":8083,"waitStoppedTimeoutMs":100}}', [Text.UTF8Encoding]::new($false))
+try {
+  $w = Read-SvcFile $tmpW
+  Assert ($w['SlowStop'].waitStoppedTimeoutMs -eq 45000) 'waitStoppedTimeoutMs 未被 Read-SvcFile 保留（下一次保存就会抹掉）'
+  Assert ($w['Big'].waitStoppedTimeoutMs -eq 600000) '上限 600000 应被接受'
+  Assert ($w['Edge'].waitStoppedTimeoutMs -eq 100) '下限 100 应被接受'
+  Assert (@($script:svcFieldWarnings).Count -eq 0) "合法值不该产生提示：$($script:svcFieldWarnings -join ' | ')"
+
+  # 整份回写再读：Save-Svc 写整份对象，白名单漏一个键就会静默抹掉
+  $cfg = $tmpW
+  # Save-Svc 有外部修改门闩（比对载入时的 mtime）：直写后必须把 stamp 对齐，
+  # 否则测到的是「拒绝写」而不是「字段是否被保留」。
+  $script:svcFileStamp = (Get-Item -LiteralPath $tmpW).LastWriteTimeUtc.Ticks
+  $null = Save-Svc $w
+  $againW = Read-SvcFile $tmpW
+  Assert ($againW['SlowStop'].waitStoppedTimeoutMs -eq 45000) 'round-trip 后 waitStoppedTimeoutMs 丢了'
+
+  # 非法值：只丢该字段 + 一条提示，服务条目保留（99/1 在区间外，600001 超上限）
+  foreach ($bad in 99, 600001, 0, -1, 'abc', 1) {
+    $rawJ = if ($bad -is [string]) { '"' + $bad + '"' } else { "$bad" }
+    [IO.File]::WriteAllText($tmpW, '{ "S": { "port": 1, "waitStoppedTimeoutMs": ' + $rawJ + ' } }', [Text.UTF8Encoding]::new($false))
+    $oneW = Read-SvcFile $tmpW
+    Assert ($oneW.Contains('S')) "waitStoppedTimeoutMs=$bad 时服务条目不该消失"
+    Assert (-not $oneW['S'].ContainsKey('waitStoppedTimeoutMs')) "waitStoppedTimeoutMs=$bad 不该生效"
+    Assert (@($script:svcFieldWarnings).Count -eq 1) "waitStoppedTimeoutMs=$bad 应记一条提示，got $($script:svcFieldWarnings.Count)"
+    Assert ($script:svcFieldWarnings[0] -match 'waitStoppedTimeoutMs') "提示应点名字段：$($script:svcFieldWarnings[0])"
+  }
+
+  # 非法值经 Load-Svc 要变成用户可见的 notice（Add-ConfigNotice 是唯一写入口）
+  $script:svcLoadFailed = $null
+  $script:configNotices = @()
+  $cfg = $tmpW
+  [IO.File]::WriteAllText($cfg, '{"S":{"port":1,"waitStoppedTimeoutMs":42}}', [Text.UTF8Encoding]::new($false))
+  $null = Load-Svc
+  Assert (@($script:configNotices | Where-Object { $_ -match 'waitStoppedTimeoutMs' }).Count -eq 1) "非法值应进入 configNotice：$($script:configNotices -join ' | ')"
+} finally {
+  Remove-Item -LiteralPath @($tmpW, "$tmpW.bak") -Force -EA SilentlyContinue
+}
+Write-Output 'PASS: per-service waitStoppedTimeoutMs parsed (100..600000), round-trips through Save-Svc, invalid values dropped with a notice.'
+
+# ---- 8. Wait-Stopped 的 -TimeoutMs 与 poll 的传递链 ----
+# 本文件平时只把 svc-common 的文本前置进 poll 的 runspace（$script:poll 是字符串），
+# 进程内没有 Wait-Stopped；直调它的三段先点源一次（函数定义而已，不影响已跑的 runspace）。
+. (Join-Path $RepoRoot 'lib/svc-common.ps1')
+# 8a 参数优先于 $sync：$sync 是 3000，参数 200，实测必须落在 200 的量级
+$script:sync = @{ waitStoppedTimeoutMs = 3000; waitStoppedPollMs = 20; svcStateTimeoutMs = 100 }
+function Get-SvcStateQuiet([string]$name, [int]$timeoutMs = 0){ $null }
+function Get-ServiceQueryCode([string]$name, [int]$timeoutMs = 0){ 0 }
+$swP = [Diagnostics.Stopwatch]::StartNew()
+[void](Wait-Stopped 'PSvc' -TimeoutMs 200)
+$elP = $swP.ElapsedMilliseconds
+Assert ($elP -lt 1200) "per-service 预算 200ms 被忽略：实测 ${elP}ms（回落到 `$sync 的 3000ms）"
+Assert ($elP -ge 100) "预算 200ms 提前放弃：实测 ${elP}ms"
+Write-Output "PASS: Wait-Stopped -TimeoutMs overrides `$sync ($elP ms < 1200 ms; sync had 3000 ms)."
+
+# 8b 缺省 → 12s：用首查询窗口反推（12000 - 1000 预留 = 11000），不真等 12s
+$script:firstQueryMs = -1
+function Get-SvcStateQuiet([string]$name, [int]$timeoutMs = 0){ $script:firstQueryMs = $timeoutMs; 'Stopped' }
+$script:sync = @{ waitStoppedPollMs = 20; svcStateTimeoutMs = 600000 }
+$rDef = Wait-Stopped 'DefSvc'
+Assert $rDef '立刻 Stopped 应返回 true'
+Assert ($script:firstQueryMs -ge 10990 -and $script:firstQueryMs -le 11000) "缺省预算应为 12000（首查询窗口 11000），实际 $($script:firstQueryMs)"
+
+# 8c poll 的 restart / remove 分支把该服务的值传进 Wait-Stopped。
+# svc 映射被替换成带 waitStoppedTimeoutMs=150 的一条；全局注入 3000——150 生效才算通。
+$svcMap = [ordered]@{ Fake0 = @{ port = 0; url = ''; probe = 'none'; waitStoppedTimeoutMs = 150 } }
+$worker = Start-FakePoll 1 'Running' 0 @{
+  svc = $svcMap
+  waitStoppedTimeoutMs = 3000; waitStoppedPollMs = 20; svcStateTimeoutMs = 50; waitStoppedNoticeMs = 10000
+}
+try {
+  $swR = [Diagnostics.Stopwatch]::StartNew()
+  $worker.Sync.cmd.Enqueue([pscustomobject]@{ n='Fake0'; act='restart'; e=1 })
+  [void]$worker.Sync.wake.Set()
+  $ackR = Wait-FakePollAck $worker 4
+  $elR = $swR.ElapsedMilliseconds
+  Assert ($null -ne $ackR) '4s 内没收到 restart 回执：per-service 150ms 没传进 Wait-Stopped'
+  Assert ($ackR.ok -eq $false) '服务停不下来时 restart 应回失败回执'
+  Assert ($elR -lt 1200) "restart 用了 ${elR}ms：per-service waitStoppedTimeoutMs=150 未生效（全局 3000）"
+  Assert ($elR -ge 100) "restart 过快（${elR}ms）：Wait-Stopped 根本没等"
+  Write-Output "PASS: restart branch passes per-service waitStoppedTimeoutMs into Wait-Stopped ($elR ms)."
+
+  # remove：服务仍在跑（serviceGone 未置），删除必须在同一预算内中止而不是等 3s 全局值
+  $swM = [Diagnostics.Stopwatch]::StartNew()
+  $worker.Sync.cmd.Enqueue([pscustomobject]@{ n='Fake0'; act='remove'; e=2 })
+  [void]$worker.Sync.wake.Set()
+  $ackM = Wait-FakePollAck $worker 4
+  $elM = $swM.ElapsedMilliseconds
+  Assert ($null -ne $ackM) '4s 内没收到 remove 回执'
+  Assert ($ackM.ok -eq $false) '服务还在跑时 remove 应判失败'
+  Assert ($elM -lt 1200) "remove 用了 ${elM}ms：per-service 预算没传到 Invoke-ServiceRemove"
+  Write-Output "PASS: remove branch passes per-service waitStoppedTimeoutMs into Invoke-ServiceRemove ($elM ms)."
+} finally {
+  Close-FakePoll $worker
+}
+
 Write-Output 'PASS: parallel probe block references both timeouts only via $using: (static scan).'

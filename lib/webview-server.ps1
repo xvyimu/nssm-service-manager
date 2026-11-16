@@ -43,6 +43,6 @@ try {
       $stream.Write($hb, 0, $hb.Length)
       $stream.Write($bytes, 0, $bytes.Length)
       $stream.Flush()
-    } catch { } finally { try { $client.Close() } catch {} }
+    } catch { Write-Verbose "webview-server.ps1: 处理只读视图请求失败（连接照常关闭），忽略：$($_.Exception.Message)" } finally { try { $client.Close() } catch { Write-Verbose "webview-server.ps1: 关闭客户端连接失败，忽略：$($_.Exception.Message)" } }
   }
-} finally { try { $listener.Stop() } catch {} }
+} finally { try { $listener.Stop() } catch { Write-Verbose "webview-server.ps1: 停止监听器失败，忽略：$($_.Exception.Message)" } }

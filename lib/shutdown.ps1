@@ -17,7 +17,7 @@ function Stop-Background {
   $script:bgStopped = $true
   if (-not $script:sync) { return }
   $script:sync.stop = $true
-  try { [void]$script:sync.wake.Set() } catch {}
+  try { [void]$script:sync.wake.Set() } catch { Write-Verbose "shutdown.ps1: 唤醒后台失败（停止标志已置位，后续有界等待兜底），忽略：$($_.Exception.Message)" }
   # Web 视图用自己的 runspace：先置停止标志（循环 200ms 内自己退出），再兜底停管道。
   # 包 try：web runspace 已崩时 Stop-WebView 会抛，而 bgStopped 已置位——
   # 抛出去会让后续的排空、有界等待、资源拆解全部短路，进程退出后 mutex 仍被占。
@@ -37,21 +37,21 @@ function Stop-Background {
   if ($script:healthQueue -and $script:healthHistoryDir) {
     $hev = $null
     while ($script:healthQueue.TryDequeue([ref]$hev)) {
-      try { $null = Add-HealthEvent $script:healthHistoryDir $hev } catch {}
+      try { $null = Add-HealthEvent $script:healthHistoryDir $hev } catch { Write-Verbose "shutdown.ps1: 关闭时补写健康事件失败，忽略：$($_.Exception.Message)" }
     }
   }
   # 有界等待：后台卡在 $svc.Start()（等满 ServicesPipeTimeout ≈ 30s）或外部命令里时，
   # UI 线程不能跟着等——窗口关了进程还在，mutex 仍被占，用户再双击就是「没反应」。
   $ended = $false
   if ($Handle) {
-    try { $ended = $Handle.AsyncWaitHandle.WaitOne(1500) } catch {}
+    try { $ended = $Handle.AsyncWaitHandle.WaitOne(1500) } catch { Write-Verbose "shutdown.ps1: 读后台句柄的等待状态失败（按未结束处理）：$($_.Exception.Message)" }
   }
   # 等待期间后台可能又写了几条健康事件（它还在跑最后几拍）：再排一次，
   # 否则「兜底写一次」只覆盖到等待开始那一刻。
   if ($script:healthQueue -and $script:healthHistoryDir) {
     $hev2 = $null
     while ($script:healthQueue.TryDequeue([ref]$hev2)) {
-      try { $null = Add-HealthEvent $script:healthHistoryDir $hev2 } catch {}
+      try { $null = Add-HealthEvent $script:healthHistoryDir $hev2 } catch { Write-Verbose "shutdown.ps1: 等待期间补写健康事件失败，忽略：$($_.Exception.Message)" }
     }
   }
   if ($ended) {
@@ -59,9 +59,9 @@ function Stop-Background {
       try { $Pipeline.EndInvoke($Handle) } catch { Write-CrashLog "Background end failed: $($_.Exception.Message)" }
     }
     # 只有确认管道结束才拆资源：在仍在跑的 runspace 上 Close/Dispose，异常会被吞掉，语义不确定。
-    if ($Runspace) { try { $Runspace.Close() } catch {}; try { $Runspace.Dispose() } catch {} }
-    if ($Pipeline) { try { $Pipeline.Dispose() } catch {} }
-    try { $script:sync.wake.Dispose() } catch {}
+    if ($Runspace) { try { $Runspace.Close() } catch { Write-Verbose "shutdown.ps1: 关闭后台 runspace 失败，忽略：$($_.Exception.Message)" }; try { $Runspace.Dispose() } catch { Write-Verbose "shutdown.ps1: 释放后台 runspace 失败，忽略：$($_.Exception.Message)" } }
+    if ($Pipeline) { try { $Pipeline.Dispose() } catch { Write-Verbose "shutdown.ps1: 释放后台管道失败，忽略：$($_.Exception.Message)" } }
+    try { $script:sync.wake.Dispose() } catch { Write-Verbose "shutdown.ps1: 释放唤醒事件失败，忽略：$($_.Exception.Message)" }
   } elseif ($Pipeline) {
     # 管道没结束：只发停止请求，把清理交给进程退出。这里不 Dispose，后台可能仍在用它。
     try { [void]$Pipeline.BeginStop($null, $null) } catch { Write-CrashLog "Background stop failed: $($_.Exception.Message)" }

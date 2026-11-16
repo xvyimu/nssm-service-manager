@@ -12,6 +12,13 @@ $http = [System.Net.Http.HttpClient]::new()
 $tcpMs  = if ($sync.tcpTimeoutMs)        { [int]$sync.tcpTimeoutMs }        else { 200 }
 $httpMs = if ($sync.httpTimeoutMs)       { [int]$sync.httpTimeoutMs }       else { 3000 }
 $waitMs = if ($sync.waitStoppedTimeoutMs){ [int]$sync.waitStoppedTimeoutMs } else { 12000 }
+# per-service 停止预算：services.json 的 waitStoppedTimeoutMs；无该键 → 全局注入值（默认 12000）。
+# 显式传进 Wait-Stopped，改一个服务的预算不波及别的服务。
+function Get-WaitStoppedMs([string]$svcName){
+  $v = 0
+  if ($sync.svc) { try { $v = [int]$sync.svc[$svcName].waitStoppedTimeoutMs } catch { $v = 0 } }
+  if ($v -gt 0) { $v } else { $waitMs }
+}
 # 服务状态探测查询的硬超时：UI 侧注入 config.SvcStateTimeoutMs，未注入传 0 让 Get-SvcStateQuiet
 # 自己回落（runspace 里没有 config，注入是唯一通路）。
 $svcStateMs = if ($sync.svcStateTimeoutMs) { [int]$sync.svcStateTimeoutMs } else { 0 }
@@ -90,7 +97,7 @@ function Invoke-PendingCommands {
         if(-not (Invoke-Sc 'stop' $n '停止失败，重启中断')) { $ok=$false; break }
         # 等不到 Stopped 就不能往下 start：此时 SCM 多半回 1056（已在运行/正在停止），
         # 旧代码丢弃返回值直接 start，失败文案会写成「已在运行」，与事实（仍在停止）相反。
-        if(-not (Wait-Stopped $n)) { $ok=$false; $why='停止未在超时内完成，已中止重启'; break }
+        if(-not (Wait-Stopped $n -TimeoutMs (Get-WaitStoppedMs $n))) { $ok=$false; $why='停止未在超时内完成，已中止重启'; break }
         # 中间回执：停止阶段结束、开始启动。UI 收到后把过渡态从「停止中」换成「启动中」，
         # 否则整个重启期间卡片都写着「停止中」，看不出它已经开始起来了。
         $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$null;h=$null;e=$e;phase='start'})
@@ -98,11 +105,11 @@ function Invoke-PendingCommands {
         $ok=Invoke-ServiceStart $n '重启后启动失败'
       }
       'remove' {
-        # 删除走后台：stop → Wait-Stopped ≤12s → nssm remove confirm → 实证复核。
+        # 删除走后台：stop → Wait-Stopped ≤该服务预算（缺省 12s）→ nssm remove confirm → 实证复核。
         # 序列本体在 svc-common.ps1 的 Invoke-ServiceRemove（与 nssm.ps1 共用一份，免得漂移）。
         $ok=$true
         try {
-          $r = Invoke-ServiceRemove $n $sync.nssm
+          $r = Invoke-ServiceRemove $n $sync.nssm -TimeoutMs (Get-WaitStoppedMs $n)
           if(-not $r.ok){
             $msg = if($r.exitCode -ne 0){ "$n 删除失败($($r.exitCode))" } else { "$n 删除失败：$($r.why)" }
             $sync.msg.Enqueue($msg); $ok=$false

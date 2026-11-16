@@ -59,15 +59,21 @@ function Read-SvcFile([string]$path){
     }
     $entry = @{ port = $p; url = $u }
     if ($null -ne $entryProbe) { $entry['probe'] = $entryProbe }
-    # 可选 per-service 超时覆盖（toggleTimeoutMs/httpTimeoutMs/tcpTimeoutMs），缺省回落全局。
+    # 可选 per-service 覆盖，缺省回落全局：
+    #   toggleTimeoutMs / httpTimeoutMs / tcpTimeoutMs —— 探测与过渡态
+    #   waitStoppedTimeoutMs —— 停止/删除前的等待预算（100..600000，与全局键同区间）
     # **必须显式带走**：Save-Svc 写整份 $script:svc，只挑 port/url 会让用户的覆盖被静默抹掉。
-    foreach ($opt in 'toggleTimeoutMs','httpTimeoutMs','tcpTimeoutMs') {
+    foreach ($opt in 'toggleTimeoutMs','httpTimeoutMs','tcpTimeoutMs','waitStoppedTimeoutMs') {
       # **不能用 ContainsKey**：-AsHashtable 返回的 OrderedHashtable 键大小写敏感，按 -ieq 找实际键名。§Read-SvcFile
       $actual = @($j[$k].Keys | Where-Object { $_ -ieq $opt }) | Select-Object -First 1
       if (-not $actual) { continue }
       $raw = $j[$k][$actual]
       $v = 0
-      if (-not [int]::TryParse([string]$raw, [ref]$v) -or $v -le 0) {
+      # 等待预算是「时长」不是「>0 即合法」：一个 1ms 的预算等于静默不等待，和写错没区别。
+      # 区间与 config 的 WaitStoppedTimeoutMs 保持一致，免得配了却在入口被回落。
+      $minV = if ($opt -eq 'waitStoppedTimeoutMs') { 100 } else { 1 }
+      $maxV = if ($opt -eq 'waitStoppedTimeoutMs') { 600000 } else { [int]::MaxValue }
+      if (-not [int]::TryParse([string]$raw, [ref]$v) -or $v -lt $minV -or $v -gt $maxV) {
         # 写错/写 0 只让该字段不生效（回落全局），服务本身照常保留；原因记进收集箱弹给用户。
         $script:svcFieldWarnings += "$k 的 $opt 无效（$raw），已回落全局值"
         continue
@@ -76,7 +82,7 @@ function Read-SvcFile([string]$path){
     }
     # 白名单外的键会被 Save-Svc 的全量写回静默抹掉——记一条提示。
     # 用户把字段名打错一个字母时，原来的表现是「配了但没生效」，且连提示都没有。
-    $known = @('port','url','probe','toggleTimeoutMs','httpTimeoutMs','tcpTimeoutMs')
+    $known = @('port','url','probe','toggleTimeoutMs','httpTimeoutMs','tcpTimeoutMs','waitStoppedTimeoutMs')
     foreach ($key in $j[$k].Keys) {
       if (-not @($known | Where-Object { $_ -ieq $key }).Count) {
         $script:svcFieldWarnings += "$k 的字段 $key 不被识别，保存时会被丢弃"

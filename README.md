@@ -143,7 +143,7 @@ Copy-Item services.example.json services.json
 
 ### 重服务（冷启动慢）的单服务覆盖
 
-`config.json` 的超时是**全局**的，假定服务秒起。AI 服务、冷启动 JVM 这类动辄一分钟才 listen 的，在 `services.json` 的该条目里加三项覆盖，缺省回落全局：
+`config.json` 的超时是**全局**的，假定服务秒起。AI 服务、冷启动 JVM 这类动辄一分钟才 listen（或停得慢）的，在 `services.json` 的该条目里加四项覆盖，缺省回落全局：
 
 ```json
 {
@@ -162,8 +162,9 @@ Copy-Item services.example.json services.json
 | `toggleTimeoutMs` | `ToggleTimeoutMs` | 过渡态超时逃生阈值。重服务冷启动时调大，别让它显示「未知」 |
 | `httpTimeoutMs` | `HttpTimeoutMs` | 该服务的 HTTP 探测超时 |
 | `tcpTimeoutMs` | `TcpTimeoutMs` | 该服务的端口探测超时 |
+| `waitStoppedTimeoutMs` | `WaitStoppedTimeoutMs` | 该服务的停止/删除等待预算（毫秒，100..600000）。可按服务覆盖，缺省用全局 `WaitStoppedTimeoutMs` |
 
-字段名大小写不敏感，必须是正整数毫秒。写错（`0` / 负数 / 非数字）时**只有该字段失效、回落全局**，服务条目照常保留，启动时弹一条提示说明是哪个服务的哪个字段——不会因为一个数字写错就把整份清单换成示例。这些字段由 `Read-SvcFile` 显式保留，GUI 增删别的服务不会抹掉。
+字段名大小写不敏感，必须是正整数毫秒（`waitStoppedTimeoutMs` 另有 100..600000 的区间）。写错（`0` / 负数 / 非数字）时**只有该字段失效、回落全局**，服务条目照常保留，启动时弹一条提示说明是哪个服务的哪个字段——不会因为一个数字写错就把整份清单换成示例。这些字段由 `Read-SvcFile` 显式保留，GUI 增删别的服务不会抹掉。
 
 ### 非 HTTP 服务（数据库 / gRPC / 纯 socket 守护）
 
@@ -217,7 +218,8 @@ pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName <服务名
 | `ToggleTimeoutMs` | 45000 | 过渡态超时逃生：回执丢失时按到达的探测值收敛并解封按钮。须大于正常路径最长耗时——启动失败回落 `sc.exe start` 走 SCM 同步管道，上限 `ServicesPipeTimeout`（**2026-10-28 实测该路径 30.0s**），故留 15s 余量。服务仍在同一过渡态时计时刷新（慢启动不误判），累计超 `TransitionHardCapFactor` 倍后强制逃生。单服务可单独调大，见「重服务」 |
 | `TransitionHardCapFactor` | 10 | 过渡计时刷新的硬上限倍数，防止永久卡在中间态的服务把逃生口刷掉 |
 | `WaitHealthyTimeoutMs` | 120000 | 「运行中但健康探测不通过」超过此时长：「等待中」升级为「无响应」+ 红点。冷启动一分钟起的服务可以调大 |
-| `WaitStoppedTimeoutMs` | 12000 | 重启/删除前轮询 Stopped 的上限（`Wait-Stopped`，UI 与 runspace 共用一份） |
+| `WaitStoppedTimeoutMs` | 12000 | 重启/删除前轮询 Stopped 的上限（`Wait-Stopped`，UI 与 runspace 共用一份）；可按服务覆盖（`services.json` 的 `waitStoppedTimeoutMs`），缺省用全局 |
+| `WaitStoppedNoticeMs` | 3000 | 停止等待超过此时长，往状态栏写一条「正在等待 <服务名> 停止（已 n s，上限 m s）」的阶段提示；每次等待只写一条 |
 | `ExtCommandTimeoutMs` | 60000 | 外部命令（`sc.exe` / `nssm.exe`）超时：超时即 `Kill` 整棵进程树并返回 `exit=-1`，不让一条挂住的命令拖死后台 |
 | `SvcStateTimeoutMs` | 3000 | 单次服务状态查询（`sc.exe query`）的硬超时；探测与等待循环共用，超时会 Kill 子进程并把状态当「未知」继续轮询 |
 | `LogKeepCount` | 10 | 轮转日志保留份数，**按日志目录**各留前 N 份：共用 `LogDir` 的服务算一个目录，有独立 `AppStdout` 目录的各算一份配额 |
@@ -302,7 +304,7 @@ pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-t
 | `test-state-sets` | 四组状态集合的成员：过渡态 / SCM 中间态 / 切换态 / 陈旧豁免（退出确认、胶囊与托盘计数同源） |
 | `test-acl` | 宽面主体名单（名字 + SID）、写能力判据、目录/注册表 ACL 判定、Deny 不算、读不到返回未知 |
 | `test-poll-commands` | 命令队列、`StartPending` 不回落 `sc.exe`、中间态 1 秒轮询、状态/退出码映射表 |
-| `test-per-service-timeout` | per-service 超时字段保留与 round-trip、坏值只丢字段、并行块 `$using:` 静态扫描 |
+| `test-per-service-timeout` | per-service 超时字段保留与 round-trip、坏值只丢字段、`waitStoppedTimeoutMs` 的区间与传递链（restart/remove）、并行块 `$using:` 静态扫描 |
 | `test-svc-input` | 输入校验四类拒绝、env 解析、账户白名单、`Get-NssmSetSpec` 参数组装 |
 | `test-add-svc` | `sc.exe` 走 `Get-ScExe` 解析、CLI 注册、失败回滚、删除流程 |
 | `test-config-params` | `config.json` 覆盖、类型/区间/未知键校验、坏 JSON 回落、runspace 注入值 |
@@ -325,7 +327,7 @@ pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-t
 | `test-remove-save-fail` | 删除后保存失败回滚、待保存态提示、右键菜单项随状态启用/禁用 |
 | `test-shutdown` | 关窗收尾：后台 runspace 3 秒内停、日志落盘、重复调用幂等 |
 | `test-webview` | token 校验、快照/HTML 转义、loopback 服务器 200/403、非 GET 拒绝、端口占用报错 |
-| `test-wait-stopped-budget` | `Wait-Stopped` 总耗时受预算封顶：多轮切片 / 小预算（100/300/1200ms）/ 收尾补查三段；去掉预留或收尾块即红 |
+| `test-wait-stopped-budget` | `Wait-Stopped` 总耗时受预算封顶：多轮切片 / 小预算（100/300/1200ms，阈值 budget+150）/ 收尾补查 / 阶段提示只写一条四段；去掉预留、收尾块或提示去重即红 |
 | `test-security-verdicts` | ACL 三态（是/否/未知）在判据层与汇总层用行为断言（注入读不到 / 抛错 / 可写三种桩，并断言 Unknown 的 Key/Path/Reason/Detail）；`lib/add-svc.ps1` 用 AST 断言调用必须落在 `Add-SvcFromCli` 函数体内、且 `$notice` 由判定结果派生；单独点源 add-svc 时的「判据未加载」降级另用子进程断言 |
 | `test-probe-static` | `tests/probe-1053-timing.ps1` 不得硬编码 45000/12000，阈值必须取自 `lib/config.ps1`（探针不进 run-all，靠这条守漂移） |
 

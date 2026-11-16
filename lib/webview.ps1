@@ -28,10 +28,10 @@ function Start-WebView([int]$port, [string]$token, $sync) {
 # 停 Web 视图：先置停止标志让监听循环自己退出，再拆 runspace；重复调用安全。
 function Stop-WebView($web) {
   if (-not $web) { return }
-  try { [void]$web.PS.BeginStop($null, $null) } catch {}
+  try { [void]$web.PS.BeginStop($null, $null) } catch { Write-Verbose "webview.ps1: 请求停止 Web 视图管道失败，忽略：$($_.Exception.Message)" }
   # 等循环自己退出（200ms 轮询）再拆 runspace：否则可能在写响应时被打断
-  try { [void]$web.Handle.AsyncWaitHandle.WaitOne(2000) } catch {}
-  try { $web.Runspace.Close() } catch {}
-  try { $web.Runspace.Dispose() } catch {}
-  try { $web.PS.Dispose() } catch {}
+  try { [void]$web.Handle.AsyncWaitHandle.WaitOne(2000) } catch { Write-Verbose "webview.ps1: 等待 Web 视图监听循环退出失败，忽略：$($_.Exception.Message)" }
+  try { $web.Runspace.Close() } catch { Write-Verbose "webview.ps1: 关闭 Web 视图 runspace 失败，忽略：$($_.Exception.Message)" }
+  try { $web.Runspace.Dispose() } catch { Write-Verbose "webview.ps1: 释放 Web 视图 runspace 失败，忽略：$($_.Exception.Message)" }
+  try { $web.PS.Dispose() } catch { Write-Verbose "webview.ps1: 释放 Web 视图管道失败，忽略：$($_.Exception.Message)" }
 }

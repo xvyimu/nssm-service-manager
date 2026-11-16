@@ -46,9 +46,11 @@ function Invoke-ExternalQuiet([string]$exe, [string[]]$argv, [int]$timeoutMs = 0
   # WaitForExit 只等进程退出，不等管道 EOF：若子进程派生的孙进程继承了 stdout 句柄，
   # .Result 会一直等下去。给个上界，拿不到就当空输出——总比卡死好。
   # 上界必须从调用方的超时里扣：两段各等 2s 的话，一次「3s 超时」的查询最坏能吃 7s，
-  # 上层按剩余预算收口就全部失效。剩余时间不足时按剩余的均分给两段，兜底 50ms 保底读一次。
+  # 上层按剩余预算收口就全部失效。剩余按两段均分，但 50ms 下限只在余量 ≥120ms 时给：
+  # 两次下限之和(100ms)会直接顶穿小预算，余量更小就完全不等待。
   $left = [Math]::Max(0, $timeoutMs - [int]$sw.ElapsedMilliseconds)
-  $eofWait = [int][Math]::Max(50, [Math]::Min(2000, [Math]::Floor($left / 2)))
+  # $left < 120 → 0：Task.Wait(0) 非阻塞，管道已 EOF 就取结果，没 EOF 就取空输出。
+  $eofWait = if ($left -lt 120) { 0 } else { [int][Math]::Min(2000, [Math]::Max(50, [int]($left / 2))) }
   $stdout = ''; $stderr = ''
   try { if ($stdoutTask.Wait($eofWait)) { $stdout = $stdoutTask.Result } } catch {}
   try { if ($stderrTask.Wait($eofWait)) { $stderr = $stderrTask.Result } } catch {}
@@ -61,10 +63,13 @@ function Invoke-ScQuiet([string[]]$argv, [int]$timeoutMs = 0){
   (Invoke-ExternalQuiet (Get-ScExe) $argv $timeoutMs).exit
 }
 
-# 轮询服务到 Stopped。超时：$sync 注入值 > $script:config.WaitStoppedTimeoutMs > 12000。
+# 轮询服务到 Stopped。超时：$TimeoutMs > $sync 注入值 > $script:config.WaitStoppedTimeoutMs > 12000。
+# $TimeoutMs 由调用方按服务传下来（services.json 的 waitStoppedTimeoutMs），只管这一次调用——
+# 结算在参数上而不是写回 $sync，改一个服务的预算不会波及别的服务。
 # 服务已不存在（ObjectNotFound）= 已停止；其他错误（权限等）继续等待。
-function Wait-Stopped([string]$n){
-  $timeoutMs = if     ($sync -and $sync.waitStoppedTimeoutMs)                   { [int]$sync.waitStoppedTimeoutMs }
+function Wait-Stopped([string]$n, [int]$TimeoutMs = 0){
+  $timeoutMs = if     ($TimeoutMs -gt 0)                                        { $TimeoutMs }
+               elseif ($sync -and $sync.waitStoppedTimeoutMs)                   { [int]$sync.waitStoppedTimeoutMs }
                elseif ($script:config -and $script:config.WaitStoppedTimeoutMs) { [int]$script:config.WaitStoppedTimeoutMs }
                else                                                             { 12000 }
   # 预算按真实耗时算，且要把「最后一次查询」和「超时后 Kill 的收尾」都算进去：
@@ -72,6 +77,10 @@ function Wait-Stopped([string]$n){
   # 预留不能是固定 1000ms：config 允许把预算配到 100ms，固定预留会把窗口吃成负数。
   # 按 1/4 缩、上限 1000ms——12s 预算留 1000ms 给 Kill 收尾，100ms 预算留 25ms。
   $sw = [Diagnostics.Stopwatch]::StartNew()
+  # 阶段进度：等待超过阈值还在等，就给状态栏写一条提示（只写一次）。
+  # $sync.msg 不在时（CLI / 单测直接调 Wait-Stopped）静默跳过，不影响等待本身。
+  $noticeMs = if ($sync -and $sync.waitStoppedNoticeMs) { [int]$sync.waitStoppedNoticeMs } else { 3000 }
+  $notified = $false
   # 步长从 config 收口（WaitStoppedPollMs，默认 300）；测试夹具经 $sync 注入
   $stepMs = if ($sync -and $sync.waitStoppedPollMs) { [int]$sync.waitStoppedPollMs } else { 300 }
   $svcStateMs = if ($sync -and $sync.svcStateTimeoutMs) { [int]$sync.svcStateTimeoutMs } else { 0 }
@@ -80,6 +89,12 @@ function Wait-Stopped([string]$n){
   $deadline = $timeoutMs - $reserve
   $sliceFloor = [int][Math]::Min(50, [Math]::Max(10, [Math]::Floor($timeoutMs / 10)))
   while($sw.ElapsedMilliseconds -lt $deadline){
+    if (-not $notified -and $sync -and $sync.msg -and $sw.ElapsedMilliseconds -ge $noticeMs) {
+      $notified = $true
+      $elapsedS = [int][Math]::Floor($sw.ElapsedMilliseconds / 1000)
+      $capS     = [int][Math]::Round($timeoutMs / 1000)
+      try { $sync.msg.Enqueue("正在等待 $n 停止（已 ${elapsedS}s，上限 ${capS}s）") } catch {}
+    }
     # 不用 Get-Service：它没有超时开关，SCM 挂起时这一行会永久阻塞，
     # 循环里的 $timeoutMs 根本轮不到判断。Get-SvcStateQuiet 走 sc.exe query（硬超时 + Kill）。
     # 两次查询与步长都按同一份剩余预算收口，否则「≤预算」是假话。
@@ -153,11 +168,11 @@ function Convert-ServiceStatus([string]$s){
 
 # 删除序列：stop → 等 Stopped → nssm remove confirm → 实证复核。只共用判定不共用呈现，由调用方决定抛错或入队。
 # $nssmExe 必须传参——runspace 里 $script:nssm 不可见。
-function Invoke-ServiceRemove([string]$n,[string]$nssmExe){
+function Invoke-ServiceRemove([string]$n,[string]$nssmExe,[int]$TimeoutMs = 0){
   [void](Invoke-ScQuiet @('stop', $n))
   # stop 失败不阻断（服务可能已停），等 Stopped 再删，避免删一个还在跑的服务
   # 还在跑就删，SCM 会把服务标记删除但进程仍在，后续状态查询全部不可信——宁可报错让用户重试。
-  if(-not (Wait-Stopped $n)) {
+  if(-not (Wait-Stopped $n -TimeoutMs $TimeoutMs)) {
     return [pscustomobject]@{ ok=$false; exitCode=0; why='服务未在超时内停止，已中止删除'; detail='' }
   }
   $r = Invoke-ExternalQuiet $nssmExe @('remove', $n, 'confirm')

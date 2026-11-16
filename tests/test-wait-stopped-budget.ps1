@@ -40,8 +40,9 @@ foreach ($budget in 100, 300, 1200) {
   $sw = [Diagnostics.Stopwatch]::StartNew()
   [void](Wait-Stopped 'FakeB')
   $elapsed = $sw.ElapsedMilliseconds
-  # 容差 = 一次最坏查询（夹具最多睡 400ms）
-  Assert ($elapsed -le ($budget + 450)) "预算 ${budget}ms 未被兑现：实测 ${elapsed}ms"
+  # 容差 = 一轮查询的调度抖动（qms 已按剩余预算收口）。修前 Invoke-ExternalQuiet 的 EOF
+  # 等待有两次 50ms 下限，小预算会被硬顶穿 100ms+；现在余量 <120ms 时完全不等待。
+  Assert ($elapsed -le ($budget + 150)) "预算 ${budget}ms 未被兑现：实测 ${elapsed}ms"
 }
 
 # ---- C. 收尾补查：服务在最后一刻停了，不能被「剩余不足一格」直接 break 掉 ----
@@ -57,4 +58,23 @@ function Get-SvcStateQuiet([string]$name, [int]$timeoutMs = 0){
 $r = Wait-Stopped 'FakeC'
 Assert $r "服务在第 $($script:stopAfter) 次查询停止时，Wait-Stopped 应返回 true（收尾补查不得被跳过）"
 
-Write-Output 'PASS: Wait-Stopped caps total elapsed at the configured budget across rounds, small budgets and the final tail query.'
+# ---- D. 阶段进度：超过 waitStoppedNoticeMs 只写一条提示（$sync.msg 不在时静默跳过）----
+$script:sync = @{
+  waitStoppedTimeoutMs = 1200; waitStoppedPollMs = 20; svcStateTimeoutMs = 100
+  waitStoppedNoticeMs  = 50
+  msg = [Collections.Concurrent.ConcurrentQueue[string]]::new()
+}
+function Get-SvcStateQuiet([string]$name, [int]$timeoutMs = 0){ 'Running' }
+$r = Wait-Stopped 'FakeD'
+Assert (-not $r) '服务恒为 Running 时应返回 false'
+$msgs = @()
+$m = $null
+while ($script:sync.msg.TryDequeue([ref]$m)) { $msgs += $m }
+Assert (@($msgs).Count -eq 1) "等待期间的进度提示应只写一条，实际 $($msgs.Count) 条：$($msgs -join ' | ')"
+Assert ($msgs[0] -match '正在等待 FakeD 停止') "进度提示应点名服务，实际：$($msgs[0])"
+Assert ($msgs[0] -match '上限') "进度提示应带上限，实际：$($msgs[0])"
+# 没有 msg 键时不得抛（A/B/C 三段都没有 msg，走到这里没炸就是静默跳过）
+$script:sync = @{ waitStoppedTimeoutMs = 150; waitStoppedPollMs = 20; svcStateTimeoutMs = 100; waitStoppedNoticeMs = 20 }
+[void](Wait-Stopped 'FakeD2')
+
+Write-Output 'PASS: Wait-Stopped caps total elapsed at the configured budget across rounds, small budgets and the final tail query; one progress notice past waitStoppedNoticeMs.'

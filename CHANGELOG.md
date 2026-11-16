@@ -3,6 +3,17 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
+## [1.0.19] - 2026-11-16
+
+收尾六项（评审遗留 + 可诊断性）：
+
+- **EOF 等待不再溢出预算**：`Invoke-ExternalQuiet` 在剩余预算 <120ms 时不再等待（原先两次 50ms 下限之和会把小预算顶穿约 100ms）；`test-wait-stopped-budget` 容差从 `budget+450` 收紧到 `budget+150`。
+- **per-service 停止超时**：`services.json` 支持可选 `waitStoppedTimeoutMs`（100..600000）；`Wait-Stopped` / `Invoke-ServiceRemove` 增 `-TimeoutMs`，poll 的 restart 与 remove 分支按服务取值，缺省仍用全局 `WaitStoppedTimeoutMs`。
+- **停止等待有进度**：超过 `WaitStoppedNoticeMs`（默认 3000ms）时向状态栏写一条「正在等待 <服务> 停止（已 n s，上限 m s）」，只写一次；无 `$sync.msg` 时静默跳过。
+- **空 catch 可诊断**：34 处 `catch {}` 改为带场景说明的 `Write-Verbose`（默认不输出，行为不变）；仅 `card.ps1` 的名称赋值与 `tray.ps1` 的 400ms tick 保留空 catch，注释写明「每帧路径，加日志会刷屏」。全仓空 catch 从 54 处降到 21 处。
+- **v1.0.9 的 draft release 已删除**：tag 保留作为「该版本 CI 失败、未产包」的记录，`/releases/tags/v1.0.9` 现为 404，最新发布解析不受影响。
+- **提交历史一处不修复**：`nssm remove` 的行为与其回归用例分处 `bf72b08` / `e3b639e` 两个已推送提交，不改写历史，已在 HANDOFF「已知限制」写明。
+
 ## [1.0.18] - 2026-11-16
 
 修 1.0.17 引入的两处问题（评审第 20 轮 P2-1 / P2-2）：
