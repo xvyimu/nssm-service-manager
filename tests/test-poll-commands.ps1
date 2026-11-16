@@ -300,60 +300,33 @@ foreach ($k in $statusMap.Keys) {
 }
 Assert ((Convert-ServiceStatus 'Bogus') -eq '未知') 'Unknown SCM status must fall back to 未知.'
 
-# ---- busy 标记：四处阻塞等待都必须在 try/finally 里成对置位（源码级切片，防回退） ----
-# 阻塞期间 worker 不产探测结果（停/删最长 12s；start 慢启动要等满 ServicesPipeTimeout，实测 30s），
-# 卡片判据只有 2×ProbeIntervalMs（默认 8s）：少一处 finally 就是「那一路操作期间所有运行中卡片翻状态未知」。
-# 运行时用例只盖得住 stop 一路，其余三路（start / restart / remove）在这里按 switch 分支切片守结构：
-# 每支必须恰好一对「Set-PollBusy $true」+「finally { Set-PollBusy $false }」，且阻塞调用夹在两者之间。
-# 不写成「次数 >= N」：那样漏配对（置位后没复位、复位挪出 finally）照样能绿。
+# ---- busy 标记：整段命令处理必须包在单一 try/finally 窗口内（源码级不变式，防回退） ----
+# 阻塞点不止一处：start 的 $svc.Start() 实测等满 30032ms；stop/restart/remove 的 Wait-Stopped
+# 最长等满该服务预算（默认 12s）。期间产不出探测样本，卡片判据只有 2×ProbeIntervalMs（默认 8s）。
+# 门禁写成「恰好一个置位 + 恰好一个复位 + 复位在 finally + 已知阻塞锚点都在窗口内」，
+# 而不是「四对」或「次数 >= N」——后者会把当前覆盖范围固化成不变式，正确新增一处反而变红。
 $pollSrc = Get-SourceCodeOnly (Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'lib/poll.ps1') -Encoding utf8)
 $busySet = ([regex]::Matches($pollSrc, [regex]::Escape('Set-PollBusy $true'))).Count
 $busyClear = ([regex]::Matches($pollSrc, [regex]::Escape('Set-PollBusy $false'))).Count
-Assert ($busySet -eq 4) "阻塞等待的 busy 置位应有四处（start/stop/restart/remove），实际 $busySet 处。"
-Assert ($busyClear -eq 4) "busy 复位应有四处（每处都在 finally 里），实际 $busyClear 处（漏一处就永远不再判陈旧）。"
-Assert ($busySet -eq $busyClear) "置位 $busySet 处、复位 $busyClear 处：必须成对，否则 busy 会永久钉住或永不置位。"
-
-# 分支边界 = switch($act){ 之后相邻 case 标签的位置；最后一支截到 switch 的收尾括号（4 空格缩进的单独 '}'）。
-$swAt = $pollSrc.IndexOf('switch($act){')
-Assert ($swAt -ge 0) '找不到 switch($act){——分支切片判据失效，改 poll.ps1 结构时请同步更新本门禁。'
-$branchSpec = [ordered]@{
-  start   = 'Invoke-ServiceStart $n'
-  stop    = 'Wait-Stopped $n -TimeoutMs (Get-WaitStoppedMs $n)'
-  restart = 'Wait-Stopped $n -TimeoutMs (Get-WaitStoppedMs $n)'
-  remove  = 'Invoke-ServiceRemove $n $sync.nssm'
+Assert ($busySet -eq 1) "Set-PollBusy `$true 应恰好一处（整段命令处理外层），实际 $busySet 处。"
+Assert ($busyClear -eq 1) "Set-PollBusy `$false 应恰好一处（外层 finally），实际 $busyClear 处。"
+$iSet = $pollSrc.IndexOf('Set-PollBusy $true')
+$iSwitch = $pollSrc.IndexOf('switch($act){')
+$reset = [regex]::Match($pollSrc, 'finally\s*\{\s*Set-PollBusy \$false\s*\}')
+Assert ($iSwitch -gt $iSet) '置位必须在 switch($act){ 之前，否则分支里的阻塞调用不在 busy 窗口内。'
+Assert ($reset.Success) '复位必须写在 finally 里（挪到 try 尾部后，抛异常或 break 就不再复位）。'
+Assert ($reset.Index -gt $iSwitch) 'finally 复位必须在命令分发之后。'
+$blockingAnchors = @(
+  'Invoke-ServiceStart $n',
+  'Wait-Stopped $n -TimeoutMs (Get-WaitStoppedMs $n)',
+  'Invoke-ServiceRemove $n $sync.nssm'
+)
+foreach ($anchor in $blockingAnchors) {
+  $idx = $pollSrc.IndexOf($anchor)
+  Assert ($idx -gt $iSet) "阻塞锚点「$anchor」不在 busy 窗口内（应在置位之后）。"
+  Assert ($idx -lt $reset.Index) "阻塞锚点「$anchor」不在 busy 窗口内（应在 finally 复位之前）。"
 }
-$branchNames = @($branchSpec.Keys)
-$labelAt = @{}
-$cursor = $swAt
-foreach ($name in $branchNames) {
-  $idx = $pollSrc.IndexOf("'$name'", $cursor)
-  Assert ($idx -gt 0) "switch($act) 里找不到 '$name' 分支（改名或门禁被绕过）。"
-  $labelAt[$name] = $idx
-  $cursor = $idx + 1
-}
-$swEndMatch = [regex]::Match($pollSrc.Substring($labelAt['remove']), '(?m)^ {4}\}[ \t]*$')
-Assert ($swEndMatch.Success) '找不到 switch($act){ 的收尾括号，remove 分支切片失败。'
-$swEnd = $labelAt['remove'] + $swEndMatch.Index
-$pairCount = 0
-for ($k = 0; $k -lt $branchNames.Count; $k++) {
-  $name = $branchNames[$k]
-  $from = $labelAt[$name]
-  $to = if ($k + 1 -lt $branchNames.Count) { $labelAt[$branchNames[$k + 1]] } else { $swEnd }
-  $body = $pollSrc.Substring($from, $to - $from)
-  $setCount = ([regex]::Matches($body, [regex]::Escape('Set-PollBusy $true'))).Count
-  $clearCount = ([regex]::Matches($body, [regex]::Escape('Set-PollBusy $false'))).Count
-  Assert ($setCount -eq 1) "分支 '$name' 的 Set-PollBusy `$true 应恰好一处，实际 $setCount 处。"
-  Assert ($clearCount -eq 1) "分支 '$name' 的 Set-PollBusy `$false 应恰好一处，实际 $clearCount 处。"
-  $iSet = $body.IndexOf('Set-PollBusy $true')
-  $iCall = $body.IndexOf($branchSpec[$name])
-  Assert ($iCall -gt $iSet) "分支 '$name'：阻塞调用「$($branchSpec[$name])」不在置位之后（置位必须包住它）。"
-  $reset = [regex]::Match($body, 'finally\s*\{\s*Set-PollBusy \$false\s*\}')
-  Assert ($reset.Success) "分支 '$name' 的复位不在 finally 里（挪到 try 尾部后，抛异常或 break 就不再复位）。"
-  Assert ($reset.Index -gt $iCall) "分支 '$name' 的 finally 复位必须在阻塞调用之后。"
-  $pairCount++
-}
-Assert ($pairCount -eq 4) "四个阻塞分支应各有一对（start/stop/restart/remove），实际 $pairCount 对。"
-Write-Output 'PASS: 四处阻塞等待（start/stop/restart/remove）各有 try/finally 的 busy 置位与复位（源码级分支切片）。'
+Write-Output 'PASS: 整段命令处理包在单一 busy 窗口内，已知阻塞锚点（start/stop/restart/remove）全部在窗口里。'
 
 # ---- busy 缺键（writer 侧）：$sync 没有 busy 键时 Set-PollBusy 静默跳过，且不许凭空加键 ----
 # CLI 路径与夹具都可能没预置这个键；Set-PollBusy 的守卫是 ContainsKey。凭空补一个 busy=$false
