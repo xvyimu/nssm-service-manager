@@ -3,7 +3,7 @@
 # 本文件**只有函数定义、没有顶层语句**，前置进 runspace 不会有副作用（也不会有自引用）。
 
 function Test-WebToken([string]$given, [string]$expected) {
-  # 长度不等直接拒绝（长度会泄露，token 是 2 hex，风险有限）；长度相同则全量比对、不早退。
+  # 长度比较本身不泄露信息：token 是 32 hex 的 GUID，长度固定已知；早退防护靠下面的定长比较，不靠隐藏长度。
   if (-not $given -or -not $expected) { return $false }
   if ($given.Length -ne $expected.Length) { return $false }
   $diff = 0

@@ -23,11 +23,11 @@
   过渡态（超时逃生 / 退出确认）、SCM 中间态（poll 加速）、切换态（时长后缀）、陈旧豁免（+待保存）、
   托盘计数。随后把散在 `card/xaml/tray/ui-status` 的字面量合并到 `config.ps1` 的四个常量
   （`TRANSITION_STATES` / `SCM_PENDING_STATES` / `SWITCHING_STATES` / `STALE_EXEMPT_STATES`）；
-  `poll.ps1` 在独立 runspace 里拿不到 config 变量，保留同值字面量并在注释里写明双向同步。
+  `poll.ps1` 在第二个 runspace 读不到 config 变量——现由入口经 `$sync.scmPendingStates` 注入，poll 内只留缺注入时的同值兜底，改动只需改 `config.ps1` 一处。
   顺带修掉两处不一致：`ui-status` 与 `tray` 的回落字面量各写 5 态，与 config 的 3 态不符。
 - **`lib/util.ps1` 按职责拆分**：591 行、五类职责 → `svc-store`（清单读写）/ `ui-status`（命令入队 + 状态栏 + 每帧 tick）/
   `log-retention`（日志目录与轮转档清理）/ `security-check`（提权边界自检）/ `shutdown`（关窗收尾）；
-  `util.ps1` 只剩加载顺序与两处兼容垫片。调用方（GUI 入口、单测）不用改 dot-source 行。
+  `util.ps1` 只剩加载顺序与共用格式化、少量数据切片；`Add-ConfigNotice` 兼容垫片已删除（实现只在 `config.ps1`），仓内不再有垫片副本。
   拆的是文件边界不是控制流——20 个函数按行原样搬过去，另加各文件头与 `Load-Svc` 一处补注。
 - **依赖点源加守卫**：`lib/nssm.ps1`、`lib/add-svc.ps1` 原来无条件点源 svc-input/svc-common，
   GUI 入口已点过时会静默重定义函数；改为 `Get-Command` 存在性判断，与 util.ps1 的写法一致。

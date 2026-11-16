@@ -29,11 +29,27 @@ function New-FakeExe([string]$prefix = 'sm-fake') {
 # 返回 @{Sync;Runspace;PowerShell;Handle}。Close-FakePoll 清理。
 # $statusMap=按服务名指定状态（如 @{Fake0='Running';Fake1='StartPending'}），未列出的用 $serviceStatus。
 #   混合状态用来验「有服务卡在中间态时，其它运行中服务的状态仍要按时送达」。
-function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$delayMs = 0, [hashtable]$extraSyncKeys = $null, [int]$scExitCode = 0, [string]$controllerStatus = '', [hashtable]$statusMap = $null) {
+# -omitPendingStates=不往 $sync 塞 scmPendingStates（验 poll 在 runspace 缺注入时的兜底）。
+function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$delayMs = 0, [hashtable]$extraSyncKeys = $null, [int]$scExitCode = 0, [string]$controllerStatus = '', [hashtable]$statusMap = $null, [switch]$omitPendingStates) {
   $services = [ordered]@{}
   for ($i = 0; $i -lt $count; $i++) { $services["Fake$i"] = @{ port = 10000 + $i; url = "http://127.0.0.1:10000/fake$i" } }
-  # 夹具里补一份中间态集合：有 config 就用它的单一来源，没有（只点 util 的测试）用字面量兜底。
-  $pendingStates = if ($script:SCM_PENDING_STATES) { @($script:SCM_PENDING_STATES) } else { @('启动中','停止中','暂停中','继续中') }
+  # 夹具的中间态集合按三级取：① 调用方已点源 config.ps1 → $script:SCM_PENDING_STATES；
+  # ② 没点源就地加载 lib/config.ps1 后重取；③ 仍拿不到才用字面量。
+  # 唯一真实来源是 config.ps1 的 $script:SCM_PENDING_STATES——下面最后一档只是**夹具兜底**
+  # （config 能被点源时夹具自动跟随真实集合，不会漂成第三份定义）。
+  $pendingStates = if ($script:SCM_PENDING_STATES) { @($script:SCM_PENDING_STATES) } else {
+    # 点源 config 会写进 $script: 作用域（config / 各状态集合）。夹具只借集合，取完把宿主原有的
+    # 配置快照还原回去，免得「造替身」这个动作顺带改了被测测试看到的配置。
+    $savedConfig  = $script:config
+    $savedNotices = $script:configNotices
+    try {
+      . (Join-Path (Split-Path $PSScriptRoot -Parent) 'lib/config.ps1')
+      if ($script:SCM_PENDING_STATES) { @($script:SCM_PENDING_STATES) } else { @('启动中','停止中','暂停中','继续中') }
+    } finally {
+      $script:config        = $savedConfig
+      $script:configNotices = $savedNotices
+    }
+  }
   $shared = [hashtable]::Synchronized(@{
     svc = $services; gate = [object]::new(); stop = $false
     queue   = [Collections.Concurrent.ConcurrentQueue[object]]::new()
@@ -49,11 +65,12 @@ function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$d
     # 替身名，否则 runspace 会拿全路径去调真 sc.exe，测试就碰到了真服务数据库。
     scExe = 'Invoke-TestSc'
     scExitCode = $scExitCode
-    # 中间态集合由入口注入 poll（$sync.scmPendingStates）；夹具按 config 的同名常量补一份，未点 config 时用字面量。
-    scmPendingStates = $pendingStates
     # serviceGone 由调用方在 BeginInvoke 后按需置位：$true = query 返回 1060（服务已消失）,
     # 用于让 Remove 路径的实证复核（Test-ServiceGone）认为删除生效。默认未设 = 服务存在。
   })
+  # 中间态集合由入口注入 poll（$sync.scmPendingStates）；夹具按 config 的同名常量补一份。
+  # -omitPendingStates：刻意不塞这个键，验 runspace 缺注入时 poll 的兜底（真实入口漏注入的情形）。
+  if (-not $omitPendingStates) { $shared.scmPendingStates = $pendingStates }
   if ($controllerStatus) { $shared.newSc = 'New-TestSc' }
   if ($extraSyncKeys) { foreach ($k in $extraSyncKeys.Keys) { $shared[$k] = $extraSyncKeys[$k] } }
   # 状态表字面量：注入 mock 的哈希表文本（键名与 Start-FakePoll 生成的服务名一致）

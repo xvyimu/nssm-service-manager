@@ -155,7 +155,7 @@ Invoke-CardAction 里按 `$detailed` 分支单独做，理由见「健康口径 
 ## util.ps1
 
 > 2026-11-13 起按职责拆为 `lib/svc-store.ps1`（清单读写）/ `lib/ui-status.ps1`（命令入队 + 状态栏 + 每帧 tick）/
-> `lib/log-retention.ps1` / `lib/security-check.ps1` / `lib/shutdown.ps1`；`lib/util.ps1` 只剩加载顺序与两处兼容垫片。
+> `lib/util.ps1` 只剩加载顺序与共用格式化、少量数据切片；`Add-ConfigNotice` 垫片已删，实现只在 `lib/config.ps1`，不再有副本。
 > 下文的函数说明按符号名叙述，仍然有效；具体落在哪个文件以上面这行为准。
 
 ### 文件头 · 作用域约定

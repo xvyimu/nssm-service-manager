@@ -117,7 +117,21 @@ try {
   $probe = & pwsh -NoProfile -Command "& { . '$RepoRoot\lib\ui-status.ps1'; . '$RepoRoot\lib\tray.ps1'; (@(`$script:TRANSITION_STATES) -join ',') }"
   Assert ($probe -eq '启动中,停止中,删除中') "单独点源 ui-status/tray 时应自加载 config 得到三态，实际「$probe」"
   $pollSrc = [IO.File]::ReadAllText((Join-Path $RepoRoot 'lib/poll.ps1'))
-  Assert ($pollSrc -notmatch "'启动中'.*'停止中'.*'继续中'") 'poll.ps1 不得内联中间态字面量（应从 $sync.scmPendingStates 注入）'
+  # 负向断言两条（旧版 "'启动中'.*'停止中'.*'继续中'" 顺串匹配，换序或拆行复制都能绕过）：
+  #  (a) poll.ps1 里含 ≥2 个中间态的数组字面量最多一处——唯一允许的那一处是脚本开头「runspace 缺注入
+  #      时的兜底」（$sync 没塞 scmPendingStates 才会用到）。多出任何一处（换序、拆行、只抄两三个）
+  #      都说明又维护了一份集合，直接红。
+  $stateLiteral = '(?s)@\([^)]*(?:启动中|停止中|暂停中|继续中)[^)]*(?:启动中|停止中|暂停中|继续中)[^)]*\)'
+  $groups = [regex]::Matches($pollSrc, $stateLiteral)
+  Assert ($groups.Count -le 1) "poll.ps1 出现 $($groups.Count) 处含 ≥2 个中间态的数组字面量：只允许缺注入兜底那一份，其余必须读 `$sync.scmPendingStates"
+  if ($groups.Count -eq 1) {
+    # 兜底本身也必须完整四态：少一个，那类中间态就会退回 ProbeIdleMs 长轮询（卡片停在「启动中」）。
+    foreach ($stName in '启动中','停止中','暂停中','继续中') {
+      Assert ($groups[0].Value.Contains("'$stName'")) "poll.ps1 唯一的兜底字面量缺「$stName」——兜底也必须是完整四态"
+    }
+  }
+  #  (b) 必须真的读注入键：只留兜底、不读 $sync.scmPendingStates 等于把注入通道拆了（config 改了也不生效）。
+  Assert ($pollSrc -match '(?s)\$sync\.scmPendingStates') 'poll.ps1 未读取 $sync.scmPendingStates（入口注入的中间态集合）'
   Write-Output 'PASS: 单独点源 ui-status / tray 时自加载 config，状态集合仍只有一份。'
 } finally {
   $win.Close()
