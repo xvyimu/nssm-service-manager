@@ -20,9 +20,27 @@ $sources += @(Get-Item -LiteralPath (Join-Path $RepoRoot 'service-manager-gui.ps
 $emptyTotal = 0
 $unmarked = @()
 $perFile = @()
-# 跨行判空：`catch { }`、多行 `catch {\n}`、以及「体里只有块注释」`catch { <# ... #> }` 都算空。
-# 原实现只看单行 catch\s*\{\s*\}，把后两种漏成绿灯——空 catch 的门禁不能有这种盲区。
-$emptyCatchRx = '(?s)catch\s*\{\s*(?:<#.*?#>)?\s*\}'
+# 判空覆盖四类形态：`catch { }`、多行 `catch {\n}`、「体里只有块注释」`catch { <# ... #> }`、
+# 「体里只有行注释」`catch {\n  # 说明\n}`，以及带类型约束的 `catch [System.IO.IOException] { }`。
+# 原实现只认单行 catch\s*\{\s*\}，其余全漏成绿灯——空 catch 的门禁不能有这种盲区。
+# 组成：可选类型约束 → 体由「块注释 / 行注释」重复构成 → 收尾花括号。非空体（含任何语句）不匹配。
+$emptyCatchRx = '(?s)catch\s*(?:\[[^\]\r\n]*\]\s*)?\{\s*(?:(?:<#.*?#>|#[^\r\n]*)\s*)*\}'
+
+# 正则自测：空体必须命中、非空体必须不命中。门禁正则自己没有测试的话，
+# 改错一个括号就静默变成「永远绿灯」，比没有门禁更糟。
+$catchSamples = @(
+  @{ text = "catch {`n  # 只有行注释`n}";               expect = $true;  label = '行注释体' }
+  @{ text = 'catch [System.IO.IOException] { }';        expect = $true;  label = 'typed catch 空体' }
+  @{ text = 'catch { <# 只有块注释 #> }';               expect = $true;  label = '块注释体' }
+  @{ text = "catch {`n}";                               expect = $true;  label = '普通空体' }
+  @{ text = "catch {`n  # 说明`n  Do-Thing`n}";         expect = $false; label = '行注释 + 语句' }
+  @{ text = 'catch [System.IO.IOException] { Log-It }'; expect = $false; label = 'typed catch 非空体' }
+)
+foreach ($sample in $catchSamples) {
+  $hit = [regex]::IsMatch($sample.text, $emptyCatchRx)
+  Assert ($hit -eq $sample.expect) "空 catch 正则自测失败（$($sample.label)）：期望命中=$($sample.expect)，实际=$hit"
+}
+Write-Output 'PASS: 空 catch 判据覆盖行注释体 / typed catch / 块注释体 / 普通空体，非空体不误判'
 foreach ($f in $sources) {
   $text = Get-Content -LiteralPath $f.FullName -Encoding utf8 -Raw
   $lines = @($text -split "\r?\n")

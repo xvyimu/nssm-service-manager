@@ -100,7 +100,25 @@ try {
   Update-StatusTick
   Assert ($bar.Visibility -eq 'Collapsed') "等待结束后应隐藏，got $($bar.Visibility)"
 
+  # 10) worker 忙（阻塞等停）期间不判陈旧：默认停服预算 12s > 2×探测周期 8s，
+  #     照常判会把其余「运行中」卡片全刷成「状态未知」并禁用按钮（P1 的根因）。
+  $other.TransitionAt = [datetime]::MinValue
+  $other.ST = '运行中'; $other.Stale = $false
+  $script:svcState = @{ SvcOther = @{ at = [datetime]::Now.AddSeconds(-60) } }
+  $script:sync['busy'] = $true
+  Update-CardFreshness $other ([datetime]::Now)
+  Assert ($other.Stale -eq $false) 'busy=true（worker 正阻塞等停）时不得判陈旧。'
+  Assert ($other.LblSt.Text -ne '状态未知') "busy=true 应保持现有显示，got $($other.LblSt.Text)"
+  $script:sync['busy'] = $false
+  Update-CardFreshness $other ([datetime]::Now)
+  Assert ($other.Stale -eq $true) 'busy=false 且样本 60s 前 → 必须判陈旧（否则这条门禁形同虚设）。'
+  Assert ($other.LblSt.Text -eq '状态未知') "判陈旧应显示状态未知，got $($other.LblSt.Text)"
+  # 复位，避免影响同一窗口里的后续帧
+  [void]$script:sync.Remove('busy'); $script:svcState = @{}
+  $other.ST = '运行中'; $other.Stale = $false
+
   Write-Output 'PASS: 停止进度条只在名字匹配且有总时长时显示（0..1 夹取），其余状态隐藏且不串台。'
+  Write-Output 'PASS: worker 忙（阻塞等停）期间不判陈旧，busy 复位后照常判。'
 } finally {
   $win.Close()
 }
@@ -118,6 +136,8 @@ $syncKeys = @([regex]::Matches($m.Groups[1].Value, '(?m)(?:^|;)\s*([A-Za-z_]\w*)
 # 自检：选择器本身要能抓到已知邻居键，否则「恰好抓到 stopProgress」可能只是巧合。
 Assert ($syncKeys -contains 'waitStoppedTimeoutMs' -and $syncKeys -contains 'probeThrottleLimit') "sync 键名提取选择器失效，实际键：$($syncKeys -join ',')"
 Assert ($syncKeys -contains 'stopProgress') "GUI 的 `$script:sync 字面量必须含 stopProgress 键（否则进度条永远不显示）；实际键：$($syncKeys -join ',')"
+# busy 同理必须预置：poll 只在键已存在时置位，缺键 = 阻塞期间卡片照样翻「状态未知」。
+Assert ($syncKeys -contains 'busy') "GUI 的 `$script:sync 字面量必须含 busy 键（否则阻塞等停期间卡片会误判陈旧）；实际键：$($syncKeys -join ',')"
 Write-Output "PASS: GUI 的 `$script:sync 字面量含 stopProgress（源码级判据，共 $($syncKeys.Count) 键）。"
 
 # 生产端不凭空加键：用**不带**该键的同步哈希表跑 Wait-Stopped，必须不抛错、不补键。

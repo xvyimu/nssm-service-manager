@@ -108,6 +108,8 @@ try {
   $ack2 = Wait-FakePollAck $worker
   Assert ($null -ne $ack2) '异常之后后台不再处理命令（轮询循环已死）。'
   Write-Output 'PASS: 命令抛异常时产出失败回执，轮询循环继续存活。'
+} finally { Close-FakePoll $worker }
+
 # ---- stop 遇到 1062（服务本就已停止）：按成功回执，不把已达成当失败 ----
 # 修前：Invoke-Sc 返回非零就 $ok=$false，卡片停在「停止中」直到过渡态超时逃生。
 $worker=Start-FakePoll 1 'Stopped' 0 $null 1062
@@ -120,6 +122,38 @@ try {
   Assert ($ack1062.ok) "服务已 Stopped 时 stop 应按成功回执，got ok=$($ack1062.ok) why=$($ack1062.why)"
   Write-Output 'PASS: stop 返回 1062 且状态已是 Stopped 时按成功回执。'
 } finally { Close-FakePoll $worker }
+
+# ---- stop 等停超时：回执必须 ok=false 且 why 点明原因 ----
+# 卡片靠回执的 why 显示失败原因（状态栏那条只有 5 秒租约）；why 为空时用户只看到「停止中」被回滚。
+# 同一段用例顺带守 busy：阻塞期间 UI 侧不能把别的卡片判陈旧。
+$worker=Start-FakePoll 1 'Running' 0 @{ waitStoppedTimeoutMs = 1200; waitStoppedPollMs = 20; busy = $false }
+try {
+  Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Stop-timeout worker did not start.'
+  $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='stop';e=51})
+  [void]$worker.Sync.wake.Set()
+  $deadline=[datetime]::UtcNow.AddSeconds(5)
+  while (-not $worker.Sync.busy -and [datetime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 10 }
+  Assert ($worker.Sync.busy -eq $true) '等停阻塞期间 $sync.busy 必须为 $true（否则别的卡片会被误判陈旧）。'
+  $ackStop = Wait-FakePollAck $worker
+  Assert ($null -ne $ackStop) '停止超时的 stop 没有产出回执。'
+  Assert ($ackStop.ok -eq $false) "停止超时应按失败回执，got ok=$($ackStop.ok)"
+  Assert ([string]$ackStop.why -match '停止未在超时内完成') "失败原因应点明等停超时，实际：$($ackStop.why)"
+  Assert ($worker.Sync.busy -eq $false) '等停结束后 $sync.busy 必须复位（否则陈旧判据永久失效）。'
+  Write-Output 'PASS: stop 等停超时回执 ok=false + why 说明超时；阻塞期间 busy=true，结束后复位。'
+} finally { Close-FakePoll $worker }
+
+# ---- stop 的 sc 失败（非 1062）：why 必须写进回执，不能只进状态栏 ----
+$worker=Start-FakePoll 1 'Running' 0 $null 5
+try {
+  Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'sc-fail worker did not start.'
+  $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='stop';e=52})
+  [void]$worker.Sync.wake.Set()
+  $ackSc = Wait-FakePollAck $worker
+  Assert ($null -ne $ackSc) 'sc 失败的 stop 没有产出回执。'
+  Assert ($ackSc.ok -eq $false) "sc 返回 5 时应按失败回执，got ok=$($ackSc.ok)"
+  Assert ([string]$ackSc.why -match '停止失败') "回执 why 应含「停止失败」，实际：$($ackSc.why)"
+  Assert ([string]$ackSc.why -match '5') "回执 why 应带退出码，实际：$($ackSc.why)"
+  Write-Output 'PASS: stop 的 sc 失败（退出码 5）回执 ok=false 且 why 含原因与退出码。'
 } finally { Close-FakePoll $worker }
 
 # ---- restart 的中间回执（B2）：停止阶段结束后必须补一条 phase='start' ----
@@ -266,6 +300,32 @@ foreach ($k in $statusMap.Keys) {
 }
 Assert ((Convert-ServiceStatus 'Bogus') -eq '未知') 'Unknown SCM status must fall back to 未知.'
 
+# ---- busy 标记：三处阻塞等待都必须在 try/finally 里置位（源码级，防回退） ----
+# 阻塞期间 worker 不产探测结果（停/删最长 12s），卡片判据只有 2×ProbeIntervalMs（默认 8s）：
+# 少一处 finally 就是「那一路操作期间所有运行中卡片翻状态未知」。运行时用例只能盖住 stop 一路，
+# 另两路（restart / remove）在这里按源码结构守：锚点前 300 字符内要有置位，其后 400 字符内要有复位。
+$pollSrc = Get-SourceCodeOnly (Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'lib/poll.ps1') -Encoding utf8)
+$busySet = ([regex]::Matches($pollSrc, [regex]::Escape('Set-PollBusy $true'))).Count
+$busyClear = ([regex]::Matches($pollSrc, [regex]::Escape('finally { Set-PollBusy $false }'))).Count
+Assert ($busySet -eq 3) "阻塞等待的 busy 置位应有三处（stop/restart/remove），实际 $busySet 处。"
+Assert ($busyClear -eq 3) "busy 复位应有三处 finally，实际 $busyClear 处（漏一处就永远不再判陈旧）。"
+$seen = 0
+foreach ($anchor in @('(Wait-Stopped $n -TimeoutMs (Get-WaitStoppedMs $n))', 'Invoke-ServiceRemove $n $sync.nssm')) {
+  $from = 0
+  while ($true) {
+    $idx = $pollSrc.IndexOf($anchor, $from)
+    if ($idx -lt 0) { break }
+    $before = $pollSrc.Substring([Math]::Max(0, $idx - 300), [Math]::Min(300, $idx))
+    $after = $pollSrc.Substring($idx, [Math]::Min(400, $pollSrc.Length - $idx))
+    Assert ($before.Contains('Set-PollBusy $true')) "阻塞点 '$anchor'（@$idx）之前没有 Set-PollBusy `$true。"
+    Assert ($after.Contains('finally { Set-PollBusy $false }')) "阻塞点 '$anchor'（@$idx）之后没有 finally 复位 busy。"
+    $seen++
+    $from = $idx + 1
+  }
+}
+Assert ($seen -eq 3) "阻塞锚点应命中 3 处（stop / restart 的等停 + remove 的删除序列），实际 $seen 处。"
+Write-Output 'PASS: 三处阻塞等待都有 try/finally 的 busy 置位与复位（源码级，3 个锚点）。'
+
 # 退出码映射是用户可见文案（sc.exe 失败时状态栏就显示这个），单列一张真值表守住
 $codeMap=@{ 0=''; 1056='已在运行'; 1062='未启动'; 1060='服务未安装'; 1051='禁止启动（禁用或只读）'
             1053='服务进程无法启动'; 1058='服务被禁用'; 1067='进程意外退出'; 1072='服务已被标记为删除'
@@ -276,5 +336,12 @@ foreach ($k in $codeMap.Keys) {
 }
 Assert ((Convert-ScExitCode 9999) -eq '错误码 9999') 'Unknown exit code must echo the number.'
 Write-Output 'PASS: Convert-ServiceStatus + Convert-ScExitCode full mapping tables; unknown values fall back.'
+
+# ---- worker 泄漏门禁：本文件启动的 runspace 必须全部关掉 ----
+# 修前（v1.0.22）：1062 用例嵌在抛异常用例的 try 里，$worker 中途改指向新 worker，
+# 于是前一个 worker 从未关闭（runspace 泄漏），后一个被关两次（异常当年被 Close-FakePoll 吞掉）。
+Assert ([int]$script:fakePollOpen -eq 0) "有 $($script:fakePollOpen) 个 fake worker 没被 Close-FakePoll 关掉（runspace 泄漏）。"
+Assert ([int]$script:fakePollStarted -ge 10) "worker 计数自检失败（Started=$($script:fakePollStarted)），别把门禁写成永远绿灯。"
+Write-Output "PASS: 本文件启动的 $($script:fakePollStarted) 个 worker 全部关闭（无 runspace 泄漏）。"
 
 Write-Output 'PASS: wakeup, priority between probes, FIFO, and idle shutdown; no real services or network used.'

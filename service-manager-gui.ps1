@@ -261,6 +261,11 @@ $script:sync = [hashtable]::Synchronized(@{
   # 停止进度共享槽位：runspace 侧 Wait-Stopped 生产（name/elapsedMs/totalMs），UI 侧卡片每帧消费。
   # 必须在字面量里预置这个键——Wait-Stopped 只在键已存在时发布进度，缺键进度条永远长不出来。
   stopProgress         = $null
+  # worker 忙标记：poll.ps1 在停/删服务的阻塞等待期间置 $true（最长 waitStoppedTimeoutMs），
+  # 卡片 Update-CardFreshness 见它为真就跳过陈旧判定——阻塞期 worker 不产探测结果，
+  # 而判据只有 2×ProbeIntervalMs（默认 8s），否则其余「运行中」卡片会被全刷成「状态未知」并禁用按钮。
+  # 与 stopProgress 同理：必须在字面量里预置，runspace 侧只在键已存在时写。
+  busy                 = $false
   extCommandTimeoutMs  = [int]$script:config.ExtCommandTimeoutMs
   svcStateTimeoutMs    = [int]$script:config.SvcStateTimeoutMs
   scmPendingStates     = [string[]]$script:SCM_PENDING_STATES

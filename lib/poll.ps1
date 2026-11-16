@@ -79,6 +79,14 @@ function Invoke-ServiceStart([string]$n,[string]$fail='启动失败'){
   }
 }
 
+# 阻塞等待（停/删服务的等停，最长 waitStoppedTimeoutMs）期间 worker 不产出探测结果，
+# 而卡片新鲜度判据只有 2×ProbeIntervalMs（默认 8s）——期间所有「运行中」卡片会被判陈旧、按钮禁用。
+# 用 $sync.busy 告诉 UI 侧「本轮忙」，由 Update-CardFreshness 跳过陈旧判定。
+# 键未预置（CLI 直接点源、测试夹具）时静默跳过：置位与否都不该影响等待本身。
+function Set-PollBusy([bool]$on){
+  if ($sync -is [System.Collections.IDictionary] -and $sync.ContainsKey('busy')) { $sync.busy = $on }
+}
+
 function Invoke-PendingCommands {
   # 执行命令队列（启停与删除全在后台，避免 UI 线程同步等待冻结界面）。
   # 返回本轮执行条数——主循环据此判「有在途命令」，影响轮询间隔。
@@ -98,9 +106,15 @@ function Invoke-PendingCommands {
         # 否则卡片会停在「停止中」直到过渡态超时逃生，把一个已达成的结果演成失败。
         $code = Invoke-ScQuiet @('stop', $n)
         if ($code -eq 0 -or $code -eq 1062) {
-          if(-not (Wait-Stopped $n -TimeoutMs (Get-WaitStoppedMs $n))) { $ok=$false; $why='停止未在超时内完成' }
+          # 等停是阻塞的（≤该服务预算，默认 12s）：期间不产探测结果，先标 busy 防卡片误判陈旧。
+          Set-PollBusy $true
+          try {
+            if(-not (Wait-Stopped $n -TimeoutMs (Get-WaitStoppedMs $n))) { $ok=$false; $why='停止未在超时内完成' }
+          } finally { Set-PollBusy $false }
         } else {
           $ok=$false
+          # why 与状态栏消息同源写入：卡片靠回执的 why 显示原因（状态栏那条只有 5 秒租约，过后看不到）。
+          $why="$n 停止失败（$code $(Convert-ScExitCode $code)）"
           $sync.msg.Enqueue("$n 停止失败($code $(Convert-ScExitCode $code))")
         }
       }
@@ -108,7 +122,10 @@ function Invoke-PendingCommands {
         if(-not (Invoke-Sc 'stop' $n '停止失败，重启中断')) { $ok=$false; break }
         # 等不到 Stopped 就不能往下 start：此时 SCM 多半回 1056（已在运行/正在停止），
         # 旧代码丢弃返回值直接 start，失败文案会写成「已在运行」，与事实（仍在停止）相反。
-        if(-not (Wait-Stopped $n -TimeoutMs (Get-WaitStoppedMs $n))) { $ok=$false; $why='停止未在超时内完成，已中止重启'; break }
+        Set-PollBusy $true
+        try {
+          if(-not (Wait-Stopped $n -TimeoutMs (Get-WaitStoppedMs $n))) { $ok=$false; $why='停止未在超时内完成，已中止重启'; break }
+        } finally { Set-PollBusy $false }
         # 中间回执：停止阶段结束、开始启动。UI 收到后把过渡态从「停止中」换成「启动中」，
         # 否则整个重启期间卡片都写着「停止中」，看不出它已经开始起来了。
         $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$null;h=$null;e=$e;phase='start'})
@@ -119,13 +136,15 @@ function Invoke-PendingCommands {
         # 删除走后台：stop → Wait-Stopped ≤该服务预算（缺省 12s）→ nssm remove confirm → 实证复核。
         # 序列本体在 svc-common.ps1 的 Invoke-ServiceRemove（与 nssm.ps1 共用一份，免得漂移）。
         $ok=$true
+        # 删除序列内含等停（≤该服务预算）：同样标 busy，别让别的卡片在删除期间翻「状态未知」。
+        Set-PollBusy $true
         try {
           $r = Invoke-ServiceRemove $n $sync.nssm -TimeoutMs (Get-WaitStoppedMs $n)
           if(-not $r.ok){
             $msg = if($r.exitCode -ne 0){ "$n 删除失败($($r.exitCode))" } else { "$n 删除失败：$($r.why)" }
             $sync.msg.Enqueue($msg); $ok=$false
           }
-        } catch { $sync.msg.Enqueue("$n 删除失败: $($_.Exception.Message)"); $ok=$false }
+        } catch { $sync.msg.Enqueue("$n 删除失败: $($_.Exception.Message)"); $ok=$false } finally { Set-PollBusy $false }
       }
     }
     } catch {

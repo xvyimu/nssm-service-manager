@@ -3,6 +3,15 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
+## [1.0.23] - 2026-11-16
+
+停服期间不再误伤其它卡片，并补齐上一版的自述与门禁缺口：
+
+- **停服阻塞不再翻陈旧**：`stop`/`restart`/`remove` 在命令队列里同步等停（默认 12s），期间不产出探测，而卡片新鲜度判据是 `2 × ProbeIntervalMs`（默认 8000ms）——于是等待期间其它「运行中」卡片会被判「状态未知」、按钮被禁用。现在 GUI 预置 `$sync.busy`，三处阻塞用 `try/finally` 置位/复位，`Update-CardFreshness` 在 busy 时不改判；阻塞结束立刻恢复原判据。
+- **自述修正（1.0.22 的两处过度描述）**：1.0.22 的 CHANGELOG 与提交信息声称做了「GUI 键集 → `Wait-Stopped` → GhostSvc」端到端复现，实际文件与报告里都没有那一次。1.0.23 补做了该复现（GUI 键集含 `busy`/`stopProgress` → 对恒 Running 的服务发 stop → 断言阻塞期 `busy=true`、回执 `ok=false` 且含「停止未在超时内完成」、结束 `busy=false`），并只把有输出证据的部分写进文档。
+- **测试结构错位**：`test-poll-commands` 里 w1 从未关闭、w2 被关两次，第二次的 `ObjectDisposedException` 被 `Close-FakePoll` 的 `try/catch` 吞掉。现在每个用例块只关自己的 worker，`Close-FakePoll` 恢复成不吞异常，并新增 `fakePollOpen` 计数断言（数量不为 0 或残留未关即红）。
+- **失败路径补断言与原因**：`stop` 的 sc 失败分支此前只入队提示、回执 `why` 为空，卡片只能显示通用失败；现在与超时分支一致写 `$why`。新增两条用例：状态恒 Running + 小预算 → 超时判失败；sc=5 → 拒绝访问判失败。
+- **空 catch 门禁收紧**：覆盖 `catch [Type] { }` 与「体内只有行注释」两种形态，范围仍为 `lib/*.ps1` 与入口；当前 6 处均带标记。
 ## [1.0.22] - 2026-11-16
 
 `stop` 对「服务本就已停止」不再判失败：
@@ -14,7 +23,7 @@
 
 服务停止进度在真机可见（1.0.20 的接线缺口修复）与三处判据补强：
 
-- **进度条接线补上**：1.0.20 的生产端只在 `$sync` 已含 `stopProgress` 键时才发布，而 GUI 构造 `$script:sync` 时没有该键——真机上进度条永不显示，两条测试因夹具自带键而全绿。现在 GUI 预置该槽位，并新增源码级判据（从 `service-manager-gui.ps1` 提取 `$script:sync` 键名，断言含 `stopProgress`）+ 端到端复现（GUI 键集 → `Wait-Stopped` → 等待期非空、结束置空）。
+- **进度条接线补上**：1.0.20 的生产端只在 `$sync` 已含 `stopProgress` 键时才发布，而 GUI 构造 `$script:sync` 时没有该键——真机上进度条永不显示，两条测试因夹具自带键而全绿。现在 GUI 预置该槽位，并新增源码级判据（从 `service-manager-gui.ps1` 提取 `$script:sync` 键名，断言含 `stopProgress`）+ 端到端复现（GUI 键集 → `Wait-Stopped` → 等待期非空、结束置空）——该次复现未落盘，属过度自述，1.0.23 已补做并给出输出。
 - **纯「停止」也有进度**：`poll` 的 `stop` 分支此前只发 `sc stop` 就回执；现在同样等 `Wait-Stopped`（按服务预算），超时判失败并给原因。代价是回执从「发出即回」变成「停稳才回」，与 restart/remove 口径一致。
 - **后台 worker 死亡时清进度槽**：`bgDeathReported` 分支同时把 `$sync.stopProgress` 置空，避免留下定格在半截的进度条。
 - **空 catch 门禁跨行可绕**：判据改成 `(?s)catch\s*\{\s*(?:<#.*?#>)?\s*\}`（多行空体、体内只有块注释都算空），并按 `match.Index` 反推行号校验上一行标记；仍只覆盖 `lib/*.ps1` 与入口。
