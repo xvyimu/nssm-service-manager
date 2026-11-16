@@ -4,7 +4,7 @@ $ErrorActionPreference='Stop'
 . (Join-Path $RepoRoot 'lib/poll.ps1')
 . (Join-Path $RepoRoot 'tests/test-helpers.ps1')
 
-$worker=Start-FakePoll 1
+$worker=Start-FakePoll 1 'Stopped' 0 @{ probeIdleMs = 8000 }
 try {
   Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Worker did not start.'
   Start-Sleep -Milliseconds 150
@@ -16,8 +16,8 @@ try {
   Write-Output "Idle command dispatch: ${latency}ms"
   # 判据是「不等到空闲间隔」，不是某个绝对毫秒数：worker 要先跑完一轮探测才会 drain 命令队列，
   # 慢 runner 上光一轮探测就能吃掉 1.5s（CI 实测 1507ms），绝对阈值会误红。
-  # 默认空闲间隔 15000ms，取一半仍能区分「走 wake 立即派发」与「睡满空闲间隔」。
-  Assert ($latency -lt 7500) 'Idle command waited for the fixed poll sleep.'
+  # 空闲间隔在这里显式注入 8000ms，断言取它的一半——阈值与默认值解耦，改 config 默认不会让这里漂移。
+  Assert ($latency -lt 4000) 'Idle command waited for the fixed poll sleep.'
 } finally { Close-FakePoll $worker }
 
 $worker=Start-FakePoll 6 'Stopped' 250
