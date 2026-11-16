@@ -7,7 +7,7 @@
 # 本工具没有对应命令，既没有回执可丢、也不该拦退出（`Test-TransitionTimedOut` 同样只认这三种）。
 $script:TRANSITION_STATES = @('启动中','停止中','删除中')
 # SCM 中间态——poll 看到就把轮询间隔压到 ProbePendingMs。poll.ps1 在独立 runspace 里跑，
-# 只前置了 svc-common/health/poll 的文本、拿不到这里的变量，那边保留同值字面量，改动要两边同步。
+# 只前三者（svc-common/health/poll）读取本变量；poll 在第二个 runspace 读不到它，由入口经 $sync.scmPendingStates 注入，poll 内只留缺注入时的同值兜底——改动只需改这里
 $script:SCM_PENDING_STATES = @('启动中','停止中','暂停中','继续中')
 # 切换态——卡片时长后缀「已…」的判定（视觉口径，比过渡态宽）。
 $script:SWITCHING_STATES = $script:SCM_PENDING_STATES + @('删除中')
@@ -37,7 +37,7 @@ $script:config = [ordered]@{
   ToggleTimeoutMs     = 45000    # 卡片过渡态超时逃生（回执丢失时按探测值收敛解封）。§ToggleTimeoutMs
   WaitHealthyTimeoutMs = 120000  # 「运行中但健康探测不通过」超过此时长：从「等待中」升级为「无响应」+ 红点
   TransitionHardCapFactor = 10   # 过渡计时刷新的硬上限倍数：累计超过 ToggleTimeoutMs × 本值就强制逃生。
-  WaitStoppedTimeoutMs = 6000    # 重启/删除前轮询 Stopped 的上限（svc-common.ps1 Wait-Stopped）
+  WaitStoppedTimeoutMs = 12000   # 停止/删除前轮询 Stopped 的总预算。取 12s：AppStopMethodConsole 5000 + Window/Threads 各 1500（NSSM 默认值，nssm.cc/usage，2.24-103）= 8000ms，余量留给查询抖动与子进程。低于此值 restart 会在服务仍在停止时判超时
   ExtCommandTimeoutMs = 60000    # 外部命令（sc.exe / nssm.exe）超时；超时即 Kill 并返回 exit=-1
   SvcStateTimeoutMs   = 3000     # 服务状态探测查询（sc.exe query）的硬超时；只管探测，不改命令超时（见上一项）
   LogKeepCount        = 10       # 轮转日志保留份数（util.ps1 Remove-RotatedLogs），按日志目录各留前 N 份。§LogKeepCount

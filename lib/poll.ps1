@@ -11,7 +11,7 @@ $http = [System.Net.Http.HttpClient]::new()
 # 超时从 $sync 读（UI 线程从 config 注入），未设时回落默认；生效值写回同一键供测试断言。
 $tcpMs  = if ($sync.tcpTimeoutMs)        { [int]$sync.tcpTimeoutMs }        else { 200 }
 $httpMs = if ($sync.httpTimeoutMs)       { [int]$sync.httpTimeoutMs }       else { 3000 }
-$waitMs = if ($sync.waitStoppedTimeoutMs){ [int]$sync.waitStoppedTimeoutMs } else { 6000 }
+$waitMs = if ($sync.waitStoppedTimeoutMs){ [int]$sync.waitStoppedTimeoutMs } else { 12000 }
 # 服务状态探测查询的硬超时：UI 侧注入 config.SvcStateTimeoutMs，未注入传 0 让 Get-SvcStateQuiet
 # 自己回落（runspace 里没有 config，注入是唯一通路）。
 $svcStateMs = if ($sync.svcStateTimeoutMs) { [int]$sync.svcStateTimeoutMs } else { 0 }
@@ -20,6 +20,10 @@ $probeIntervalMs = if ($sync.probeIntervalMs) { [int]$sync.probeIntervalMs } els
 $probeIdleMs     = if ($sync.probeIdleMs)     { [int]$sync.probeIdleMs }     else { 15000 }
 $probePendingMs  = if ($sync.probePendingMs)  { [int]$sync.probePendingMs }  else { 1000 }
 $probeThrottle   = if ($sync.probeThrottleLimit) { [int]$sync.probeThrottleLimit } else { 8 }
+# 中间态集合同样从 $sync 读。**这里的字面量是 runspace 缺注入时的兜底**（夹具只塞部分键、
+# 或有人直接跑这段文本块时）；正常路径由入口 service-manager-gui.ps1 从 config.ps1 的
+# $script:SCM_PENDING_STATES 注入，唯一真实来源仍是 config.ps1（改集合要两边同步）。
+$scmPending = if ($sync.scmPendingStates) { @($sync.scmPendingStates) } else { @('启动中','停止中','暂停中','继续中') }
 # 超时按**每次请求**用 CTS 控制（per-service 可能比全局长，HttpClient.Timeout 是实例级）。
 # 必须是 System.Threading.Timeout.InfiniteTimeSpan；TimeSpan.InfiniteTimeSpan 旧运行时取到 $null。
 $http.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan
@@ -84,7 +88,9 @@ function Invoke-PendingCommands {
       'stop'    { $ok=Invoke-Sc 'stop' $n '停止失败' }
       'restart' {
         if(-not (Invoke-Sc 'stop' $n '停止失败，重启中断')) { $ok=$false; break }
-        [void](Wait-Stopped $n)
+        # 等不到 Stopped 就不能往下 start：此时 SCM 多半回 1056（已在运行/正在停止），
+        # 旧代码丢弃返回值直接 start，失败文案会写成「已在运行」，与事实（仍在停止）相反。
+        if(-not (Wait-Stopped $n)) { $ok=$false; $why='停止未在超时内完成，已中止重启'; break }
         # 中间回执：停止阶段结束、开始启动。UI 收到后把过渡态从「停止中」换成「启动中」，
         # 否则整个重启期间卡片都写着「停止中」，看不出它已经开始起来了。
         $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$null;h=$null;e=$e;phase='start'})
@@ -192,8 +198,9 @@ while(-not $sync.stop){
         })
       }
     } else {
-      # 中间态判定走 $sync.scmPendingStates（由入口从 config.ps1 注入），不再在此留第二份字面量。
-      if ($st -in @($sync.scmPendingStates)) { $pendingSeen = $true }
+      # 中间态判定走 $scmPending：正常路径由入口注入 $sync.scmPendingStates（唯一真实来源 = config.ps1），
+      # 脚本开头那一处 else 字面量只是 runspace 缺注入时的兜底。
+      if ($st -in $scmPending) { $pendingSeen = $true }
       # 已停止但端口仍被占用：说明有非服务进程在听（孤儿进程）。给一个可见信号，
       # 否则「服务已停止」和「网页还能打开」会同时成立，用户无从判断。
       $orphanPort = ($st -eq '已停止' -and [int]$info.port -gt 0 -and [string]$info.probe -ne 'none')

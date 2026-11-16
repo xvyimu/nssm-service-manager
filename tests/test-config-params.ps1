@@ -61,11 +61,11 @@ try {
     Assert ($worker.Sync.probeThrottleLimit -eq 3) 'poll probeThrottleLimit not read from sync'
   } finally { Close-FakePoll $worker }
 
-  # 未注入键的回落：起一个不带 extraSyncKeys 的 worker，生效值应为默认 200/3000/6000 + 4000/15000/8
+  # 未注入键的回落：起一个不带 extraSyncKeys 的 worker，生效值应为默认 200/3000/12000 + 4000/15000/8
   $workerFallback = Start-FakePoll 1 'Stopped' 0
   try {
     Start-Sleep -Milliseconds 400
-    Assert ($workerFallback.Sync.tcpTimeoutMs -eq 200 -and $workerFallback.Sync.httpTimeoutMs -eq 3000 -and $workerFallback.Sync.waitStoppedTimeoutMs -eq 6000) 'poll did not fall back to defaults when sync keys absent.'
+    Assert ($workerFallback.Sync.tcpTimeoutMs -eq 200 -and $workerFallback.Sync.httpTimeoutMs -eq 3000 -and $workerFallback.Sync.waitStoppedTimeoutMs -eq 12000) 'poll did not fall back to defaults when sync keys absent.'
     Assert ($workerFallback.Sync.probeIntervalMs -eq 4000 -and $workerFallback.Sync.probeIdleMs -eq 15000 -and $workerFallback.Sync.probeThrottleLimit -eq 8) 'poll probe cadence defaults not restored when sync keys absent.'
   } finally { Close-FakePoll $workerFallback }
 
@@ -80,7 +80,7 @@ try {
   $script:configNotices = $null
   Add-ConfigNotice 'a'; Add-ConfigNotice 'b'
   Assert ($script:configNotices -is [array] -and $script:configNotices.Count -eq 2) 'Add-ConfigNotice 应累积成数组'
-  Assert ($script:config.PerPage -eq 6 -and $script:config.WaitStoppedTimeoutMs -eq 6000) 'Defaults not restored on broken config.'
+  Assert ($script:config.PerPage -eq 6 -and $script:config.WaitStoppedTimeoutMs -eq 12000) 'Defaults not restored on broken config.'
   # LogDir 默认空串 = 用仓内 logs/（主脚本据此回落，见 service-manager-gui.ps1 顶部）
   Assert ($script:config.LogKeepCount -eq 10 -and $script:config.LogKeepDays -eq 14 -and $script:config.LogDir -eq '') 'Log retention defaults not restored on broken config.'
 
@@ -111,18 +111,25 @@ try {
   $null = [math]::Sqrt($script:config.PerPage)   # 分页这步不该因除零抛出
 
   # ---- 3. mock restart：Wait-Stopped 用 $sync 注入的 waitMs=50——
-  # 若误用默认 6000，restart 会卡在轮询直到 6s，executed 里只有 stop；
-  # 用 50 则 ~550ms 内 stop+start 都到，是「注入值确实生效」的判别。
-  $worker2 = Start-FakePoll 1 'Running' 0 @{ waitStoppedTimeoutMs = 50; tcpTimeoutMs = 50; httpTimeoutMs = 500 }
+  # 服务一直不进 Stopped（fake 状态 Running），注入生效时 ~50ms 就放弃重启并回一条失败回执；
+  # 若误用默认 12000，2s 内根本收不到回执——这是「注入值确实生效」的判别。
+  $worker2 = Start-FakePoll 1 'Running' 0 @{ waitStoppedTimeoutMs = 50; waitStoppedPollMs = 10; tcpTimeoutMs = 50; httpTimeoutMs = 500 }
   try {
     $worker2.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='restart';e=1})
     [void]$worker2.Sync.wake.Set()
-    Start-Sleep -Milliseconds 1200
-    $cmdCount = $worker2.Sync.executed.Count
-    Assert ($cmdCount -ge 2) "restart should issue stop+start within 1.2s (waitMs=50 injected), got $cmdCount entries."
+    $ack=$null; $deadline=[datetime]::UtcNow.AddSeconds(2)
+    while ([datetime]::UtcNow -lt $deadline) {
+      $it=$null
+      while ($worker2.Sync.queue.TryDequeue([ref]$it)) { if ($it.done) { $ack=$it } }
+      if ($ack) { break }
+      Start-Sleep -Milliseconds 20
+    }
+    Assert ($null -ne $ack) 'Injected waitMs=50 should surface a restart ack long before the 12s default.'
+    Assert (-not $ack.ok -and [string]$ack.why -match '中止重启') "未停止的重启必须判失败并写明中止：ok=$($ack.ok) why=$($ack.why)"
+    Assert (@($worker2.Sync.executed | Where-Object { "$_" -match '^start' }).Count -eq 0) 'Stopping did not finish, yet start was issued.'
   } finally { Close-FakePoll $worker2 }
 
-  Write-Output 'PASS: config.json overrides timeouts/cooldown/rotation; poll reads injected sync values; broken config falls back; restart honors waitMs.'
+  Write-Output 'PASS: config.json overrides timeouts/cooldown/rotation; poll reads injected sync values; broken config falls back; restart aborts on injected waitMs.'
 } finally {
   Remove-Item -LiteralPath (Join-Path $RepoRoot 'config.json') -Force -EA SilentlyContinue
   if ($backupRepoConfig -and (Test-Path -LiteralPath $backupRepoConfig)) {

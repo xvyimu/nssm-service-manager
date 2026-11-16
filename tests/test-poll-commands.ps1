@@ -134,6 +134,28 @@ try {
   Write-Output 'PASS: restart emits a phase=start receipt after the stop phase, then the usual final ack.'
 } finally { Close-FakePoll $worker }
 
+# ---- restart 等不到 Stopped 时必须中止，不能拿 1056 当「已在运行」继续 start ----
+$worker=Start-FakePoll 1 'Running' 0 @{ waitStoppedTimeoutMs = 100; waitStoppedPollMs = 10 }
+try {
+  Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Restart worker did not start.'
+  $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='restart';e=8})
+  [void]$worker.Sync.wake.Set()
+  $items=@(); $deadline=[datetime]::UtcNow.AddSeconds(15)
+  while ([datetime]::UtcNow -lt $deadline) {
+    $it=$null
+    while ($worker.Sync.queue.TryDequeue([ref]$it)) { $items += $it }
+    if (@($items | Where-Object { $_.done }).Count -ge 1) { break }
+    Start-Sleep -Milliseconds 20
+  }
+  $final=@($items | Where-Object { $_.done })
+  $phase=@($items | Where-Object { $_.phase -eq 'start' })
+  Assert ($final.Count -eq 1) "重启应有一条最终回执，got $($final.Count)"
+  Assert (-not $final[0].ok) '停止超时时重启必须判失败，不能当作成功'
+  Assert ([string]$final[0].why -match '中止重启') "失败原因应点明已中止重启，实际：$($final[0].why)"
+  Assert ($phase.Count -eq 0) '停止未完成时不得下发 phase=start（会误导成已经在启动）'
+  Write-Output 'PASS: restart aborts with a clear reason when the service never reaches Stopped.'
+} finally { Close-FakePoll $worker }
+
 # ---- 全停止但刚下发命令：那一轮之后的睡眠必须用短间隔，不能走空闲长睡眠 ----
 # 修前：$sleepMs 只按「本轮有无运行中服务」判，1 个 Stopped 服务时 $toProbe 为空，
 # 走 ProbeIdleMs——卡片停在「启动中」最长约 15 秒才收到第一份探测结果。
@@ -173,6 +195,35 @@ try {
   Assert ($worker.Sync.probeCount -gt $p0) 'No second cycle within 5s — pending state slept ProbeIntervalMs/ProbeIdleMs.'
   Assert ($elapsed -lt 2500) "Pending-state sleep was ${elapsed}ms; expected ~ProbePendingMs=300ms."
   Write-Output "PASS: StartPending keeps the next cycle at ProbePendingMs (${elapsed}ms)."
+} finally { Close-FakePoll $worker }
+
+# ---- 缺注入兜底（P1）：$sync 不带 scmPendingStates 时，中间态仍必须走 ProbePendingMs ----
+# 修前 poll 直接 `$st -in @($sync.scmPendingStates)`：缺键 → @($null) → 恒 False → $pendingSeen 永远为假，
+# 卡片停在「启动中」最长 ProbeIdleMs（15s）。`-omitPendingStates` 刻意不塞这个键，走 poll 的兜底字面量。
+# probePendingMs=300 / 其余 60s：走错分支要等 60s，5s 即红。
+$worker=Start-FakePoll 1 'StartPending' 0 @{ probePendingMs = 300; probeIntervalMs = 60000; probeIdleMs = 60000 } -omitPendingStates
+try {
+  Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Worker did not start.'
+  Assert (-not $worker.Sync.ContainsKey('scmPendingStates')) '本轮夹具应刻意不注入 scmPendingStates。'
+  # (b) 缺注入不得改变「启动中」的既有行为：仍按中间态分支原样入队（h 为空，不是探测结果的健康值）。
+  Start-Sleep -Milliseconds 700
+  $item=$null; $seenStartPending=$false; $badHealth=$false
+  while ($worker.Sync.queue.TryDequeue([ref]$item)) {
+    if ($item.n -eq 'Fake0' -and $item.st -eq '启动中') {
+      $seenStartPending=$true
+      if ([string]$item.h -ne '') { $badHealth=$true }
+    }
+  }
+  Assert $seenStartPending '缺注入时「启动中」没有送到 UI（兜底失效：中间态漏报或被降级）。'
+  Assert (-not $badHealth) '缺注入时「启动中」带上了健康值——中间态应走非探测分支（h 为空）。'
+  # (a) 缺注入时仍按 ProbePendingMs 短间隔轮询（两侧间隔必须远小于 ProbeIdleMs=60000）。
+  $p0=$worker.Sync.probeCount; $t0=[datetime]::UtcNow
+  $deadline=[datetime]::UtcNow.AddSeconds(5)
+  while ($worker.Sync.probeCount -le $p0 -and [datetime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 20 }
+  $elapsed=([datetime]::UtcNow-$t0).TotalMilliseconds
+  Assert ($worker.Sync.probeCount -gt $p0) 'No second cycle within 5s — 缺 scmPendingStates 时中间态睡到了 ProbeIntervalMs/ProbeIdleMs。'
+  Assert ($elapsed -lt 2500) "缺注入时中间态睡眠 ${elapsed}ms；应回落到兜底四态并走 ProbePendingMs=300ms（远小于 ProbeIdleMs=60000）。"
+  Write-Output "PASS: missing scmPendingStates still polls pending states at ProbePendingMs (${elapsed}ms)."
 } finally { Close-FakePoll $worker }
 
 # ---- 兄弟服务卡在中间态时，运行中服务的状态仍按 ProbePendingMs 送达 ----

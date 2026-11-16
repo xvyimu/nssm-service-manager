@@ -56,12 +56,12 @@ function Invoke-ScQuiet([string[]]$argv, [int]$timeoutMs = 0){
   (Invoke-ExternalQuiet (Get-ScExe) $argv $timeoutMs).exit
 }
 
-# 轮询服务到 Stopped。超时：$sync 注入值 > $script:config.WaitStoppedTimeoutMs > 6000。
+# 轮询服务到 Stopped。超时：$sync 注入值 > $script:config.WaitStoppedTimeoutMs > 12000。
 # 服务已不存在（ObjectNotFound）= 已停止；其他错误（权限等）继续等待。
 function Wait-Stopped([string]$n){
   $timeoutMs = if     ($sync -and $sync.waitStoppedTimeoutMs)                   { [int]$sync.waitStoppedTimeoutMs }
                elseif ($script:config -and $script:config.WaitStoppedTimeoutMs) { [int]$script:config.WaitStoppedTimeoutMs }
-               else                                                             { 6000 }
+               else                                                             { 12000 }
   # 预算按真实耗时算：查询本身最坏要吃满 SvcStateTimeoutMs（3s），
   # 只按步长累加会让「6s 预算」实际跑成 20 轮 × 6s。Stopwatch 兜住这个放大。
   $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -122,7 +122,10 @@ function Convert-ServiceStatus([string]$s){
 function Invoke-ServiceRemove([string]$n,[string]$nssmExe){
   [void](Invoke-ScQuiet @('stop', $n))
   # stop 失败不阻断（服务可能已停），等 Stopped 再删，避免删一个还在跑的服务
-  [void](Wait-Stopped $n)
+  # 还在跑就删，SCM 会把服务标记删除但进程仍在，后续状态查询全部不可信——宁可报错让用户重试。
+  if(-not (Wait-Stopped $n)) {
+    return [pscustomobject]@{ ok=$false; exitCode=0; why='服务未在超时内停止，已中止删除'; detail='' }
+  }
   $r = Invoke-ExternalQuiet $nssmExe @('remove', $n, 'confirm')
   $o = $r.out
   $code = $r.exit

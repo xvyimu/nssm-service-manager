@@ -34,7 +34,13 @@ function sc.exe {
   if ($args[0] -eq 'query') {
     # 实证复核判据（Test-ServicePresent / Test-ServiceGone）走这里；
     # 不记进 startArgs——它不是「命令」，记了会把 stop/start 的断言覆盖掉。
-    if ($script:nssmInstalled -contains $args[1]) { $global:LASTEXITCODE=0 } else { $global:LASTEXITCODE=1060 }
+    if ($script:nssmInstalled -contains $args[1]) {
+      # 必须回可解析的 SERVICE_NAME + STATE：删除路径要先 Wait-Stopped，
+      # 只给退出码 0 会让 Get-SvcStateQuiet 拿到 $null，等满预算后判「没停」而中止删除。
+      "SERVICE_NAME: $($args[1])"
+      '        STATE              : 1  STOPPED'
+      $global:LASTEXITCODE=0
+    } else { $global:LASTEXITCODE=1060 }
     return
   }
   $script:startArgs=@($args)   # 最近一条 sc.exe 命令（stop/start 等非 query 都记这里）
