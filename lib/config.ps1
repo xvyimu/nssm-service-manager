@@ -37,7 +37,7 @@ $script:config = [ordered]@{
   ToggleTimeoutMs     = 45000    # 卡片过渡态超时逃生（回执丢失时按探测值收敛解封）。§ToggleTimeoutMs
   WaitHealthyTimeoutMs = 120000  # 「运行中但健康探测不通过」超过此时长：从「等待中」升级为「无响应」+ 红点
   TransitionHardCapFactor = 10   # 过渡计时刷新的硬上限倍数：累计超过 ToggleTimeoutMs × 本值就强制逃生。
-  WaitStoppedTimeoutMs = 12000   # 停止/删除前轮询 Stopped 的总预算。取 12s：AppStopMethodConsole 5000 + Window/Threads 各 1500（NSSM 默认值，nssm.cc/usage，2.24-103）= 8000ms，余量留给查询抖动与子进程。低于此值 restart 会在服务仍在停止时判超时
+  WaitStoppedTimeoutMs = 12000  # 停止/删除前轮询 Stopped 的总预算上限；实际返回时刻 ≤ 本值（内部按 1/4 预留 Kill 收尾）。取值依据：AppStopMethodConsole 5000 + Window/Threads 各 1500 = 8000ms，再留余量
   ExtCommandTimeoutMs = 60000    # 外部命令（sc.exe / nssm.exe）超时；超时即 Kill 并返回 exit=-1
   SvcStateTimeoutMs   = 3000     # 服务状态探测查询（sc.exe query）的硬超时；只管探测，不改命令超时（见上一项）
   LogKeepCount        = 10       # 轮转日志保留份数（util.ps1 Remove-RotatedLogs），按日志目录各留前 N 份。§LogKeepCount

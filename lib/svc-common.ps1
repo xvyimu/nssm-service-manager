@@ -34,6 +34,7 @@ function Invoke-ExternalQuiet([string]$exe, [string[]]$argv, [int]$timeoutMs = 0
   $timeoutMs = if ($timeoutMs -gt 0) { $timeoutMs }
                elseif ($sync -and $sync.extCommandTimeoutMs) { [int]$sync.extCommandTimeoutMs }
                else { 60000 }
+  $sw = [Diagnostics.Stopwatch]::StartNew()
   if (-not $p.WaitForExit($timeoutMs)) {
     # Kill 之后必须再 WaitForExit 并 Dispose：否则进程对象与两个 ReadToEndAsync 任务一起悬空，
     # 每次超时都留一份待回收句柄（探测是长跑循环，泄漏会累积）。
@@ -44,9 +45,13 @@ function Invoke-ExternalQuiet([string]$exe, [string[]]$argv, [int]$timeoutMs = 0
   }
   # WaitForExit 只等进程退出，不等管道 EOF：若子进程派生的孙进程继承了 stdout 句柄，
   # .Result 会一直等下去。给个上界，拿不到就当空输出——总比卡死好。
+  # 上界必须从调用方的超时里扣：两段各等 2s 的话，一次「3s 超时」的查询最坏能吃 7s，
+  # 上层按剩余预算收口就全部失效。剩余时间不足时按剩余的均分给两段，兜底 50ms 保底读一次。
+  $left = [Math]::Max(0, $timeoutMs - [int]$sw.ElapsedMilliseconds)
+  $eofWait = [int][Math]::Max(50, [Math]::Min(2000, [Math]::Floor($left / 2)))
   $stdout = ''; $stderr = ''
-  try { if ($stdoutTask.Wait(2000)) { $stdout = $stdoutTask.Result } } catch {}
-  try { if ($stderrTask.Wait(2000)) { $stderr = $stderrTask.Result } } catch {}
+  try { if ($stdoutTask.Wait($eofWait)) { $stdout = $stdoutTask.Result } } catch {}
+  try { if ($stderrTask.Wait($eofWait)) { $stderr = $stderrTask.Result } } catch {}
   @{ exit = $p.ExitCode; out = ($stdout + $stderr).Trim() }
 }
 
@@ -63,33 +68,51 @@ function Wait-Stopped([string]$n){
                elseif ($script:config -and $script:config.WaitStoppedTimeoutMs) { [int]$script:config.WaitStoppedTimeoutMs }
                else                                                             { 12000 }
   # 预算按真实耗时算，且要把「最后一次查询」和「超时后 Kill 的收尾」都算进去：
-  # 只按步长累加会把「12s 预算」放大成 40 轮 × 两次查询，减掉 1000ms 兜住 Kill 后的 WaitForExit。
+  # 只按步长累加会把「12s 预算」放大成 40 轮 × 两次查询。
+  # 预留不能是固定 1000ms：config 允许把预算配到 100ms，固定预留会把窗口吃成负数。
+  # 按 1/4 缩、上限 1000ms——12s 预算留 1000ms 给 Kill 收尾，100ms 预算留 25ms。
   $sw = [Diagnostics.Stopwatch]::StartNew()
   # 步长从 config 收口（WaitStoppedPollMs，默认 300）；测试夹具经 $sync 注入
   $stepMs = if ($sync -and $sync.waitStoppedPollMs) { [int]$sync.waitStoppedPollMs } else { 300 }
   $svcStateMs = if ($sync -and $sync.svcStateTimeoutMs) { [int]$sync.svcStateTimeoutMs } else { 0 }
   $capMs = if ($svcStateMs -gt 0) { $svcStateMs } else { 3000 }
-  $deadline = $timeoutMs - 1000
-  if ($deadline -lt 200) { $deadline = 200 }
+  $reserve = [int][Math]::Min(1000, [Math]::Floor($timeoutMs / 4))
+  $deadline = $timeoutMs - $reserve
+  $sliceFloor = [int][Math]::Min(50, [Math]::Max(10, [Math]::Floor($timeoutMs / 10)))
   while($sw.ElapsedMilliseconds -lt $deadline){
     # 不用 Get-Service：它没有超时开关，SCM 挂起时这一行会永久阻塞，
     # 循环里的 $timeoutMs 根本轮不到判断。Get-SvcStateQuiet 走 sc.exe query（硬超时 + Kill）。
-    # 两次查询与步长都按同一份剩余预算收口，否则「≤12s」是假话。
+    # 两次查询与步长都按同一份剩余预算收口，否则「≤预算」是假话。
     $remain = $deadline - $sw.ElapsedMilliseconds
     $qms = [int][Math]::Min($capMs, $remain)
-    if ($qms -lt 100) { break }
+    if ($qms -lt $sliceFloor) { break }
     $st = Get-SvcStateQuiet $n $qms
     if($st -eq 'Stopped'){return $true}
     if(-not $st){
       # $null 既可能是「服务没了」也可能是「查询超时」——只有 1060/1072 才算没了。
       $remain2 = $deadline - $sw.ElapsedMilliseconds
-      if ($remain2 -lt 100) { break }
-      $code = Get-ServiceQueryCode $n ([int][Math]::Min($capMs, $remain2))
-      if($code -in 1060,1072){return $true}
+      if ($remain2 -ge $sliceFloor) {
+        $code = Get-ServiceQueryCode $n ([int][Math]::Min($capMs, $remain2))
+        if($code -in 1060,1072){return $true}
+      }
     }
     $remain3 = $deadline - $sw.ElapsedMilliseconds
     if ($remain3 -le 0) { break }
     Start-Sleep -Milliseconds ([int][Math]::Min($stepMs, $remain3))
+  }
+  # 收尾补一次：剩余不足一格时旧实现直接 break，会漏掉「服务恰好在最后一刻停了」。
+  # 还剩多少就给多少（至少 sliceFloor），仍然落在总预算内。
+  $tail = [int]($timeoutMs - $sw.ElapsedMilliseconds)
+  if ($tail -ge $sliceFloor) {
+    $st = Get-SvcStateQuiet $n ([int][Math]::Min($capMs, $tail))
+    if ($st -eq 'Stopped') { return $true }
+    if (-not $st) {
+      $tail2 = [int]($timeoutMs - $sw.ElapsedMilliseconds)
+      if ($tail2 -ge $sliceFloor) {
+        $code = Get-ServiceQueryCode $n ([int][Math]::Min($capMs, $tail2))
+        if ($code -in 1060,1072) { return $true }
+      }
+    }
   }
   $false
 }

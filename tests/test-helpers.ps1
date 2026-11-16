@@ -180,3 +180,12 @@ function Wait-FakePollAck($worker, [int]$TimeoutSec = 4) {
 
 # 断言：各测试不再各自复制一份；dot-source 本文件后即可使用。
 function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
+
+# 只保留可执行代码：去掉 <# ... #> 块注释与行内 # 注释。
+# 源码级断言（状态字面量、注入键）必须看这个，而不是原文——否则注释里写同形内容就能满足断言。
+# 简化前提：本仓源码里没有把 " #" 写进字符串常量的地方（有的话再加引号状态机）。
+function Get-SourceCodeOnly([string]$text){
+  if (-not $text) { return "" }
+  $t = [regex]::Replace($text, '(?s)<#.*?#>', '')
+  ($t -split "`r?`n" | ForEach-Object { ($_ -replace '\s+#.*$', '') }) -join "`n"
+}

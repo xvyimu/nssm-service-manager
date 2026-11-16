@@ -118,7 +118,7 @@ try {
   Assert ($probe -eq '启动中,停止中,删除中') "单独点源 ui-status/tray 时应自加载 config 得到三态，实际「$probe」"
   $pollSrc = [IO.File]::ReadAllText((Join-Path $RepoRoot 'lib/poll.ps1'))
   # 断言必须看代码不看注释：注释里写同形字面量不能算「有兜底」，也不能冒充「读了注入」。
-  $pollCode = (@($pollSrc -split "`r?`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+  $pollCode = Get-SourceCodeOnly $pollSrc
   # 负向断言两条（旧版 "'启动中'.*'停止中'.*'继续中'" 顺串匹配，换序或拆行复制都能绕过）：
   #  (a) poll.ps1 里含 ≥2 个中间态的数组字面量最多一处——唯一允许的那一处是脚本开头「runspace 缺注入
   #      时的兜底」（$sync 没塞 scmPendingStates 才会用到）。多出任何一处（换序、拆行、只抄两三个）

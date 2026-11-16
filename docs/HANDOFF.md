@@ -1,7 +1,7 @@
 <!-- doc-template: project/HANDOFF v1 -->
 # HANDOFF
 
-> **更新日：** 2026-11-15　**版本：** `VERSION` = 1.0.7
+> **更新日：** 2026-11-16　**版本：** 以仓根 `VERSION` 文件为准（勿在此硬编码版本号）
 > **本文件只写接手指南**：当前状态 / 已知限制 / 下一步。改了什么看 `CHANGELOG.md`，
 > 为什么这么设计看 `docs/PROJECT.md`（技术栈与取舍的 SSOT），实现细节看
 > `docs/IMPLEMENTATION-NOTES.md`（代码里的 `§小节名` 指向那里）。
@@ -22,7 +22,9 @@
   豁免的理由在 `PSScriptAnalyzerSettings.psd1`（CI 的 `static-analysis` 任务跑同一条命令）。
 - **CI**（`.github/workflows/`）：`test.yml` = `regression` + `static-analysis` + `secrets`(gitleaks)；
   `release.yml` = 打 tag `v*` → 跑回归 → `scripts/package-release.ps1` 出 zip → `gh release create`。
-- **发布状态**（2026-11-16 实测）：最新 tag `v1.0.7` 已发布到 GitHub Release（run #9，资产 `service-manager-1.0.7.zip` 140862 B）；`VERSION` 与 tag 一致过，下一个待发布版本为 `1.0.8`。
+- **发布状态**：以仓根 `VERSION` 与 `git tag --sort=-v:refname` 首行为准，两者必须一致；
+  GitHub Release 与 CI 运行记录见仓库 Actions / Releases 页（`test.yml` 每次 push 跑，`release.yml` 每次打 tag 跑）。
+  本节**不写具体版本号与资产大小**——历史上每改一次版本这里就漂一次，改由 `VERSION` / tag / CHANGELOG 三方为准。
   发版流程：改 `VERSION` → 在根 `CHANGELOG.md` 加版本小节 → commit →
   `git tag v<版本>` → `git push origin main --tags`。`release.yml` 会校验 `VERSION` 与 tag 一致，
   并在 tag 上补跑静态分析；重跑同一 tag 会走 `gh release upload --clobber`，不会红。
@@ -75,8 +77,8 @@
 1. **可选优化（批次 D，等真实痛点再做）**：跨页过滤/排序（服务数 > 12 才值得）、
    两份 `services.json` 的差异对比（换机迁移用）、健康历史可视化、Web 只读拓扑图。
    这四项都是新需求而非修复，没有实际使用反馈前不要开工。
-2. **发布**：已发布至 `v1.0.7`（2026-11-16），下一步打 `v1.0.8` tag → 确认 Release 附件能解压即跑（zip 里 `launch.vbs` + `lib/` +
-   example 配置齐）。之后每次发版只改 `VERSION` + CHANGELOG 再打 tag。
+2. **发布**：每次发版只改 `VERSION` + 在 `CHANGELOG.md` 加版本小节 → commit → 打 `v<版本>` tag → 发布；
+   发布后确认 Release 附件能解压即跑（zip 里 `launch.vbs` + `lib/` + example 配置齐）。
 3. **文档漂移巡检**：改了行为就同步 `README.md`（功能/文件表/CLI 用法）与
    `docs/PROJECT.md`（取舍、已知限制）；根 `CHANGELOG.md` 的当版小节在发版时定版。
 4. **测试数量**：`tests/run-all.ps1` 自动收集，新增用例不必登记；README 与 PROJECT.md 里

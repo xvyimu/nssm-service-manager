@@ -89,7 +89,7 @@ try {
   $stopBudgetMs = [int]$script:config.WaitStoppedTimeoutMs
   $stopBudgetSec = [int]($stopBudgetMs / 1000)
   Write-Output "  实测最长 $max ms；当前 ToggleTimeoutMs = $toggleMs ms"
-  # 门槛按 ToggleTimeoutMs 留 12s 删除路径余量反推：低于 ($toggleMs-$stopBudgetMs) 才算安全。
+  # 门槛按 ToggleTimeoutMs 留 $stopBudgetSec s 删除路径余量反推：低于 ($toggleMs-$stopBudgetMs) 才算安全。
   if ($max -ge ($toggleMs - $stopBudgetMs)) {
     $suggest = [Math]::Ceiling(($max + $stopBudgetMs) / 5000) * 5000
     Write-Output "  ⚠ 启动失败路径已达 $max ms，逼近 ToggleTimeoutMs=$toggleMs —— 过渡态超时逃生会在"
