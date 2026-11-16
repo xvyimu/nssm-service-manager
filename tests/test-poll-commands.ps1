@@ -14,7 +14,10 @@ try {
   Assert ($worker.Sync.executedReady.WaitOne(5500)) 'Command never executed.'
   $latency=$watch.ElapsedMilliseconds
   Write-Output "Idle command dispatch: ${latency}ms"
-  Assert ($latency -lt 1500) 'Idle command waited for the fixed poll sleep.'
+  # 判据是「不等到空闲间隔」，不是某个绝对毫秒数：worker 要先跑完一轮探测才会 drain 命令队列，
+  # 慢 runner 上光一轮探测就能吃掉 1.5s（CI 实测 1507ms），绝对阈值会误红。
+  # 默认空闲间隔 15000ms，取一半仍能区分「走 wake 立即派发」与「睡满空闲间隔」。
+  Assert ($latency -lt 7500) 'Idle command waited for the fixed poll sleep.'
 } finally { Close-FakePoll $worker }
 
 $worker=Start-FakePoll 6 'Stopped' 250
