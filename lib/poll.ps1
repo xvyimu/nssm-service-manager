@@ -98,7 +98,7 @@ function Invoke-PendingCommands {
         $ok=Invoke-ServiceStart $n '重启后启动失败'
       }
       'remove' {
-        # 删除走后台：stop → Wait-Stopped ≤6s → nssm remove confirm → 实证复核。
+        # 删除走后台：stop → Wait-Stopped ≤12s → nssm remove confirm → 实证复核。
         # 序列本体在 svc-common.ps1 的 Invoke-ServiceRemove（与 nssm.ps1 共用一份，免得漂移）。
         $ok=$true
         try {

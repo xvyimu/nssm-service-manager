@@ -84,8 +84,8 @@ try {
   Write-Output '== 结论 =='
   $max = [Math]::Max($msSvc, $msSc)
   Write-Output "  实测最长 $max ms；当前 ToggleTimeoutMs = 45000 ms"
-  # 门槛按 ToggleTimeoutMs 留 12s 删除路径余量反推：低于 (45000-12000)=39000 才算安全。
-  if ($max -ge 39000) {
+  # 门槛按 ToggleTimeoutMs 留 12s 删除路径余量反推：低于 (45000-12000)=33000 才算安全。
+  if ($max -ge 33000) {
     $suggest = [Math]::Ceiling(($max + 12000) / 5000) * 5000
     Write-Output "  ⚠ 启动失败路径已达 $max ms，逼近 ToggleTimeoutMs=45000 —— 过渡态超时逃生会在"
     Write-Output "    正常失败流程里抢先触发。建议把 ToggleTimeoutMs 提到 $suggest ms（留出删除路径 12s 余量）。"

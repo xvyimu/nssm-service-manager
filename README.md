@@ -219,6 +219,7 @@ pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName <服务名
 | `WaitHealthyTimeoutMs` | 120000 | 「运行中但健康探测不通过」超过此时长：「等待中」升级为「无响应」+ 红点。冷启动一分钟起的服务可以调大 |
 | `WaitStoppedTimeoutMs` | 12000 | 重启/删除前轮询 Stopped 的上限（`Wait-Stopped`，UI 与 runspace 共用一份） |
 | `ExtCommandTimeoutMs` | 60000 | 外部命令（`sc.exe` / `nssm.exe`）超时：超时即 `Kill` 整棵进程树并返回 `exit=-1`，不让一条挂住的命令拖死后台 |
+| `SvcStateTimeoutMs` | 3000 | 单次服务状态查询（`sc.exe query`）的硬超时；探测与等待循环共用，超时会 Kill 子进程并把状态当「未知」继续轮询 |
 | `LogKeepCount` | 10 | 轮转日志保留份数，**按日志目录**各留前 N 份：共用 `LogDir` 的服务算一个目录，有独立 `AppStdout` 目录的各算一份配额 |
 | `LogKeepDays` | 14 | 轮转日志保留天数：删除须同时满足「不在前 N 份」且「早于 N 天」，故窗口内高频轮转的档一份不删 |
 | `HealthHistory` | true | 健康历史开关：状态或健康值变化时往 `logs/health/health-YYYYMMDD.ndjson` 记一条（重复值不记）。关掉则后台不写、右键「健康历史」显示无记录 |

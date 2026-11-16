@@ -63,7 +63,7 @@ function Wait-Stopped([string]$n){
                elseif ($script:config -and $script:config.WaitStoppedTimeoutMs) { [int]$script:config.WaitStoppedTimeoutMs }
                else                                                             { 12000 }
   # 预算按真实耗时算：查询本身最坏要吃满 SvcStateTimeoutMs（3s），
-  # 只按步长累加会让「12s 预算」实际跑成 20 轮 × 12s。Stopwatch 兜住这个放大。
+  # 只按步长累加会把「12s 预算」放大成 40 轮 × 单次查询上限（3s）。Stopwatch 兜住这个放大。
   $sw = [Diagnostics.Stopwatch]::StartNew()
   # 步长从 config 收口（WaitStoppedPollMs，默认 300）；测试夹具经 $sync 注入
   $stepMs = if ($sync -and $sync.waitStoppedPollMs) { [int]$sync.waitStoppedPollMs } else { 300 }
@@ -71,11 +71,16 @@ function Wait-Stopped([string]$n){
   while($sw.ElapsedMilliseconds -lt $timeoutMs){
     # 不用 Get-Service：它没有超时开关，SCM 挂起时这一行会永久阻塞，
     # 循环里的 $timeoutMs 根本轮不到判断。Get-SvcStateQuiet 走 sc.exe query（硬超时 + Kill）。
-    $st = Get-SvcStateQuiet $n $svcStateMs
+    # 单次查询也要按剩余预算收口，否则「12s 预算」会多出一次完整查询（默认 3s）——
+    # 文档写的 ≤12s 就成了假话。
+    $remain = $timeoutMs - $sw.ElapsedMilliseconds
+    $qms = if ($svcStateMs -gt 0) { [int][Math]::Min($svcStateMs, $remain) } else { [int][Math]::Min(3000, $remain) }
+    if ($qms -lt 100) { break }
+    $st = Get-SvcStateQuiet $n $qms
     if($st -eq 'Stopped'){return $true}
     if(-not $st){
       # $null 既可能是「服务没了」也可能是「查询超时」——只有 1060/1072 才算没了。
-      $code = Get-ServiceQueryCode $n $svcStateMs
+      $code = Get-ServiceQueryCode $n $qms
       if($code -in 1060,1072){return $true}
     }
     Start-Sleep -Milliseconds $stepMs

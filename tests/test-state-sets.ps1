@@ -123,7 +123,7 @@ try {
   #      都说明又维护了一份集合，直接红。
   $stateLiteral = '(?s)@\([^)]*(?:启动中|停止中|暂停中|继续中)[^)]*(?:启动中|停止中|暂停中|继续中)[^)]*\)'
   $groups = [regex]::Matches($pollSrc, $stateLiteral)
-  Assert ($groups.Count -le 1) "poll.ps1 出现 $($groups.Count) 处含 ≥2 个中间态的数组字面量：只允许缺注入兜底那一份，其余必须读 `$sync.scmPendingStates"
+  Assert ($groups.Count -eq 1) "poll.ps1 出现 $($groups.Count) 处含 ≥2 个中间态的数组字面量：必须且只能有缺注入兜底那一份（0 处也算违规：断言不能因为改写成非 @() 形态而失效），其余必须读 `$sync.scmPendingStates"
   #  (c) 兜底字面量必须与 config 的真实集合同值：只写注释提醒不够，两边漂移时这里直接红。
   if ($groups.Count -eq 1) {
     $fallbackStates = @([regex]::Matches($groups[0].Value, "'([^']+)'") | ForEach-Object { $_.Groups[1].Value })
