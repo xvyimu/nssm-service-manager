@@ -116,6 +116,8 @@ try {
   # 子进程里只点源 ui-status / tray：config 未加载时它们各自自加载，回落清单不会再单独漂一份。
   $probe = & pwsh -NoProfile -Command "& { . '$RepoRoot\lib\ui-status.ps1'; . '$RepoRoot\lib\tray.ps1'; (@(`$script:TRANSITION_STATES) -join ',') }"
   Assert ($probe -eq '启动中,停止中,删除中') "单独点源 ui-status/tray 时应自加载 config 得到三态，实际「$probe」"
+  $pollSrc = [IO.File]::ReadAllText((Join-Path $RepoRoot 'lib/poll.ps1'))
+  Assert ($pollSrc -notmatch "'启动中'.*'停止中'.*'继续中'") 'poll.ps1 不得内联中间态字面量（应从 $sync.scmPendingStates 注入）'
   Write-Output 'PASS: 单独点源 ui-status / tray 时自加载 config，状态集合仍只有一份。'
 } finally {
   $win.Close()

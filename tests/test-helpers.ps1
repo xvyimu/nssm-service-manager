@@ -32,6 +32,8 @@ function New-FakeExe([string]$prefix = 'sm-fake') {
 function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$delayMs = 0, [hashtable]$extraSyncKeys = $null, [int]$scExitCode = 0, [string]$controllerStatus = '', [hashtable]$statusMap = $null) {
   $services = [ordered]@{}
   for ($i = 0; $i -lt $count; $i++) { $services["Fake$i"] = @{ port = 10000 + $i; url = "http://127.0.0.1:10000/fake$i" } }
+  # 夹具里补一份中间态集合：有 config 就用它的单一来源，没有（只点 util 的测试）用字面量兜底。
+  $pendingStates = if ($script:SCM_PENDING_STATES) { @($script:SCM_PENDING_STATES) } else { @('启动中','停止中','暂停中','继续中') }
   $shared = [hashtable]::Synchronized(@{
     svc = $services; gate = [object]::new(); stop = $false
     queue   = [Collections.Concurrent.ConcurrentQueue[object]]::new()
@@ -47,6 +49,8 @@ function Start-FakePoll([int]$count, [string]$serviceStatus = 'Stopped', [int]$d
     # 替身名，否则 runspace 会拿全路径去调真 sc.exe，测试就碰到了真服务数据库。
     scExe = 'Invoke-TestSc'
     scExitCode = $scExitCode
+    # 中间态集合由入口注入 poll（$sync.scmPendingStates）；夹具按 config 的同名常量补一份，未点 config 时用字面量。
+    scmPendingStates = $pendingStates
     # serviceGone 由调用方在 BeginInvoke 后按需置位：$true = query 返回 1060（服务已消失）,
     # 用于让 Remove 路径的实证复核（Test-ServiceGone）认为删除生效。默认未设 = 服务存在。
   })

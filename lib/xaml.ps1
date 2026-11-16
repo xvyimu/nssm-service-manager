@@ -47,9 +47,9 @@ function Update-FreshnessPill {
     '离线'
   } elseif ($newest) {
     $delta = $now - $newest
-    if ($delta.TotalSeconds -lt -60) {
-      # 样本时间在未来（NTP 校正/手工改钟）：数字算出来是负的，夹成 0 会写成「更新于 0s 前」——
-      # 那是在替不可信的数据背书。颜色已经转琥珀，文案也必须说实话。
+    if ($delta.TotalSeconds -lt 0) {
+      # 样本时间在未来（NTP 校正/手工改钟）：任何未来时间都不可信，直接说实话。
+      # 不要留 -60..0 这条「夹成 0s」的带——那会把 +30s 的脏数据粉饰成「刚刚更新」。
       "$head · 更新时间在未来（检查系统时钟）"
     } else {
       $ageText = Format-Duration $newest $now -Style Short

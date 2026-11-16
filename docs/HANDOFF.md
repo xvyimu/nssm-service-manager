@@ -65,7 +65,7 @@
 6. **健康历史只记变化**：平稳期没有记录是设计（否则一天几万行噪声），别当成"漏记"来查。
 7. **批量启停只碰终态**（已停止 / 运行中），并跳过过期探测值；`启动中/停止中/暂停` 一律不碰，
    免得和手动命令打架。
-8. **Web 只读视图默认关闭**（`WebViewEnabled`），开启后只绑 `127.0.0.1` + token 门禁，GET only。
+8. **Web 只读视图默认关闭**（`WebView`），开启后只绑 `127.0.0.1` + token 门禁，GET only。
 9. **（2026-11-16 已修）后台探测的服务状态查询**：原 `lib/poll.ps1` 四处 `Get-Service` 无超时，SCM 挂起时 runspace 永久阻塞、不抛异常、crash log 无痕。现在改走 `sc.exe query` 的 `Get-SvcStateQuiet` / `Get-SvcStateMapQuiet`（`Invoke-ExternalQuiet` 的 硬超时 + Kill），超时值 `SvcStateTimeoutMs`（默认 3000ms，经 `$sync` 注入 runspace）；`Wait-Stopped` 同步改造。超时表现为状态「未知」并写一条 60s 限频提示，不再卡死探测。
 
 ## 3. 下一步

@@ -83,6 +83,11 @@ try {
   Update-FreshnessPill
   Assert ($script:freshPill.Text -match '未来') "未来时间戳应点明时钟异常，实际「$($script:freshPill.Text)」"
   Assert ($script:freshPill.Text -notmatch '0s 前') '不得把未来样本写成「0s 前」'
+  # 边界带：+30s 也属未来，过去阈值 -60 会把它夹成「0s 前」。
+  $script:svcState = [hashtable]::Synchronized(@{ A = @{ st = '运行中'; h = '正常'; at = (Get-Date).AddSeconds(30) } })
+  Update-FreshnessPill
+  Assert ($script:freshPill.Text -match '未来') "未来 +30s 也应点明时钟异常，实际「$($script:freshPill.Text)」"
+  Assert ($script:freshPill.Text -notmatch '0s 前') '+30s 不得写成「0s 前」'
   Write-Output 'PASS: 胶囊对未来时间戳给出时钟异常提示'
 } finally {
   try { $win.Close() } catch { }

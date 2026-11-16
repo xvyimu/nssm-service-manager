@@ -242,6 +242,7 @@ $script:sync = [hashtable]::Synchronized(@{
   waitStoppedTimeoutMs = [int]$script:config.WaitStoppedTimeoutMs
   extCommandTimeoutMs  = [int]$script:config.ExtCommandTimeoutMs
   svcStateTimeoutMs    = [int]$script:config.SvcStateTimeoutMs
+  scmPendingStates     = [string[]]$script:SCM_PENDING_STATES
   # 节奏与并行度（poll.ps1 / svc-common.ps1 从 $sync 读，config.ps1 集中收口）
   probeThrottleLimit   = [int]$script:config.ProbeThrottleLimit
   probeIntervalMs      = [int]$script:config.ProbeIntervalMs
