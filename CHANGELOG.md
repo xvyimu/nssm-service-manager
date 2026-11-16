@@ -8,6 +8,7 @@
 - **busy 覆盖从逐分支改成整段**（`lib/poll.ps1`）：`Set-PollBusy $true` 移到 `switch($act){` 之前，复位放进命令处理的 `finally`。1.0.24 只把四处阻塞各自包起来，`restart` 的启动阶段（`Invoke-ServiceStart`，内部 `$svc.Start()` 实测等满 30032ms）落在 `finally` 之后，慢启动服务重启时其它卡片仍会被 8s 陈旧判据误判——同一条 P2 的第二次出现。
 - **门禁改成窗口不变式**（`tests/test-poll-commands.ps1`）：置位/复位各恰好 1 处、置位在 `switch` 之前、复位必须是 `finally` 里的那一句、三个阻塞锚点的位置必须落在窗口内。上一版写的是「恰好四处成对」，等于把当时的覆盖范围固化成不变式，正确新增一处反而变红。
 - **文档同步**：`IMPLEMENTATION-NOTES` 的 `§Set-PollBusy` 与 `ARCHITECTURE` 的陈旧判据例外条目改为描述整段覆盖（1.0.24 写的是分支内各自成对，与代码不符）。
+
 ## [1.0.24] - 2026-11-16
 
 让「worker 忙时不误判陈旧」覆盖到整类阻塞命令（上一版只覆盖了等停的三处），并补上真正的门禁。
@@ -26,6 +27,7 @@
 - **测试结构错位**：`test-poll-commands` 里 w1 从未关闭、w2 被关两次，第二次的 `ObjectDisposedException` 被 `Close-FakePoll` 的 `try/catch` 吞掉。现在每个用例块只关自己的 worker，`Close-FakePoll` 恢复成不吞异常，并新增 `fakePollOpen` 计数断言（数量不为 0 或残留未关即红）。
 - **失败路径补断言与原因**：`stop` 的 sc 失败分支此前只入队提示、回执 `why` 为空，卡片只能显示通用失败；现在与超时分支一致写 `$why`。新增两条用例：状态恒 Running + 小预算 → 超时判失败；sc=5 → 拒绝访问判失败。
 - **空 catch 门禁收紧**：覆盖 `catch [Type] { }` 与「体内只有行注释」两种形态，范围仍为 `lib/*.ps1` 与入口；当前 6 处均带标记。
+
 ## [1.0.22] - 2026-11-16
 
 `stop` 对「服务本就已停止」不再判失败：

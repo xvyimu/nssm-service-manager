@@ -10,7 +10,7 @@ Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System
 foreach ($module in 'theme','util','card','xaml','dialogs') { . (Join-Path $RepoRoot "lib/$module.ps1") }
 . (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
-$script:sync = @{ wake = [Threading.AutoResetEvent]::new($false) }
+$script:sync = [hashtable]::Synchronized(@{ wake = [Threading.AutoResetEvent]::new($false) })   # 真实形态：poll 侧是同步哈希表
 $script:svc = [ordered]@{
   SvcProg  = @{ port = 8080; url = 'http://127.0.0.1:8080' }
   SvcOther = @{ port = 8081; url = 'http://127.0.0.1:8081' }

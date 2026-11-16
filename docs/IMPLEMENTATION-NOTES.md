@@ -1021,7 +1021,7 @@ lib/ 与入口合计 6 处 catch {}（占 6 行；累计把 50 处改成带场�
 
 ## §Set-PollBusy
 
-> `lib/poll.ps1` 定义，`lib/card.ps1` 只读。跨 runspace 的粗粒度布尔槽位，语义是「worker 正在执行会阻塞探测的命令」。
+> `lib/poll.ps1` 定义，`lib/card.ps1` 只读。跨 runspace 的粗粒度布尔槽位，语义是「worker 正在执行命令队列里的命令」——实现上覆盖整段命令处理（含非阻塞部分），不是只在阻塞调用两侧置位。
 
 - **为什么需要**：start / stop / restart / remove 都在 worker 的命令队列里同步执行，最长分别是 30s（`$svc.Start()` 等满 ServicesPipeTimeout）与 12s（`Wait-Stopped` 预算）。阻塞期间 worker 不产探测样本，而卡片陈旧判据是 `2 × ProbeIntervalMs`（默认 8000ms）；不设例外的话，阻塞一开始所有「运行中」卡片就翻「状态未知」并被禁用动作。
 - **谁置位**：不在分支里各写成对。整个命令处理是一段：`switch($act){` 之前 `Set-PollBusy $true`，命令处理的 `catch` 之后接 `} finally { Set-PollBusy $false }`。这样 start / stop / restart / remove 的每一处阻塞调用（含 restart 的停止等待与随后的启动）都在窗口内，将来新增分支也不会漏包；复位在 finally，成功、失败、抛异常三条路都走到。

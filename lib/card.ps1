@@ -758,7 +758,8 @@ function Update-CardFreshness($card, [datetime]$now){
   if (-not $card -or $card.PendingSave) { return }
   # Offline 是卡片自己的属性，守卫放这里，不依赖每个调用方记得跳过。
   if ($card.Offline) { return }
-  # worker 正阻塞在停/删服务的等停上（默认预算 12s > 2×探测周期 8s）：这段时间不产探测结果，
+  # worker 正阻塞在命令里（start 的 $svc.Start() 等满 ServicesPipeTimeout，或 stop/restart/remove 的等停，
+  # 预算 12s > 2×探测周期 8s）：这段时间不产探测结果，
   # 照常判会把别的「运行中」卡片全刷成「状态未知」并禁用按钮。保持现有显示，等 worker 回来再判。
   # 缺 busy 键（单测直接点源、CLI 路径）时行为不变。
   if ($script:sync -is [System.Collections.IDictionary] -and $script:sync['busy'] -eq $true) { return }

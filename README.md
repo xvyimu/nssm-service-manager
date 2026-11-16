@@ -303,7 +303,7 @@ pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-t
 | `test-transition-failure` | 过渡态失败回执、回滚、超时逃生、后台死亡逃生、方向门闩 |
 | `test-state-sets` | 四组状态集合的成员：过渡态 / SCM 中间态 / 切换态 / 陈旧豁免（退出确认、胶囊与托盘计数同源） |
 | `test-acl` | 宽面主体名单（名字 + SID）、写能力判据、目录/注册表 ACL 判定、Deny 不算、读不到返回未知 |
-| `test-poll-commands` | 命令队列、`StartPending` 不回落 `sc.exe`、中间态 1 秒轮询、状态/退出码映射表 |
+| `test-poll-commands` | 命令队列、`StartPending` 不回落 `sc.exe`、中间态 1 秒轮询、状态/退出码映射表、busy 单窗口门禁（AST 级：置位→try→switch→finally 复位，锚点必须是真实调用）与 `start` 运行时 busy 采样 |
 | `test-per-service-timeout` | per-service 超时字段保留与 round-trip、坏值只丢字段、`waitStoppedTimeoutMs` 的区间与传递链（restart/remove）、并行块 `$using:` 静态扫描 |
 | `test-svc-input` | 输入校验四类拒绝、env 解析、账户白名单、`Get-NssmSetSpec` 参数组装 |
 | `test-add-svc` | `sc.exe` 走 `Get-ScExe` 解析、CLI 注册、失败回滚、删除流程 |

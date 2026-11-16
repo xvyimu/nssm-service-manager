@@ -79,8 +79,9 @@ function Invoke-ServiceStart([string]$n,[string]$fail='启动失败'){
   }
 }
 
-# 阻塞等待（停/删服务的等停，最长 waitStoppedTimeoutMs）期间 worker 不产出探测结果，
-# 而卡片新鲜度判据只有 2×ProbeIntervalMs（默认 8s）——期间所有「运行中」卡片会被判陈旧、按钮禁用。
+# 阻塞等待（start 的 $svc.Start() 最长等满 ServicesPipeTimeout；stop/restart/remove 的等停最长 waitStoppedTimeoutMs）
+# 期间 worker 不产出探测结果，而卡片新鲜度判据只有 2×ProbeIntervalMs（默认 8s）
+# ——期间所有「运行中」卡片会被判陈旧、按钮禁用。
 # 用 $sync.busy 告诉 UI 侧「本轮忙」，由 Update-CardFreshness 跳过陈旧判定。
 # 键未预置（CLI 直接点源、测试夹具）时静默跳过：置位与否都不该影响等待本身。
 function Set-PollBusy([bool]$on){

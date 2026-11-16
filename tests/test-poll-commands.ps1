@@ -142,6 +142,104 @@ try {
   Write-Output 'PASS: stop 等停超时回执 ok=false + why 说明超时；阻塞期间 busy=true，结束后复位。'
 } finally { Close-FakePoll $worker }
 
+# ---- busy 运行时用例的注入器 ----
+# runspace 里的命令处理跑的是 $script:poll 这段字符串（lib/poll.ps1 的 here-string + 前置的
+# svc-common/health），函数也在里面定义——测试作用域里重定义同名函数盖不到它，只能改字符串本身。
+# 注入点选在 Invoke-PendingCommands 定义之前：此时原实现已定义完、循环还没开始跑。
+# 调用方必须自己保存 $script:poll 原值并在 finally 里还原，不许依赖用例正常返回。
+function New-PollWithOverride([string]$code){
+  $marker = 'function Invoke-PendingCommands {'
+  if (-not $script:poll.Contains($marker)) { throw "poll 脚本块里找不到「$marker」，busy 用例的注入点已漂移。" }
+  $script:poll.Replace($marker, $code + "`n" + $marker)
+}
+
+# ---- start 的 busy 窗口：慢启动期间 $sync.busy 必须为 $true，回执后复位 ----
+# 上面那条守的是 stop 的等停；start 的 $svc.Start()（对慢启动服务实测等满 30032ms）是另一处阻塞点，
+# 同属「整段命令处理 busy」的不变式。光有源码门禁不够——本用例给运行时的证据。
+# 「真的走了 start 分支」的回执走 $sync.startRan：跨 runspace 只能经同步表传，$script: 传不出来。
+$pollSaved = $script:poll
+try {
+  $script:poll = New-PollWithOverride @'
+# 测试注入：让 start 分支变慢，并把「确实执行了 start」写进 $sync（仅作用于本用例的 runspace）
+function Invoke-ServiceStart([string]$n,[string]$fail='启动失败'){
+  Start-Sleep -Milliseconds 300
+  $sync.startRan = $true
+  $true
+}
+'@
+  $worker=Start-FakePoll 1 'Stopped' 0 @{ busy = $false }
+  try {
+    Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Start-busy worker did not start.'
+    $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='start';e=61})
+    [void]$worker.Sync.wake.Set()
+    $sawBusy=$false
+    $deadline=[datetime]::UtcNow.AddSeconds(5)
+    while (-not $sawBusy -and [datetime]::UtcNow -lt $deadline) {
+      $sawBusy = ($worker.Sync.busy -eq $true)
+      if (-not $sawBusy) { Start-Sleep -Milliseconds 5 }
+    }
+    Assert ($sawBusy) 'start 阻塞期间 $sync.busy 必须为 $true（否则别的卡片会被误判陈旧）。'
+    $ackStart = Wait-FakePollAck $worker
+    Assert ($null -ne $ackStart) 'start 命令没有产出回执。'
+    Assert ($ackStart.act -eq 'start' -and $ackStart.ok -eq $true) "start 应成功回执，got act=$($ackStart.act) ok=$($ackStart.ok) why=$($ackStart.why)"
+    Assert ($worker.Sync.startRan -eq $true) 'start 分支根本没执行（用例空转）：别让 busy 置位掩盖未执行。'
+    Assert ($worker.Sync.busy -eq $false) 'start 结束后 $sync.busy 必须复位（否则陈旧判据永久失效）。'
+    Write-Output 'PASS: start 阻塞期间 busy=true，回执后复位，且确实走了 start 分支（$sync.startRan）。'
+  } finally { Close-FakePoll $worker }
+} finally { $script:poll = $pollSaved }
+
+# ---- restart 的启动阶段也必须在 busy 窗口内 ----
+# 对应 1.0.24 那个 P2 的原形：把 restart 分支里的 Invoke-ServiceStart 挪到 finally 之后，
+# 停止阶段还标着 busy、启动阶段已经复位，卡片在这段时间又被判陈旧。
+# 判据取「进入调用那一刻」的 $sync.busy：挪出窗口必然读到 $false，外部采样看不出这个区别。
+$pollSaved = $script:poll
+try {
+  $script:poll = New-PollWithOverride @'
+# 测试注入：等停直接成功（跳过 12s 预算），启动阶段变慢并记录进入调用时的 busy
+function Wait-Stopped([string]$n,[int]$TimeoutMs = 0){ $true }
+function Invoke-ServiceStart([string]$n,[string]$fail='重启后启动失败'){
+  $sync.startBusyAtEntry = [bool]$sync.busy
+  Start-Sleep -Milliseconds 300
+  $sync.startRan = $true
+  $true
+}
+'@
+  $worker=Start-FakePoll 1 'Running' 0 @{ busy = $false }
+  try {
+    Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Restart-busy worker did not start.'
+    $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='restart';e=62})
+    [void]$worker.Sync.wake.Set()
+    $ackRestart = Wait-FakePollAck $worker
+    Assert ($null -ne $ackRestart) 'restart 命令没有产出回执。'
+    Assert ($ackRestart.act -eq 'restart' -and $ackRestart.ok -eq $true) "restart 应成功回执，got act=$($ackRestart.act) ok=$($ackRestart.ok) why=$($ackRestart.why)"
+    Assert ($worker.Sync.startRan -eq $true) 'restart 的启动阶段没执行（用例空转）。'
+    Assert ($worker.Sync.startBusyAtEntry -eq $true) 'restart 启动阶段进入调用时 $sync.busy 为 $false —— 启动调用已经跑到 busy 窗口之外。'
+    Assert ($worker.Sync.busy -eq $false) 'restart 结束后 $sync.busy 必须复位。'
+    Write-Output 'PASS: restart 的启动阶段在 busy 窗口内（进入调用时 busy=true），结束后复位。'
+  } finally { Close-FakePoll $worker }
+} finally { $script:poll = $pollSaved }
+
+# ---- start 抛异常：回执判失败，finally 仍要复位 busy ----
+$pollSaved = $script:poll
+try {
+  $script:poll = New-PollWithOverride @'
+# 测试注入：start 直接抛异常（异常路径必须照样走 finally 复位）
+function Invoke-ServiceStart([string]$n,[string]$fail='启动失败'){ throw 'boom' }
+'@
+  $worker=Start-FakePoll 1 'Stopped' 0 @{ busy = $false }
+  try {
+    Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Throw-busy worker did not start.'
+    $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='start';e=63})
+    [void]$worker.Sync.wake.Set()
+    $ackBoom = Wait-FakePollAck $worker
+    Assert ($null -ne $ackBoom) 'start 抛异常时没有产出回执（轮询循环死了？）。'
+    Assert ($ackBoom.ok -eq $false) "start 抛异常必须按失败回执，got ok=$($ackBoom.ok)"
+    Assert ([string]$ackBoom.why -match 'boom') "失败原因应带上异常消息，实际：$($ackBoom.why)"
+    Assert ($worker.Sync.busy -eq $false) 'start 抛异常后 $sync.busy 必须复位（finally 未生效 = 陈旧判据永久失效）。'
+    Write-Output 'PASS: start 抛异常时回执 ok=false，且 finally 把 busy 复位。'
+  } finally { Close-FakePoll $worker }
+} finally { $script:poll = $pollSaved }
+
 # ---- stop 的 sc 失败（非 1062）：why 必须写进回执，不能只进状态栏 ----
 $worker=Start-FakePoll 1 'Running' 0 $null 5
 try {
@@ -300,33 +398,118 @@ foreach ($k in $statusMap.Keys) {
 }
 Assert ((Convert-ServiceStatus 'Bogus') -eq '未知') 'Unknown SCM status must fall back to 未知.'
 
-# ---- busy 标记：整段命令处理必须包在单一 try/finally 窗口内（源码级不变式，防回退） ----
+# ---- busy 标记：整段命令处理必须包在单一 try/finally 窗口内（AST 级不变式，防回退） ----
 # 阻塞点不止一处：start 的 $svc.Start() 实测等满 30032ms；stop/restart/remove 的 Wait-Stopped
 # 最长等满该服务预算（默认 12s）。期间产不出探测样本，卡片判据只有 2×ProbeIntervalMs（默认 8s）。
-# 门禁写成「恰好一个置位 + 恰好一个复位 + 复位在 finally + 已知阻塞锚点都在窗口内」，
-# 而不是「四对」或「次数 >= N」——后者会把当前覆盖范围固化成不变式，正确新增一处反而变红。
-$pollSrc = Get-SourceCodeOnly (Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'lib/poll.ps1') -Encoding utf8)
-$busySet = ([regex]::Matches($pollSrc, [regex]::Escape('Set-PollBusy $true'))).Count
-$busyClear = ([regex]::Matches($pollSrc, [regex]::Escape('Set-PollBusy $false'))).Count
-Assert ($busySet -eq 1) "Set-PollBusy `$true 应恰好一处（整段命令处理外层），实际 $busySet 处。"
-Assert ($busyClear -eq 1) "Set-PollBusy `$false 应恰好一处（外层 finally），实际 $busyClear 处。"
-$iSet = $pollSrc.IndexOf('Set-PollBusy $true')
-$iSwitch = $pollSrc.IndexOf('switch($act){')
-$reset = [regex]::Match($pollSrc, 'finally\s*\{\s*Set-PollBusy \$false\s*\}')
-Assert ($iSwitch -gt $iSet) '置位必须在 switch($act){ 之前，否则分支里的阻塞调用不在 busy 窗口内。'
-Assert ($reset.Success) '复位必须写在 finally 里（挪到 try 尾部后，抛异常或 break 就不再复位）。'
-Assert ($reset.Index -gt $iSwitch) 'finally 复位必须在命令分发之后。'
-$blockingAnchors = @(
-  'Invoke-ServiceStart $n',
-  'Wait-Stopped $n -TimeoutMs (Get-WaitStoppedMs $n)',
-  'Invoke-ServiceRemove $n $sync.nssm'
-)
-foreach ($anchor in $blockingAnchors) {
-  $idx = $pollSrc.IndexOf($anchor)
-  Assert ($idx -gt $iSet) "阻塞锚点「$anchor」不在 busy 窗口内（应在置位之后）。"
-  Assert ($idx -lt $reset.Index) "阻塞锚点「$anchor」不在 busy 窗口内（应在 finally 复位之前）。"
+# 判据走 AST，不走文本 IndexOf：文本版有两个假通过口——
+#   ① 把 switch($act){...} 整体挪到 try 外面（置位与 finally 位置不变）仍能通过：文本门禁只比
+#      「置位在 switch 之前」，没断言分发在 try 体内；
+#   ② 把阻塞锚点只写进字符串 / here-string 也通过：Get-SourceCodeOnly 只剥注释不剥字符串，
+#      IndexOf 会命中字符串内容。
+# AST 里字符串只是字面量，CommandAst 只认真正的调用，两者都能杀掉。
+# 注意：poll.ps1 的循环体是 here-string 字面量（在 runspace 里执行），直接解析 poll.ps1 拿不到
+# 循环体里的任何 CommandAst——必须先从 $script:poll 的赋值里取出字面量，再重新解析它。
+$pollPath = Join-Path $RepoRoot 'lib/poll.ps1'
+$pollTokens = $null; $pollParseErrors = @()
+$pollFileAst = [System.Management.Automation.Language.Parser]::ParseFile($pollPath, [ref]$pollTokens, [ref]$pollParseErrors)
+Assert ($pollParseErrors.Count -eq 0) "lib/poll.ps1 解析失败：$(($pollParseErrors | ForEach-Object { $_.Message }) -join '; ')"
+$pollAssigns = @($pollFileAst.FindAll({
+  param($node)
+  $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$script:poll'
+}, $true))
+Assert ($pollAssigns.Count -eq 1) "lib/poll.ps1 里 `$script:poll 的赋值应恰好一处，实际 $($pollAssigns.Count) 处。"
+$pollLiterals = @($pollAssigns[0].Right.FindAll({
+  param($node) $node -is [System.Management.Automation.Language.StringConstantExpressionAst]
+}, $true) | Sort-Object -Property { $_.Value.Length } -Descending)
+Assert ($pollLiterals.Count -ge 1) 'lib/poll.ps1 的 $script:poll 里找不到 here-string 字面量（循环体消失了？）。'
+Assert ($pollLiterals[0].Value -match 'function Invoke-PendingCommands') '取到的字面量不是循环体（缺 Invoke-PendingCommands 定义）。'
+$pollBodyTokens = $null; $pollBodyErrors = @()
+$pollBody = [System.Management.Automation.Language.Parser]::ParseInput($pollLiterals[0].Value, [ref]$pollBodyTokens, [ref]$pollBodyErrors)
+Assert ($pollBodyErrors.Count -eq 0) "poll 循环体解析失败：$(($pollBodyErrors | ForEach-Object { $_.Message }) -join '; ')"
+# CommandAst 计数天然忽略注释与字符串，这就是上面两个反例的根治点。
+$pollCmds = @($pollBody.FindAll({
+  param($node) $node -is [System.Management.Automation.Language.CommandAst]
+}, $true))
+$busyOn = @($pollCmds | Where-Object {
+  $_.GetCommandName() -eq 'Set-PollBusy' -and $_.CommandElements.Count -ge 2 -and $_.CommandElements[1].Extent.Text -eq '$true'
+})
+$busyOff = @($pollCmds | Where-Object {
+  $_.GetCommandName() -eq 'Set-PollBusy' -and $_.CommandElements.Count -ge 2 -and $_.CommandElements[1].Extent.Text -eq '$false'
+})
+# 不写死 -eq 1：允许将来在 try 之前合法地多置一次位（如按服务分支各置一次）。
+# 判据是**结构位置**而不是次数——次数门禁会把当前覆盖范围固化成不变式，合法新增反而变红。
+Assert ($busyOn.Count -ge 1) 'Set-PollBusy $true 至少一处（否则 busy 窗口不存在）。'
+Assert ($busyOff.Count -ge 1) 'Set-PollBusy $false 至少一处（否则异常路径不复位）。'
+$pollTries = @($pollBody.FindAll({
+  param($node) $node -is [System.Management.Automation.Language.TryStatementAst]
+}, $true))
+# 承载复位的 try：复位必须写在 finally 里（挪到 try 尾部后，抛异常或 break 就不再复位）。
+$busyTry = @($pollTries | Where-Object {
+  $finallyBlock = $_.Finally
+  if (-not $finallyBlock) { return $false }
+  @($busyOff | Where-Object {
+    $_.Extent.StartOffset -ge $finallyBlock.Extent.StartOffset -and $_.Extent.EndOffset -le $finallyBlock.Extent.EndOffset
+  }).Count -gt 0
+})
+Assert ($busyTry.Count -eq 1) "复位所在的 try/finally 应恰好一处（整段命令处理只该有一个 busy 窗口），实际 $($busyTry.Count) 处。"
+$busyBlock = $busyTry[0]
+foreach ($offCmd in $busyOff) {
+  Assert ($offCmd.Extent.StartOffset -ge $busyBlock.Finally.Extent.StartOffset -and
+          $offCmd.Extent.EndOffset -le $busyBlock.Finally.Extent.EndOffset) "Set-PollBusy `$false（第 $($offCmd.Extent.StartLineNumber) 行）不在 finally 里：抛异常或 break 时不会复位。"
 }
-Write-Output 'PASS: 整段命令处理包在单一 busy 窗口内，已知阻塞锚点（start/stop/restart/remove）全部在窗口里。'
+foreach ($onCmd in $busyOn) {
+  Assert ($onCmd.Extent.StartOffset -lt $busyBlock.Extent.StartOffset) "Set-PollBusy `$true（第 $($onCmd.Extent.StartLineNumber) 行）必须在 try 之前：否则 try 之外的命令处理不在 busy 窗口内。"
+}
+# 命令分发（switch($act)）必须在 try 体内：挪出去就整段不受 busy 覆盖。
+$actSwitch = @($busyBlock.Body.FindAll({
+  param($node)
+  $node -is [System.Management.Automation.Language.SwitchStatementAst] -and $node.Condition.Extent.Text -eq '$act'
+}, $true))
+Assert ($actSwitch.Count -eq 1) "命令分发 switch(`$act) 必须在 try 体内且只有一处，实际 $($actSwitch.Count) 处。"
+$dispatch = $actSwitch[0]
+Assert ($dispatch.Extent.StartOffset -ge $busyBlock.Body.Extent.StartOffset -and
+        $dispatch.Extent.EndOffset -le $busyBlock.Body.Extent.EndOffset) 'switch($act) 必须完整落在 try 体内（含结尾）。'
+# busy 窗口 = 最后一次置位的结束 → 最早一次复位的开始。
+$windowStart = ($busyOn | ForEach-Object { $_.Extent.EndOffset } | Measure-Object -Maximum).Maximum
+$windowEnd = ($busyOff | ForEach-Object { $_.Extent.StartOffset } | Measure-Object -Minimum).Minimum
+Assert ($windowStart -le $windowEnd) 'busy 窗口为空（置位在复位之后）。'
+# 每一个阻塞调用都必须在窗口内——按命令名取**全部**出现再逐个断言，不是只看第一处。
+# 旧门禁（文本 IndexOf）漏的正是第二处：restart 分支的 Invoke-ServiceStart / Wait-Stopped
+# 与 stop 分支同名，IndexOf 永远命中第一处，把第二处挪到 finally 之后照样 GREEN。
+$blockingNames = @('Invoke-ServiceStart', 'Wait-Stopped', 'Invoke-ServiceRemove')
+foreach ($name in $blockingNames) {
+  $hits = @($pollCmds | Where-Object { $_.GetCommandName() -eq $name })
+  Assert ($hits.Count -ge 1) "命令队列里必须有真实的 $name 调用（字符串里的同名文本不算；全删了也要红）。"
+  foreach ($hit in $hits) {
+    Assert ($hit.Extent.StartOffset -ge $windowStart -and $hit.Extent.EndOffset -le $windowEnd) "$name（第 $($hit.Extent.StartLineNumber) 行）不在 busy 窗口内：阻塞期间会漏标 busy。"
+  }
+}
+# 已知阻塞锚点按分支断言：每个分支里必须有**真实调用**（CommandAst），字符串里的同名文本顶不上。
+$blockingAnchors = @(
+  @{ Label = 'start'; Command = 'Invoke-ServiceStart'; Why = 'start 的 $svc.Start()' }
+  @{ Label = 'stop'; Command = 'Wait-Stopped'; Why = 'stop 的等停' }
+  @{ Label = 'restart'; Command = 'Wait-Stopped'; Why = 'restart 的等停' }
+  @{ Label = 'remove'; Command = 'Invoke-ServiceRemove'; Why = 'remove 的等停+删除' }
+)
+# Clauses 元素的形态随 PowerShell 版本变过：7.4+ 是 (标签, 语句块) 元组，旧版是 SwitchClauseAst。
+# 归一成 { Label; Body }，不直接依赖某一种形态（否则换 runner 就红）。
+$switchBranches = @($dispatch.Clauses | ForEach-Object {
+  if ($_.PSObject.Properties['Item1']) {
+    [pscustomobject]@{ Label = [string]$_.Item1.Value; Body = $_.Item2 }
+  } else {
+    [pscustomobject]@{ Label = ($_.Extent.Text -replace "(?s)^\s*'([^']*)'.*", '$1'); Body = $_ }
+  }
+})
+foreach ($anchor in $blockingAnchors) {
+  $branch = @($switchBranches | Where-Object { $_.Label -eq $anchor.Label })
+  Assert ($branch.Count -eq 1) "switch(`$act) 里应恰好有一个 '$($anchor.Label)' 分支，实际 $($branch.Count) 个。"
+  $calls = @($branch[0].Body.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq $anchor.Command
+  }, $true))
+  Assert ($calls.Count -ge 1) "'$($anchor.Label)' 分支里必须有真实调用 $($anchor.Command)（$($anchor.Why)）；字符串里的同名文本不算。"
+}
+Write-Output 'PASS: 整段命令处理包在单一 busy 窗口内（AST），switch($act) 在 try 体内，四个分支的阻塞调用都是真实调用。'
 
 # ---- busy 缺键（writer 侧）：$sync 没有 busy 键时 Set-PollBusy 静默跳过，且不许凭空加键 ----
 # CLI 路径与夹具都可能没预置这个键；Set-PollBusy 的守卫是 ContainsKey。凭空补一个 busy=$false
@@ -363,10 +546,11 @@ function New-StaleFixtureCard {
     ReadyToToggle=$true
   }
 }
-$script:sync = @{ gate = [object]::new() }                    # 刻意没有 busy 键
+# 真实 runspace 里 $sync 是同步哈希表，夹具照做，免得只测到普通 @{} 的行为。
+$script:sync = [hashtable]::Synchronized(@{ gate = [object]::new() })                  # 刻意没有 busy 键
 $cardNoBusyKey = New-StaleFixtureCard
 Update-CardFreshness $cardNoBusyKey (Get-Date)
-$script:sync = @{ gate = [object]::new(); busy = $false }     # 同样「不忙」，只是键存在
+$script:sync = [hashtable]::Synchronized(@{ gate = [object]::new(); busy = $false })   # 同样「不忙」，只是键存在
 $cardBusyFalse = New-StaleFixtureCard
 Update-CardFreshness $cardBusyFalse (Get-Date)
 Assert ($cardNoBusyKey.Stale -eq $cardBusyFalse.Stale) "缺 busy 键与 busy=false 的 Stale 必须一致（$($cardNoBusyKey.Stale) vs $($cardBusyFalse.Stale)）。"
