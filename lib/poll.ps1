@@ -94,9 +94,15 @@ function Invoke-PendingCommands {
       'start'   { $ok=Invoke-ServiceStart $n }
       'stop'    {
         # 先发 stop，再等 Stopped（≤该服务预算），最后回执：等待期进度条由 Wait-Stopped 发布。
-        if(Invoke-Sc 'stop' $n '停止失败'){
+        # 判据用退出码而不是再查一次状态：1062（服务未启动）表示目标态已达成，按成功处理；
+        # 否则卡片会停在「停止中」直到过渡态超时逃生，把一个已达成的结果演成失败。
+        $code = Invoke-ScQuiet @('stop', $n)
+        if ($code -eq 0 -or $code -eq 1062) {
           if(-not (Wait-Stopped $n -TimeoutMs (Get-WaitStoppedMs $n))) { $ok=$false; $why='停止未在超时内完成' }
-        } else { $ok=$false }
+        } else {
+          $ok=$false
+          $sync.msg.Enqueue("$n 停止失败($code $(Convert-ScExitCode $code))")
+        }
       }
       'restart' {
         if(-not (Invoke-Sc 'stop' $n '停止失败，重启中断')) { $ok=$false; break }

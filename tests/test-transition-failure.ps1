@@ -14,8 +14,9 @@ $ErrorActionPreference='Stop'
 # ---- 1. 根因：失败命令必须发回执 ----
 . (Join-Path $RepoRoot 'lib/poll.ps1')
 . (Join-Path $RepoRoot 'tests/test-helpers.ps1')
-# scExitCode=1062（未启动）：让替身 sc.exe stop 返回非零 → 命令执行失败
-$worker=Start-FakePoll 1 'Stopped' 0 $null 1062
+# scExitCode=5（拒绝访问）：让替身 sc.exe stop 返回非零 → 命令执行失败
+# 用 5 而不是 1062：1062 表示「服务本就已停止」，目标态已达成，poll 现在按成功回执（见 test-poll-commands）。
+$worker=Start-FakePoll 1 'Stopped' 0 $null 5
 try {
   Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Worker did not start.'
   $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='stop';e=7})

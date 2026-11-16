@@ -108,6 +108,18 @@ try {
   $ack2 = Wait-FakePollAck $worker
   Assert ($null -ne $ack2) '异常之后后台不再处理命令（轮询循环已死）。'
   Write-Output 'PASS: 命令抛异常时产出失败回执，轮询循环继续存活。'
+# ---- stop 遇到 1062（服务本就已停止）：按成功回执，不把已达成当失败 ----
+# 修前：Invoke-Sc 返回非零就 $ok=$false，卡片停在「停止中」直到过渡态超时逃生。
+$worker=Start-FakePoll 1 'Stopped' 0 $null 1062
+try {
+  Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'Worker did not start.'
+  $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='stop';e=41})
+  [void]$worker.Sync.wake.Set()
+  $ack1062 = Wait-FakePollAck $worker
+  Assert ($null -ne $ack1062) '1062 的 stop 没有产出回执。'
+  Assert ($ack1062.ok) "服务已 Stopped 时 stop 应按成功回执，got ok=$($ack1062.ok) why=$($ack1062.why)"
+  Write-Output 'PASS: stop 返回 1062 且状态已是 Stopped 时按成功回执。'
+} finally { Close-FakePoll $worker }
 } finally { Close-FakePoll $worker }
 
 # ---- restart 的中间回执（B2）：停止阶段结束后必须补一条 phase='start' ----

@@ -160,7 +160,7 @@ function New-TestSc {
 }
 
 function Close-FakePoll($worker) {
-  $worker.Sync.stop = $true; [void]$worker.Sync.wake.Set()
+  $worker.Sync.stop = $true; try { [void]$worker.Sync.wake.Set() } catch { Write-Verbose "test-helpers: 唤醒事件已随 worker 释放，忽略：$($_.Exception.Message)" }
   $worker.PowerShell.Stop(); $worker.PowerShell.Dispose(); $worker.Runspace.Dispose()
   foreach ($name in 'wake', 'executedReady', 'probeStarted') { $worker.Sync[$name].Dispose() }
 }
