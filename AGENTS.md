@@ -37,7 +37,15 @@ lib/                      # 模块（config/theme/util/acl/poll/svc-common/svc-i
                           #  util.ps1 只是聚合点，清单读写/状态栏/日志清理/安全自检/关窗收尾分别在 svc-store/ui-status/log-retention/security-check/shutdown）
 scripts/                  # 独立脚本（deploy-local.ps1 / deploy.cmd / package-release.ps1 / set-service-params-acl.ps1）
 tests/                    # 回归测试（run-all.ps1 汇总；test-*.ps1 单项）
-docs/                     # PROJECT.md（架构与决策）/ HANDOFF.md
+docs/                     # 文档（索引见 docs/README.md；同事实只写一处）
+├── README.md                 # 文档索引（同事实只写一处）
+├── PROJECT.md                # 取舍、范围、已知限制
+├── HANDOFF.md                # 交接：现状、下一步、坑
+├── ARCHITECTURE.md           # 分层与数据流
+├── IMPLEMENTATION-NOTES.md   # 决策与实测记录（§ 锚点来源）
+├── ITERATION-PLAN.md         # 迭代顺序与优先级
+├── CHANGELOG-archive.md      # 0.9.0 及以前
+└── session/                  # 一次任务过程（gitignored；adr/ lessons/ 需要时再建）
 CHANGELOG.md              # 分段更新都写这里（当前版本以 VERSION 为准）
 config.example.json       # 配置示例（实配 config.json 已 gitignore）
 services.example.json     # 服务清单示例（实配 services.json 已 gitignore）

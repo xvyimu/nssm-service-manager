@@ -197,24 +197,33 @@ Write-CrashLog 'GUI modules loaded'
 
 # 提权面自检：这些路径里的脚本与程序会被管理员进程执行，普通用户可写 = 可被替换。
 # **只是可见性，不构成防护**——真正的防护是程序目录本身管理员独占（见 docs/ITERATION-PLAN.md P0）。
-$script:securityFindings = @()
+$script:securityFindings = @()   # 宽 ACL：普通用户可写
+$script:securityUnknown  = @()   # 无法判定：读不到 ACL 既不等于安全，也不等于可写
 $securityTargets = [ordered]@{ '程序目录' = $root; '模块目录' = (Join-Path $root 'lib') }
 if ($script:nssm) { $securityTargets['NSSM 目录'] = (Split-Path $script:nssm -Parent) }
 foreach ($key in $securityTargets.Keys) {
-  try {
-    $path = $securityTargets[$key]
-    if ((Test-Path -LiteralPath $path) -and (Test-DirAclPermissive (Get-Acl -LiteralPath $path -EA Stop)) -eq '是') {
-      $script:securityFindings += "$key 可被普通用户写入：$path"
-    }
-  } catch {
-    # 读不到 ACL ≠ 安全：记一条「无法判定」并进 crash log，避免宽 ACL 目标被静默跳过。
-    $script:securityFindings += "$key 的 ACL 无法读取，判定跳过（$($securityTargets[$key])）"
-    Write-CrashLog "Security: $key 的 ACL 读取失败 — $($_.Exception.Message)"
+  $path = $securityTargets[$key]
+  if (-not (Test-Path -LiteralPath $path)) { continue }
+  # 判据三态：'是' / '否' / '未知（无法读取 ACL）'。Get-Acl 抛错与判据返回未知都算「未知」，
+  # 不能当「安全」悄悄放过——那样宽 ACL 目标被静默跳过的口子仍在。
+  $verdict = try { Test-DirAclPermissive (Get-Acl -LiteralPath $path -EA Stop) } catch { "异常：$($_.Exception.Message)" }
+  if ($verdict -eq '是') { $script:securityFindings += "$key 可被普通用户写入：$path" }
+  elseif ($verdict -ne '否') {
+    $script:securityUnknown += "$key 的 ACL 无法判定：$path"
+    Write-CrashLog "Security: $key ACL 判定失败 — $verdict"
   }
 }
-if ($script:securityFindings.Count) {
-  $script:securityNotice = "安全姿态：$($script:securityFindings -join '；')。管理员进程会执行这些位置的代码，建议迁到仅管理员可写的目录。"
-  foreach ($f in $script:securityFindings) { Write-CrashLog "Security: $f" }
+if ($script:securityFindings.Count -or $script:securityUnknown.Count) {
+  $parts = @()
+  if ($script:securityFindings.Count) {
+    foreach ($f in $script:securityFindings) { Write-CrashLog "Security: $f" }
+    $parts += "$($script:securityFindings -join '；')。管理员进程会执行这些位置的代码，建议迁到仅管理员可写的目录。"
+  }
+  if ($script:securityUnknown.Count) {
+    # 读不到 ACL 与「可写」是两种处置：前者要人工确认权限，后者才建议迁移。
+    $parts += "$($script:securityUnknown -join '；')。读不到 ACL 不等于安全，请手动确认这些目录的权限。"
+  }
+  $script:securityNotice = "安全姿态：" + ($parts -join ' ')
 }
 
 # ---- 加载服务清单 ----

@@ -11,6 +11,7 @@ function Test-ExeDirPermissive([string]$exe){
     $dir = Split-Path $exe -Parent
     if (-not $dir) { return $false }
     return ((Test-DirAclPermissive (Get-Acl -LiteralPath $dir -EA Stop)) -eq '是')
+    # 这里把「未知」当「不告警」：这只是输入框旁的一句提示，不是门禁，而全局安全自检那侧会单独报「无法判定」。
   } catch { return $false }
 }
 

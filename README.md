@@ -283,7 +283,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 ## 测试与截图
 
 ```powershell
-pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 自动收集 tests/test-*.ps1（当前 32 项）
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 自动收集 tests/test-*.ps1（当前 33 项）
 pwsh -NoProfile -File tests/analyze.ps1              # PSScriptAnalyzer（Error/Warning 必须为 0）
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-tmp/，已 git 忽略）
@@ -326,6 +326,7 @@ pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-t
 | `test-shutdown` | 关窗收尾：后台 runspace 3 秒内停、日志落盘、重复调用幂等 |
 | `test-webview` | token 校验、快照/HTML 转义、loopback 服务器 200/403、非 GET 拒绝、端口占用报错 |
 | `test-wait-stopped-budget` | `Wait-Stopped` 总耗时受预算封顶：多轮切片 / 小预算（100/300/1200ms）/ 收尾补查三段；去掉预留或收尾块即红 |
+| `test-security-verdicts` | ACL 三态（是/否/未知）在判据与 GUI 消费端都成立，未知不被当安全 |
 | `test-probe-static` | `tests/probe-1053-timing.ps1` 不得硬编码 45000/12000，阈值必须取自 `lib/config.ps1`（探针不进 run-all，靠这条守漂移） |
 
 NSSM、服务启停、配置保存及菜单的外部操作都用替身，不会注册测试服务或改 `services.json`。真实 UAC、Mica 效果与 NSSM 生命周期需本机交互验证。
