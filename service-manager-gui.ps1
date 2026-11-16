@@ -201,18 +201,11 @@ $script:securityFindings = @()   # 宽 ACL：普通用户可写
 $script:securityUnknown  = @()   # 无法判定：读不到 ACL 既不等于安全，也不等于可写
 $securityTargets = [ordered]@{ '程序目录' = $root; '模块目录' = (Join-Path $root 'lib') }
 if ($script:nssm) { $securityTargets['NSSM 目录'] = (Split-Path $script:nssm -Parent) }
-foreach ($key in $securityTargets.Keys) {
-  $path = $securityTargets[$key]
-  if (-not (Test-Path -LiteralPath $path)) { continue }
-  # 判据三态：'是' / '否' / '未知（无法读取 ACL）'。Get-Acl 抛错与判据返回未知都算「未知」，
-  # 不能当「安全」悄悄放过——那样宽 ACL 目标被静默跳过的口子仍在。
-  $verdict = try { Test-DirAclPermissive (Get-Acl -LiteralPath $path -EA Stop) } catch { "异常：$($_.Exception.Message)" }
-  if ($verdict -eq '是') { $script:securityFindings += "$key 可被普通用户写入：$path" }
-  elseif ($verdict -ne '否') {
-    $script:securityUnknown += "$key 的 ACL 无法判定：$path"
-    Write-CrashLog "Security: $key ACL 判定失败 — $verdict"
-  }
-}
+# 判定下沉到 lib/security-check.ps1 的 Get-SecurityVerdicts（ACL 读取可注入，测试直接断言行为）。
+$verdicts = Get-SecurityVerdicts $securityTargets
+$script:securityFindings = @($verdicts.Findings)
+$script:securityUnknown  = @($verdicts.Unknown)
+foreach ($u in $script:securityUnknown) { Write-CrashLog "Security: $u" }
 if ($script:securityFindings.Count -or $script:securityUnknown.Count) {
   $parts = @()
   if ($script:securityFindings.Count) {

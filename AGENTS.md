@@ -45,7 +45,9 @@ docs/                     # 文档（索引见 docs/README.md；同事实只写�
 ├── IMPLEMENTATION-NOTES.md   # 决策与实测记录（§ 锚点来源）
 ├── ITERATION-PLAN.md         # 迭代顺序与优先级
 ├── CHANGELOG-archive.md      # 0.9.0 及以前
-└── session/                  # 一次任务过程（gitignored；adr/ lessons/ 需要时再建）
+├── session/                  # 一次任务过程（gitignored）
+├── adr/                      # 架构决策记录（当前仅 README）
+└── lessons/                  # 复盘（README + 2 篇）
 CHANGELOG.md              # 分段更新都写这里（当前版本以 VERSION 为准）
 config.example.json       # 配置示例（实配 config.json 已 gitignore）
 services.example.json     # 服务清单示例（实配 services.json 已 gitignore）

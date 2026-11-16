@@ -3,6 +3,19 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
+## [1.0.14] - 2026-11-16
+
+安全自检的三态判定收口：
+
+- **判定下沉**：`Get-SecurityVerdicts` 移进 `lib/security-check.ps1`，ACL 读取经 `-AclProvider` 注入；
+  入口只取结果、出文案。测试可注入「读不到 / 抛错 / 可写」三种桩，直接断言行为，不再靠正则验字面量。
+- **第二个消费端补齐三态**：`Show-SecurityCheck` 原先把「定位不到目录 / 目录不存在 / 读不到 ACL」
+  一律当「ACL 过宽: 否」，现在分别返回「未知」；目标目录缺失也留痕，不再静默跳过。
+- **测试重写**：`tests/test-security-verdicts.ps1` 改为行为断言；两处突变复验（入口回退内联判定、
+  把「未知」当「安全」）均变红。
+- **文档**：AGENTS 的 docs 目录树补 `adr/` 与 `lessons/`；README 补「读不到 ACL」分支说明；
+  CHANGELOG 的 1.0.12 条目加「已被取代」指针。
+
 ## [1.0.13] - 2026-11-16
 
 独立评审第二轮剩下的两类「声明改了、另一半没改」：
@@ -20,7 +33,7 @@
 
 文档口径与安全自检收口（第 14 轮评审点名的 P3，无行为回归）：
 
-- **安全自检不再吞错**：`service-manager-gui.ps1` 读不到 ACL 时不再 `catch {}` 静默跳过，改为记一条「ACL 无法读取，判定跳过」进 `securityFindings` 与 crash log——宽 ACL 目标不会被无声漏报。
+- **安全自检不再吞错**：`service-manager-gui.ps1` 读不到 ACL 时不再 `catch {}` 静默跳过，改为记一条「ACL 无法读取，判定跳过」进 `securityFindings` 与 crash log——宽 ACL 目标不会被无声漏报。（该机制已被后续版本取代：1.0.13 起用 `securityUnknown` 收「无法判定」，1.0.14 起判定收口到 `Get-SecurityVerdicts`。）
 - 空 catch 计数修正为 54 处（占 52 行），此前按行计写成 53，判据小节自身失准。
 - `AGENTS.md` 去掉硬编码版本指针（写死 1.0.10），改为「以 VERSION 为准」。
 - README 用例表补 `test-wait-stopped-budget` / `test-probe-static` 两行。
@@ -32,7 +45,7 @@
   断言改为 `< 4000`（注入值的一半），改 config 默认不会让门槛漂移。
 - **v1.0.9 悬空 tag 收口**：该版本的 release 因上面的误红失败、未产出资产。已补一个 **draft + prerelease**
   的 release 记录（写明失败原因、指向 v1.0.10），版本历史不再断档，该构建不发布。
-- **文档补记**：IMPLEMENTATION-NOTES 增加「空 catch 的取舍」，把 54 处静默 catch（占 52 行） 按清理 / 可选读取 /
+- **文档补记**：IMPLEMENTATION-NOTES 增加「空 catch 的取舍」，把 54 处静默 catch（占 52 行）按清理 / 可选读取 /
   已另有提示三类写明判据。
 
 ## [1.0.10] - 2026-11-16
