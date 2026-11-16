@@ -4,6 +4,8 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'test-helpers.ps1')
 . (Join-Path $RepoRoot 'lib/acl.ps1')
 . (Join-Path $RepoRoot 'lib/security-check.ps1')
+# CLI 的提示文案函数在 add-svc.ps1 里；该文件顶层只有函数定义，点源即可。
+. (Join-Path $RepoRoot 'lib/add-svc.ps1')
 
 # ---- 1. 判据层：读不到 ACL 必须是「未知」，不是「否」 ----
 Assert ((Test-DirAclPermissive $null) -eq '未知（无法读取 ACL）') 'null ACL 必须返回未知'
@@ -61,10 +63,17 @@ $guiPath = Join-Path $RepoRoot 'service-manager-gui.ps1'
 $tk = $null; $parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($guiPath, [ref]$tk, [ref]$parseErrors)
 Assert ($parseErrors.Count -eq 0) "入口脚本必须可解析，got $($parseErrors.Count) 个语法错误"
+# 名称按「可能带模块限定前缀」匹配；再用 InvocationOperator 抓 & $fn 这类解析不出名字的调用。
 $aclCalls = $ast.FindAll({
-    param($a) $a -is [System.Management.Automation.Language.CommandAst] -and $a.GetCommandName() -eq 'Get-Acl'
+    param($a) $a -is [System.Management.Automation.Language.CommandAst] -and ([string]$a.GetCommandName() -match '(^|\\)Get-Acl$')
   }, $true)
-Assert ($aclCalls.Count -eq 0) '三态只在 lib 里：入口的 AST 里不得出现 Get-Acl 命令调用'
+Assert ($aclCalls.Count -eq 0) '三态只在 lib 里：入口的 AST 里不得出现 Get-Acl 命令调用（含模块限定名）'
+$indirect = $ast.FindAll({
+    param($a) $a -is [System.Management.Automation.Language.CommandAst] -and
+               $a.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Ampersand -and
+               $a.CommandElements.Count -gt 0 -and $a.CommandElements[0] -is [System.Management.Automation.Language.VariableExpressionAst]
+  }, $true)
+Assert ($indirect.Count -eq 0) '入口不得用 & $fn 间接调用：AST 认不出名字，测试与审计都会漏'
 # here-string 里的同样字串不是 CommandAst，按命令调用计数即可——正则做不到这一点。
 $verdictCalls = $ast.FindAll({
     param($a) $a -is [System.Management.Automation.Language.CommandAst] -and $a.GetCommandName() -eq 'Get-SecurityVerdicts'
@@ -77,6 +86,20 @@ Assert ($guiCode -match 'securityUnknown') '入口仍要消费未知项'
 $dlgCode = Get-SourceCodeOnly (Get-Content (Join-Path $RepoRoot 'lib\dialogs.ps1') -Raw -Encoding utf8)
 Assert ($dlgCode -notmatch '读不到可执行文件所在目录的 ACL') '未知分支不得把三种原因统一说成「读不到 ACL」'
 Assert ($dlgCode -match '\$exeDirVerdict' -and $dlgCode -match '无法判定') '未知分支要把判定结果（含原因）带进提示'
-$cliCode = Get-SourceCodeOnly (Get-Content (Join-Path $RepoRoot 'lib\add-svc.ps1') -Raw -Encoding utf8)
-Assert ($cliCode -match 'Get-ExeDirVerdict') 'CLI 的 -Add 也要看 exe 目录的 ACL，否则 scoop 目录注册的服务无人提示'
+# CLI 侧：先按 AST 认「真的调用了判定函数」，再对提示文案做行为断言（文本匹配挡不住 here-string）。
+$cliPath = Join-Path $RepoRoot 'lib\add-svc.ps1'
+$tk2 = $null; $err2 = $null
+$cliAst = [System.Management.Automation.Language.Parser]::ParseFile($cliPath, [ref]$tk2, [ref]$err2)
+Assert ($err2.Count -eq 0) "add-svc.ps1 必须可解析，got $($err2.Count) 个语法错误"
+$cliCalls = $cliAst.FindAll({
+    param($a) $a -is [System.Management.Automation.Language.CommandAst] -and ([string]$a.GetCommandName() -match '(^|\\)Get-ExeDirVerdict$')
+  }, $true)
+Assert ($cliCalls.Count -ge 1) 'CLI 的 -Add 必须真的调用 Get-ExeDirVerdict（AST 计数，here-string 不算）'
+
+# 行为断言：三种判定 → 三种输出，文案与原因同源。
+$warn = Get-AddPreflightNotice 'C:\tools\svc.exe' '是'
+Assert ($warn -like '警告*' -and $warn -match '仅管理员可写') "可写目录要给出迁移建议，got: $warn"
+$unknown = Get-AddPreflightNotice 'C:\nope\svc.exe' '未知（目录不存在）'
+Assert ($unknown -like '提示*' -and $unknown -match '这不等于安全' -and $unknown -match '目录不存在') "未知要给原因且声明不等于安全，got: $unknown"
+Assert ((Get-AddPreflightNotice 'C:\tools\svc.exe' '否') -eq '') '不可写目录不该有提示'
 Write-Output 'PASS: ACL 三态唯一实现在 Get-DirAclVerdict（未解析/不存在/读不到都带原因），汇总层给对象化未知名，入口与对话框都走这一份。'

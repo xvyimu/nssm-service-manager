@@ -425,8 +425,7 @@ Test-LeakyAce 概念一致，但这里是文件系统 ACL、权限枚举不同�
 汇总多个目标的三态判定，入口与测试共用一份；ACL 读取经 `-AclProvider` 注入，
 测试用桩就能覆盖「读不到 / 抛错 / 可写」三种结果，不必靠正则断言入口脚本里的字面量。
 
-- **判据只有一个实现**：单目录的三态永远出自 `Get-DirAclVerdict`（`Test-DirAclPermissive`
-  时代的两态返回值已废除）。这里只做遍历与归类，不另立判据。
+- **判据只有一个实现**：单目录的三态永远出自 `Get-DirAclVerdict`（`Test-DirAclPermissive` 自引入起就是三态返回，收敛掉的只是目录级这份重复实现）。这里只做遍历与归类，不另立判据。
 - **Unknown 是对象，不是字符串**：每条含 `Key` / `Path` / `Reason` / `Detail`，
   `Reason` 取 `unresolved`（路径没解析出来）/ `missing`（路径不存在）/ `unreadable`（读 ACL 抛错）三值，
   `Detail` 保留原始异常或路径。分开是为了让消费端按原因给不同措辞，也让测试能断言「为什么未知」

@@ -3,6 +3,17 @@
 if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
 
 # CLI 模式：解析逗号分隔参数，注册并启动服务，不弹 GUI。§Add-SvcFromCli
+# CLI 的提权面提示文案：纯函数，便于按三种判定做行为断言（原来只能靠文本匹配）。
+function Get-AddPreflightNotice([string]$exe, [string]$verdict){
+  if ($verdict -eq '是') {
+    return "警告：$exe 所在目录可被普通用户写入，以 LocalSystem 运行时该 exe 可被替换；建议移到仅管理员可写的目录。"
+  }
+  if ($verdict -like '未知*') {
+    return "提示：无法判定 $exe 所在目录的权限（$verdict）。这不等于安全，请人工确认。"
+  }
+  ''
+}
+
 function Add-SvcFromCli([string]$spec){
   # 只切前 6 段：第 7 段 Env 里的逗号必须原样保留。
   $parts = $spec -split ',', 7
@@ -29,13 +40,9 @@ function Add-SvcFromCli([string]$spec){
   $bad = Test-SvcInput $n $p $exe $script:svc $probe
   if($bad){ Write-Host $bad.msg; exit 1 }
   # CLI 不走对话框：提权面用一行非阻断提示代替 GUI 的模态警告。不弹窗、不改退出码，但不静默。
-  if (Get-Command Get-ExeDirVerdict -ErrorAction SilentlyContinue) {
-    $exeVerdict = Get-ExeDirVerdict $exe
-  } else {
-    $exeVerdict = '未知（判据未加载）'
-  }
-  if($exeVerdict -eq '是'){ Write-Host "警告：$exe 所在目录可被普通用户写入，以 LocalSystem 运行时该 exe 可被替换；建议移到仅管理员可写的目录。" }
-  elseif($exeVerdict -like '未知*'){ Write-Host "提示：无法判定 $exe 所在目录的权限（$exeVerdict）。这不等于安全，请人工确认。" }
+  # 判定函数内部自带守卫（判据未加载时返回「未知」），这里不再重复 Get-Command。
+  $notice = Get-AddPreflightNotice $exe (Get-ExeDirVerdict $exe)
+  if($notice){ Write-Host $notice }
   # 先按分号切再按逗号切：NO_PROXY 的多地址保留为一条，A=1,B=2 拆成两条。
   $envPairs = @(ConvertTo-EnvPairs $envRaw ';' | ForEach-Object { ConvertTo-EnvPairs $_ ',' })
   try {

@@ -47,7 +47,7 @@ pwsh -NoProfile -File scripts/deploy-local.ps1
 
 NSSM 按两个固定候选加载，取先命中的：`C:\Program Files\nssm\nssm.exe`（`scripts/deploy-local.ps1` 放这里并收 ACL）→ `C:\Program Files\nssm\win64\nssm.exe`；两个都不存在时弹窗「未找到 NSSM」并给出第一个候选路径，退出码 1，不回落到用户可写的副本。进程声明 PerMonitorV2，多屏不同缩放下不糊。
 
-**提权面**：`launch.vbs` 优先用 `C:\Program Files\PowerShell\7\pwsh.exe`，scoop 的 shim 只是次选——scoop 装在用户目录，中等完整性进程能替换它，下一次双击 + UAC 就是管理员权限。NSSM 也一样：启动时检查 `nssm.exe` 所在目录的 ACL，普通用户可写就在状态栏提示「建议改装到系统目录」（不阻断，scoop 默认就这么装）。读不到 ACL 时提示的是「无法判定、请人工确认权限」（实际文案在 `lib/dialogs.ps1` 的「安全姿态未知」分支与 `service-manager-gui.ps1` 的状态栏提示里，均带出具体原因），并且**不给迁移建议**——「读不到」不等于「可写」，两种处置不同：只有确认可写才建议迁移，读不到只是无从判定。
+**提权面**：`launch.vbs` 优先用 `C:\Program Files\PowerShell\7\pwsh.exe`，scoop 的 shim 只是次选——scoop 装在用户目录，中等完整性进程能替换它，下一次双击 + UAC 就是管理员权限。NSSM 也一样：启动时检查 `nssm.exe` 所在目录的 ACL，普通用户可写就在状态栏给出迁到仅管理员可写目录的建议（不阻断，scoop 默认就这么装）。读不到 ACL 时改为提示无法判定、请人工确认，并带出具体原因（状态栏文案在 `service-manager-gui.ps1`，对话框文案在 `lib/dialogs.ps1` 的「安全姿态未知」分支），并且**不给迁移建议**——「读不到」不等于「可写」，两种处置不同：只有确认可写才建议迁移，读不到只是无从判定。
 
 ## 文件
 
