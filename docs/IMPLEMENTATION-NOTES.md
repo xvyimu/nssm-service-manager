@@ -132,7 +132,7 @@ Invoke-CardAction 里按 `$detailed` 分支单独做，理由见「健康口径 
 删除中回执丢失（后台异常退出）时收敛到「未知」，**不用**到达的探测值：
 探测可能报「已停止」（删除本就先 stop）→ 收敛后按钮点亮，用户能对一个正在删除的
 服务下「启动」。删除的成败只有 remove 回执知道，丢失时状态就是不确定，故显示未知、
-不解封按钮。删除路径正常 ≤6s，走到这里说明后台确已失联。
+不解封按钮。删除路径正常 ≤12s，走到这里说明后台确已失联。
 
 方向守卫：启动中只接受「运行中」收尾、停止中只接受「已停止」，未安装/未知放行。
 **只保护命令驱动的过渡态**（TransitionAt 有值）。探测驱动的（外部启停、MinValue）
@@ -333,7 +333,7 @@ F5 走 `Invoke-SvcReload` 重新 `Load-Svc`，把 `$script:sync.svc` 指向新�
 消息带**显示租约**：写入时记 $script:msgUntil，自动刷新在此之前不得覆盖。
 没有这条，后台失败消息会被同一 tick 的「状态自动刷新」立刻盖掉，用户永远看不见——
 用户没在操作时 $script:lastActionAt 早已超过 4 秒阈值，而 remove 路径的
-stop + Wait-Stopped 最长 6 秒，失败消息必然跨过门槛。
+stop + Wait-Stopped 最长 12 秒，失败消息必然跨过门槛。
 
 ### Set-UiErrorStatus
 
@@ -466,7 +466,7 @@ Start() 对**慢启动**服务会等满 ServicesPipeTimeout（实测 30s）再�
 执行命令队列（启停与删除全在后台线程，避免 UI 线程同步等待 stop/remove 冻结界面）
 返回本轮出队执行的命令条数——主循环据此判「有在途命令」，见下方面轮询间隔的取舍。
 
-删除走后台：stop → Wait-Stopped ≤6s → nssm remove confirm → 实证复核 → 回执带 done=remove
+删除走后台：stop → Wait-Stopped ≤12s → nssm remove confirm → 实证复核 → 回执带 done=remove
 UI 侧（Show-Remove 的 del_Click）入队后立即关弹窗，结果由 ack 回执处理。
 序列本体在 svc-common.ps1 的 Invoke-ServiceRemove（本文件头部前置其文本），
 与 nssm.ps1 的 Remove-NssmService 共用同一份——原先两处各写一份，
@@ -544,7 +544,7 @@ sc.exe 的路径必须解析后调用：裸调一个不存在的命令时 $LASTE
 ### Wait-Stopped
 
 轮询服务到 Stopped，用于重启/删除前等端口释放。
-超时取值：$sync 注入值（UI 线程与 runspace 同键）> $script:config.WaitStoppedTimeoutMs > 6000。
+超时取值：$sync 注入值（UI 线程与 runspace 同键）> $script:config.WaitStoppedTimeoutMs > 12000。
 前两级在两条路径上都可见，故 UI 线程与 runspace 走同一份配置，不再各读各的。
 服务已不存在（ObjectNotFound）= 等同已停止；其他错误（权限等）不掩盖，继续等待。
 

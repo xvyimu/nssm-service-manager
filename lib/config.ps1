@@ -7,7 +7,7 @@
 # 本工具没有对应命令，既没有回执可丢、也不该拦退出（`Test-TransitionTimedOut` 同样只认这三种）。
 $script:TRANSITION_STATES = @('启动中','停止中','删除中')
 # SCM 中间态——poll 看到就把轮询间隔压到 ProbePendingMs。poll.ps1 在独立 runspace 里跑，
-# 只前三者（svc-common/health/poll）读取本变量；poll 在第二个 runspace 读不到它，由入口经 $sync.scmPendingStates 注入，poll 内只留缺注入时的同值兜底——改动只需改这里
+# 只前三者（svc-common/health/poll）读取本变量；poll 在第二个 runspace 读不到，由入口经 $sync.scmPendingStates 注入，poll 内保留一份同值兜底——改集合要两边同步，tests/test-state-sets.ps1 有等值断言钉住
 $script:SCM_PENDING_STATES = @('启动中','停止中','暂停中','继续中')
 # 切换态——卡片时长后缀「已…」的判定（视觉口径，比过渡态宽）。
 $script:SWITCHING_STATES = $script:SCM_PENDING_STATES + @('删除中')

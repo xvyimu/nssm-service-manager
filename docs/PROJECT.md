@@ -137,7 +137,7 @@ UI DispatcherTimer → ack 分支 → 解封按钮 + 冷却
 
 ### 6. 删除走后台命令队列
 
-NSSM remove 是 stop → Wait-Stopped ≤6s → nssm remove confirm，同步执行会冻结 UI。删删除走后台命令队列（`act=remove`），UI 线程只关弹窗，回执由 DispatcherTimer 处理（从 svc 与卡片缓存移除，落盘配置，刷新分页）。
+NSSM remove 是 stop → Wait-Stopped ≤12s → nssm remove confirm，同步执行会冻结 UI。删删除走后台命令队列（`act=remove`），UI 线程只关弹窗，回执由 DispatcherTimer 处理（从 svc 与卡片缓存移除，落盘配置，刷新分页）。
 
 ### 7. 敏感键名检测不阻断
 

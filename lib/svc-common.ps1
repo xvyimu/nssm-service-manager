@@ -63,7 +63,7 @@ function Wait-Stopped([string]$n){
                elseif ($script:config -and $script:config.WaitStoppedTimeoutMs) { [int]$script:config.WaitStoppedTimeoutMs }
                else                                                             { 12000 }
   # 预算按真实耗时算：查询本身最坏要吃满 SvcStateTimeoutMs（3s），
-  # 只按步长累加会让「6s 预算」实际跑成 20 轮 × 6s。Stopwatch 兜住这个放大。
+  # 只按步长累加会让「12s 预算」实际跑成 20 轮 × 12s。Stopwatch 兜住这个放大。
   $sw = [Diagnostics.Stopwatch]::StartNew()
   # 步长从 config 收口（WaitStoppedPollMs，默认 300）；测试夹具经 $sync 注入
   $stepMs = if ($sync -and $sync.waitStoppedPollMs) { [int]$sync.waitStoppedPollMs } else { 300 }

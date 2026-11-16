@@ -7,7 +7,7 @@
   "ToggleTimeoutMs":      45000,
   "WaitHealthyTimeoutMs": 120000,
   "TransitionHardCapFactor": 10,
-  "WaitStoppedTimeoutMs": 6000,
+  "WaitStoppedTimeoutMs": 12000,
   "ExtCommandTimeoutMs":  60000,
   "SvcStateTimeoutMs":    3000,
   "LogKeepCount":         10,

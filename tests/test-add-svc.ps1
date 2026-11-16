@@ -153,6 +153,20 @@ Remove-NssmService '__sm_remove_test__'
 if ($script:startArgs -join '|' -ne 'stop|__sm_remove_test__') { throw 'Remove-NssmService must stop before nssm remove.' }
 if ($script:removed -ne '__sm_remove_test__') { throw 'Remove-NssmService did not call nssm remove confirm.' }
 
+# 停止超时中止删除：服务还在跑就删，SCM 只把它标记为删除、进程仍在，后续状态查询全部失真。
+# 用临时遮蔽 Wait-Stopped 造「等不到 Stopped」，并断言 nssm remove 根本没被调用。
+$script:removeCalled = $false
+function Invoke-TestNssmRemoveBusy { $a = $args; if ($a[0] -eq 'remove') { $script:removeCalled = $true }; $global:LASTEXITCODE = 0 }
+$realWaitStopped = ${function:Wait-Stopped}
+function Wait-Stopped([string]$n) { $false }
+try {
+  $rBusy = Invoke-ServiceRemove '__sm_busy__' 'Invoke-TestNssmRemoveBusy'
+} finally { ${function:Wait-Stopped} = $realWaitStopped }
+if ($rBusy.ok) { throw '服务未停止时删除必须判失败。' }
+if ([string]$rBusy.why -notmatch '中止删除') { throw "删除中止的原因没写清：$($rBusy.why)" }
+if ($script:removeCalled) { throw '服务还在跑就调用了 nssm remove。' }
+Write-Output 'PASS: remove aborts with a clear reason (and never calls nssm) when the service will not stop.'
+
 # 启动失败路径：注册成功但 sc.exe start 返回非零时，CLI **不得**报「已启动」。
 # 该 CLI 是给 agent 用的，谎报成功会让调用方以为服务在跑。走子进程（Add-SvcFromCli 用 Write-Host）。
 $probeStart = Join-Path ([IO.Path]::GetTempPath()) "sm-start-fail-$([guid]::NewGuid().ToString('N')).ps1"

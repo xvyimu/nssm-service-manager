@@ -113,7 +113,7 @@ NSSM 按两个固定候选加载，取先命中的：`C:\Program Files\nssm\nssm
 - 中间态（启动中/停止中/暂停中/继续中）状态查询 1 秒一次，健康探测仍按 4 秒限流，不互相拖累
 - `sc.exe` 失败时状态栏给中文原因（1056 已在运行 / 1060 服务未安装 等），不是裸数字
 - 日志查看器支持轮转历史（`*.out-*.log` / `*.err-*.log`）下拉切换
-- 单实例互斥：重复启动只保留第一个窗口；互斥体用 `Global\` 命名空间，计划任务/SSH 会话里跑 CLI 也能看到 GUI 正在运行。重启走 stop→轮询 Stopped（≤6s）→start，避免端口未释放导致 bind 失败
+- 单实例互斥：重复启动只保留第一个窗口；互斥体用 `Global\` 命名空间，计划任务/SSH 会话里跑 CLI 也能看到 GUI 正在运行。重启走 stop→轮询 Stopped（≤12s）→start，避免端口未释放导致 bind 失败
 - 删除后卡片缓存清零，同名重建显示新端口/URL；配置变更后翻页命中缓存也刷新
 - **清单热重载**：手改 `services.json` 后按 F5 立即生效（新增/删除/改端口都不用重启），已有卡片复用、不丢健康值与冷却；有在途命令（启动中/停止中/删除中）时拒绝重载并提示稍后再试
 - **健康历史**：状态或健康值变化时落一条到 `logs/health/health-YYYYMMDD.ndjson`（默认保留 30 天，重复值不记），右键卡片「健康历史」看最近 200 条——用来回答「昨晚它什么时候挂的」。写盘在后台 runspace，UI 线程不碰 I/O
@@ -217,7 +217,7 @@ pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName <服务名
 | `ToggleTimeoutMs` | 45000 | 过渡态超时逃生：回执丢失时按到达的探测值收敛并解封按钮。须大于正常路径最长耗时——启动失败回落 `sc.exe start` 走 SCM 同步管道，上限 `ServicesPipeTimeout`（**2026-10-28 实测该路径 30.0s**），故留 15s 余量。服务仍在同一过渡态时计时刷新（慢启动不误判），累计超 `TransitionHardCapFactor` 倍后强制逃生。单服务可单独调大，见「重服务」 |
 | `TransitionHardCapFactor` | 10 | 过渡计时刷新的硬上限倍数，防止永久卡在中间态的服务把逃生口刷掉 |
 | `WaitHealthyTimeoutMs` | 120000 | 「运行中但健康探测不通过」超过此时长：「等待中」升级为「无响应」+ 红点。冷启动一分钟起的服务可以调大 |
-| `WaitStoppedTimeoutMs` | 6000 | 重启/删除前轮询 Stopped 的上限（`Wait-Stopped`，UI 与 runspace 共用一份） |
+| `WaitStoppedTimeoutMs` | 12000 | 重启/删除前轮询 Stopped 的上限（`Wait-Stopped`，UI 与 runspace 共用一份） |
 | `ExtCommandTimeoutMs` | 60000 | 外部命令（`sc.exe` / `nssm.exe`）超时：超时即 `Kill` 整棵进程树并返回 `exit=-1`，不让一条挂住的命令拖死后台 |
 | `LogKeepCount` | 10 | 轮转日志保留份数，**按日志目录**各留前 N 份：共用 `LogDir` 的服务算一个目录，有独立 `AppStdout` 目录的各算一份配额 |
 | `LogKeepDays` | 14 | 轮转日志保留天数：删除须同时满足「不在前 N 份」且「早于 N 天」，故窗口内高频轮转的档一份不删 |

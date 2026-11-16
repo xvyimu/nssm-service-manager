@@ -124,6 +124,12 @@ try {
   $stateLiteral = '(?s)@\([^)]*(?:启动中|停止中|暂停中|继续中)[^)]*(?:启动中|停止中|暂停中|继续中)[^)]*\)'
   $groups = [regex]::Matches($pollSrc, $stateLiteral)
   Assert ($groups.Count -le 1) "poll.ps1 出现 $($groups.Count) 处含 ≥2 个中间态的数组字面量：只允许缺注入兜底那一份，其余必须读 `$sync.scmPendingStates"
+  #  (c) 兜底字面量必须与 config 的真实集合同值：只写注释提醒不够，两边漂移时这里直接红。
+  if ($groups.Count -eq 1) {
+    $fallbackStates = @([regex]::Matches($groups[0].Value, "'([^']+)'") | ForEach-Object { $_.Groups[1].Value })
+    $configStates = @($script:SCM_PENDING_STATES)
+    Assert ((@($fallbackStates | Sort-Object) -join "|") -eq (@($configStates | Sort-Object) -join "|")) "poll.ps1 兜底与 config 不一致：兜底=$($fallbackStates -join ",")，config=$($configStates -join ",")"
+  }
   if ($groups.Count -eq 1) {
     # 兜底本身也必须完整四态：少一个，那类中间态就会退回 ProbeIdleMs 长轮询（卡片停在「启动中」）。
     foreach ($stName in '启动中','停止中','暂停中','继续中') {
