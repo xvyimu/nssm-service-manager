@@ -37,7 +37,8 @@ lib/                      # 模块（config/theme/util/acl/poll/svc-common/svc-i
                           #  util.ps1 只是聚合点，清单读写/状态栏/日志清理/安全自检/关窗收尾分别在 svc-store/ui-status/log-retention/security-check/shutdown）
 scripts/                  # 独立脚本（deploy-local.ps1 / deploy.cmd / package-release.ps1 / set-service-params-acl.ps1）
 tests/                    # 回归测试（run-all.ps1 汇总；test-*.ps1 单项）
-docs/                     # PROJECT.md（架构与决策）/ CHANGELOG.md / HANDOFF.md
+docs/                     # PROJECT.md（架构与决策）/ HANDOFF.md
+CHANGELOG.md              # 仓根，当前 1.0.10
 config.example.json       # 配置示例（实配 config.json 已 gitignore）
 services.example.json     # 服务清单示例（实配 services.json 已 gitignore）
 ```
@@ -48,8 +49,6 @@ services.example.json     # 服务清单示例（实配 services.json 已 gitign
 - **SSOT**：`docs/PROJECT.md` 是「为什么这么做」的真相；代码是行为真相。改行为不改文档 = 漂移。
 - **UI 线程绝不碰 I/O**：`Get-Service`/`TcpClient`/`HttpClient` 都可能阻塞 → 后台 runspace + ConcurrentQueue，DispatcherTimer 400ms 轮询取结果。
 - **模块分层**：常量收口在 `lib/config.ps1`（不在别处硬编）；纯函数族（如 `lib/svc-input.ps1`）可单独点源测试，不加载 WPF。
-- **提交信息**：conventional commits（`feat:` / `fix:` / `docs:` / `refactor:`）。
-
 ## 边界（三级）
 
 - ✅ **Always**：改完跑 `pwsh -NoProfile -File tests/run-all.ps1`；新逻辑补对应 `tests/test-*.ps1`；常量加进 `lib/config.ps1` 而非散落硬编。
