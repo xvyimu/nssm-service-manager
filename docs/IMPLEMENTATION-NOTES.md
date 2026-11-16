@@ -408,7 +408,7 @@ AbandonedMutexException 等：视为「有实例曾持有」——保守判为�
 
 ### Get-DirAclVerdict
 
-三态判定的**唯一实现**。`Test-DirAclPermissive` 自引入起即返回三态，本函数只是把「目录级三态」的措辞
+三态判定的唯一实现是 `Get-DirAclVerdict`（目录级）；`Test-DirAclPermissive` 自引入起就返回三态，这里收敛掉的是「目录级那份重复实现」，不是它的返回值形态。
 （定位不到 / 目录不存在 / 读不到 ACL）从各消费点收拢到一处，顺带把 ACL 读取做成可注入。
 判定目录 ACL 是否「过宽」——本机任意标准用户可写。纯函数，不碰 UI（Show-SecurityCheck 会弹框）。
 判据：主体是 Users/Everyone 之一，且权限含 Write/Modify/FullControl。

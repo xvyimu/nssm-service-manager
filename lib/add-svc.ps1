@@ -40,8 +40,11 @@ function Add-SvcFromCli([string]$spec){
   $bad = Test-SvcInput $n $p $exe $script:svc $probe
   if($bad){ Write-Host $bad.msg; exit 1 }
   # CLI 不走对话框：提权面用一行非阻断提示代替 GUI 的模态警告。不弹窗、不改退出码，但不静默。
-  # 判定函数内部自带守卫（判据未加载时返回「未知」），这里不再重复 Get-Command。
-  $notice = Get-AddPreflightNotice $exe (Get-ExeDirVerdict $exe)
+  # 判据 Get-ExeDirVerdict 在 lib/security-check.ps1：CLI 只点源 util + add-svc 时可以没有它，
+  # 此时降级成「未知（判据未加载）」，由 Get-AddPreflightNotice 的 -like '未知*' 分支输出
+  # 「这不等于安全」——降级仍然出声，不是静默放过，也不是 CommandNotFoundException 崩掉。
+  $verdict = if (Get-Command Get-ExeDirVerdict -EA SilentlyContinue) { Get-ExeDirVerdict $exe } else { '未知（判据未加载）' }
+  $notice = Get-AddPreflightNotice $exe $verdict
   if($notice){ Write-Host $notice }
   # 先按分号切再按逗号切：NO_PROXY 的多地址保留为一条，A=1,B=2 拆成两条。
   $envPairs = @(ConvertTo-EnvPairs $envRaw ';' | ForEach-Object { ConvertTo-EnvPairs $_ ',' })

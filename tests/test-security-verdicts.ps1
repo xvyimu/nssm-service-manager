@@ -102,4 +102,80 @@ Assert ($warn -like '警告*' -and $warn -match '仅管理员可写') "可写目
 $unknown = Get-AddPreflightNotice 'C:\nope\svc.exe' '未知（目录不存在）'
 Assert ($unknown -like '提示*' -and $unknown -match '这不等于安全' -and $unknown -match '目录不存在') "未知要给原因且声明不等于安全，got: $unknown"
 Assert ((Get-AddPreflightNotice 'C:\tools\svc.exe' '否') -eq '') '不可写目录不该有提示'
-Write-Output 'PASS: ACL 三态唯一实现在 Get-DirAclVerdict（未解析/不存在/读不到都带原因），汇总层给对象化未知名，入口与对话框都走这一份。'
+
+# ---- 5. CLI 接线不能靠文件级计数假通过：调用要在 Add-SvcFromCli 体内，notice 由判定派生并被写出 ----
+# 上面 4 的计数只证明「文件里出现过这个名字」，挡不住两类突变：
+#   M1 保留调用却把 $notice 硬编码；M3 把调用挪到同文件另一个函数（文件级计数仍 ≥1）。
+# 下面按数据流认：定义体 → 判定赋值 → 传给文案函数 → 写出。
+$fnDefs = @($cliAst.FindAll({
+    param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Add-SvcFromCli'
+  }, $true))
+Assert ($fnDefs.Count -eq 1) "add-svc.ps1 必须有且只有一个 Add-SvcFromCli 定义，实际 $($fnDefs.Count)"
+$fn = $fnDefs[0]
+
+# 5a. 调用点必须在函数定义体的 extent 内。
+$inBodyVerdictCalls = @($fn.FindAll({
+    param($a) $a -is [System.Management.Automation.Language.CommandAst] -and ([string]$a.GetCommandName() -match '(^|\\)Get-ExeDirVerdict$')
+  }, $true))
+Assert ($inBodyVerdictCalls.Count -ge 1) "Get-ExeDirVerdict 必须在 Add-SvcFromCli 体内调用（挪到同文件别的函数等于接线断了），实际 $($inBodyVerdictCalls.Count) 处"
+
+# 5b. notice 必须由判定派生：$notice = Get-AddPreflightNotice $exe $verdict（$verdict 体内由 Get-ExeDirVerdict 赋值），
+# 或等价的直接内联写法 $notice = Get-AddPreflightNotice $exe (Get-ExeDirVerdict $exe)。两种都算「判定结果流进文案」。
+$noticeAssigns = @($fn.FindAll({
+    param($a)
+    $a -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $a.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+    $a.Left.VariablePath.UserPath -eq 'notice' -and
+    @($a.Right.FindAll({
+        param($b) $b -is [System.Management.Automation.Language.CommandAst] -and [string]$b.GetCommandName() -eq 'Get-AddPreflightNotice'
+      }, $true)).Count -ge 1
+  }, $true))
+Assert ($noticeAssigns.Count -ge 1) 'notice 必须由 Get-AddPreflightNotice 的返回值产生（改成字面量 = 判定结果被丢弃）'
+$noticeCmd = @($noticeAssigns[0].Right.FindAll({
+    param($a) $a -is [System.Management.Automation.Language.CommandAst] -and [string]$a.GetCommandName() -eq 'Get-AddPreflightNotice'
+  }, $true))[0]
+$noticeArgs = @($noticeCmd.CommandElements | Select-Object -Skip 1)
+$noticeArgVars = @($noticeArgs | Where-Object { $_ -is [System.Management.Automation.Language.VariableExpressionAst] } |
+  ForEach-Object { $_.VariablePath.UserPath })
+# 内联写法：(Get-ExeDirVerdict $exe) 整个是参数子树里的命令调用，不是赋值。
+$inlineVerdictArg = @($noticeArgs | Where-Object {
+    @($_.FindAll({
+        param($b) $b -is [System.Management.Automation.Language.CommandAst] -and [string]$b.GetCommandName() -match '(^|\\)Get-ExeDirVerdict$'
+      }, $true)).Count -ge 1
+  }).Count -ge 1
+$verdictAssigns = @($fn.FindAll({
+    param($a)
+    $a -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $a.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+    @($a.Right.FindAll({
+        param($b) $b -is [System.Management.Automation.Language.CommandAst] -and [string]$b.GetCommandName() -match '(^|\\)Get-ExeDirVerdict$'
+      }, $true)).Count -ge 1
+  }, $true))
+$verdictVars = @($verdictAssigns | ForEach-Object { $_.Left.VariablePath.UserPath })
+Assert (($verdictVars.Count -ge 1) -or $inlineVerdictArg) '函数体内必须让 Get-ExeDirVerdict 的结果进到文案函数（赋给变量或内联），否则提示与判定脱钩'
+Assert ($inlineVerdictArg -or (@($noticeArgVars | Where-Object { $verdictVars -contains $_ }).Count -ge 1)) "Get-AddPreflightNotice 的判定参数必须来自判定函数的返回值，实际参数=$($noticeArgVars -join ',')、判定变量=$($verdictVars -join ',')、内联=$inlineVerdictArg"
+
+# 5c. notice 必须被写出：写恒空字符串或写别的字面量都不算提示送到用户。
+$noticeWrites = @($fn.FindAll({
+    param($a)
+    $a -is [System.Management.Automation.Language.CommandAst] -and
+    ([string]$a.GetCommandName() -match '^Write-(Host|Output|Warning|Information)$') -and
+    @($a.CommandElements | Select-Object -Skip 1 |
+      Where-Object { $_ -is [System.Management.Automation.Language.VariableExpressionAst] -and $_.VariablePath.UserPath -eq 'notice' }).Count -ge 1
+  }, $true))
+Assert ($noticeWrites.Count -ge 1) '函数体内必须把 $notice 写出去（Write-Host $notice 或等价分支），否则提示到不了用户'
+
+# ---- 5d. 降级路径的独立证据：只点源 add-svc.ps1（无 security-check）不抛，且必须提示「不等于安全」 ----
+# 用子进程隔离：本测试进程已点源 lib/security-check.ps1，守卫在那里恒真，测不到降级。
+$probeCmd = "& { . '" + $cliPath + "'; if (Get-Command Get-ExeDirVerdict -EA SilentlyContinue) { 'hasVerdict=yes' } else { 'hasVerdict=no' }; 'notice=' + (Get-AddPreflightNotice 'C:\x\svc.exe' '未知（判据未加载）') }"
+$degraded = @(& pwsh -NoProfile -Command $probeCmd)
+$probeRc = $LASTEXITCODE
+$degradedText = $degraded -join "`n"
+Assert ($probeRc -eq 0) "只点源 add-svc.ps1 的子进程必须正常退出（不得 CommandNotFoundException），实际 exit=$probeRc 输出=$degradedText"
+Assert ($degradedText -match '(?m)^hasVerdict=no\r?$') "子进程里不应加载到 Get-ExeDirVerdict，否则降级路径没被测到，实际 $degradedText"
+$degradedNotice = @($degraded | Where-Object { $_ -like 'notice=*' })
+Assert ($degradedNotice.Count -eq 1) "降级路径必须给出提示行，实际 $degradedText"
+Assert ($degradedNotice[0].Length -gt 'notice='.Length) "降级提示不能为空，实际「$($degradedNotice[0])」"
+Assert ($degradedNotice[0] -match '不等于安全') "降级提示必须声明「不等于安全」，实际「$($degradedNotice[0])」"
+
+Write-Output 'PASS: ACL 三态唯一实现在 Get-DirAclVerdict（未解析/不存在/读不到都带原因），汇总层给对象化未知名，入口与对话框都走这一份；CLI 的判定调用在 Add-SvcFromCli 体内、notice 由判定派生且写出，判据未加载时降级仍提示「不等于安全」。'

@@ -85,12 +85,14 @@ function Show-SecurityCheck([string]$n){
   [System.Windows.MessageBox]::Show($msg,"$n 安全检查",'OK',$(if($quoted -and $permissive -eq '否'){'Information'}else{'Warning'})) | Out-Null
 }
 
-# exe 路径 → 所在目录的三态判定（LocalSystem 场景的提权面）。空路径或判据未加载都算「无法定位」，
+# exe 路径 → 所在目录的三态判定（LocalSystem 场景的提权面）。空路径算「无法定位」，
 # 不折成「否」——把「没检查」说成「安全」正是这条链路反复出问题的地方。放这里而不是 dialogs：
 # CLI 的 -Add 也要用，不该为了一个判定去加载对话框模块。
+# 判据 Get-DirAclVerdict 与本函数同文件定义（上方），无需运行时 Get-Command 探测——那样的守卫恒真、
+# 分支不可达，只会让人以为这里还有一条降级路径。跨文件降级（整个 security-check.ps1 未点源）
+# 由调用方负责，见 lib/add-svc.ps1 的 $verdict 守卫。
 function Get-ExeDirVerdict([string]$exe){
   if (-not $exe) { return '未知（无法定位目录）' }
-  if (-not (Get-Command Get-DirAclVerdict -ErrorAction SilentlyContinue)) { return '未知（无法定位目录）' }
   $dir = try { Split-Path $exe -Parent -ErrorAction Stop } catch { '' }
   Get-DirAclVerdict $dir
 }
