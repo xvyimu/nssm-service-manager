@@ -54,11 +54,11 @@ function Write-CrashLog([string]$m){
       try { [IO.File]::Move($script:crashLog, $bak) }
       catch {
         # 日志查看器开着时 Move 会失败（句柄占用）：先尽力留副本，再截断当前文件
-        try { [IO.File]::Copy($script:crashLog, $bak, $true) } catch {}
-        try { [IO.File]::WriteAllText($script:crashLog, '', [Text.UTF8Encoding]::new($false)) } catch {}
+        try { [IO.File]::Copy($script:crashLog, $bak, $true) } catch { Write-Verbose "service-manager-gui.ps1: crash 日志轮转降级复制失败，忽略：$($_.Exception.Message)" }
+        try { [IO.File]::WriteAllText($script:crashLog, '', [Text.UTF8Encoding]::new($false)) } catch { Write-Verbose "service-manager-gui.ps1: crash 日志截断失败，忽略：$($_.Exception.Message)" }
       }
     }
-  } catch {}
+  } catch { Write-Verbose "service-manager-gui.ps1: crash 日志写入失败，忽略：$($_.Exception.Message)" }
 }
 
 # ---- CLI 模式：添加服务（不弹 GUI，不提权检测——NSSM 写需管理员，调用方自己提权）----
@@ -126,7 +126,7 @@ if (-not $owned) {
 '@
     $h = [Win32.Fg]::FindWindow($null, '服务管理')
     if ($h -ne [IntPtr]::Zero) { [void][Win32.Fg]::SetForegroundWindow($h) }
-  } catch {}
+  } catch { Write-Verbose "service-manager-gui.ps1: 把已有窗口提到前台失败，忽略：$($_.Exception.Message)" }
   exit 0
 }
 Write-CrashLog 'Single-instance mutex acquired'
@@ -149,7 +149,7 @@ public static extern bool SetProcessDPIAware();
     if ($dpiErr -ne 5) { [Win32.Dpi]::SetProcessDPIAware() | Out-Null }
   }
 } catch {
-  try { [Win32.Dpi]::SetProcessDPIAware() | Out-Null } catch {}
+  try { [Win32.Dpi]::SetProcessDPIAware() | Out-Null } catch { Write-Verbose "service-manager-gui.ps1: 回落系统级 DPI Aware 也失败，忽略：$($_.Exception.Message)" }
 }
 
 # NSSM 预检
@@ -172,6 +172,7 @@ if (-not $script:nssm -or -not (Test-Path -LiteralPath $script:nssm -PathType Le
     Invoke-DispatcherErrorFallback $e
   } else {
     # 模块没加载起来：退化成「只记日志 + 接住」，至少别让窗口消失
+    # 空 catch 有意：这里是最后一道兜底（crash log 自己写失败时无处可记），再抛会把 Dispatcher 循环带走（每帧路径，加日志会刷屏）
     try { Write-CrashLog "DispatcherUnhandled: $($e.Exception.GetType().FullName): $($e.Exception.Message)" } catch {}
     $e.Handled = $true
   }
@@ -389,8 +390,10 @@ $timer.Add_Tick({
     try { Invoke-LogCleanup 'Periodic log cleanup failed' }
     catch { Write-CrashLog "Periodic log cleanup failed: $($_.Exception.Message)" }
   }
-  # 清单被外部改过（手改/另一个会话）：一次 stat，提示一次；按 F5 重载。
-  try { if (Test-SvcFileChanged) { Set-StatusMessage 'services.json 已被外部修改，按 F5 重新加载' } }
+  # 清单被外部改过（手改/另一个会话）：到点才 stat 一次，提示一次；按 F5 重载。
+  # 400ms 一帧都查是浪费（常驻几天 = 几十万次 stat），5s 一次足够；节流与判定分别在
+  # Invoke-SvcFileCheck / Test-SvcFileChanged（lib/svc-store.ps1），这里只负责提示。
+  try { if (Invoke-SvcFileCheck) { Set-StatusMessage 'services.json 已被外部修改，按 F5 重新加载' } }
   catch { Write-CrashLog "Change check failed: $($_.Exception.Message)" }
 })
 $timer.Start()

@@ -20,7 +20,8 @@ $script:configPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'config.json'
 # 装机版本号：显示在标题栏、启动时写进 gui-crash.log。
 # 这台机器出过「源码修好了、装的还是旧版」的事故，版本放在第一眼能看到的地方，比翻日志可靠。
 $script:appVersion = ''
-try { $script:appVersion = (Get-Content -LiteralPath (Join-Path (Split-Path $PSScriptRoot -Parent) 'VERSION') -Raw -Encoding UTF8).Trim() } catch {}
+try { $script:appVersion = (Get-Content -LiteralPath (Join-Path (Split-Path $PSScriptRoot -Parent) 'VERSION') -Raw -Encoding UTF8).Trim() }
+catch { Write-Verbose "lib/config.ps1: 读 VERSION 失败，版本号留空，忽略：$($_.Exception.Message)" }
 
 # 非致命配置提示的唯一写入口。裸写 `$null += "x"` 会变成 String（`@($null)` 也不是空数组），
 # 六处调用点各写一遍守卫正是这个坑的来源；收口成一处，单测只点源 util.ps1 时由它补一份同义实现。

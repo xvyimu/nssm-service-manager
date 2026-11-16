@@ -3,6 +3,17 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
+## [1.0.20] - 2026-11-16
+
+停止进度可见、CLI 预算对齐、内存与可诊断性收口：
+
+- **停止等待有进度条**：卡片过渡态下方加 4px 圆角进度条，读 `$sync.stopProgress`（`name/elapsedMs/totalMs`），只有服务名匹配才显示、比例夹 0..1、无数据 `Collapsed` 不占位；`totalMs<=0` 直接隐藏而不是画一条 1 秒满格的假进度。
+- **CLI 删除路径吃到 per-service 预算**：`Remove-NssmService` 从 `$script:svc` 取该服务的 `waitStoppedTimeoutMs` 传给 `Invoke-ServiceRemove`；清单未加载时传 0（回落全局），不抛错。
+- **进程句柄不再泄漏**：`Invoke-ExternalQuiet` 成功路径补 `Dispose`（先取 ExitCode 再释放）；60 次外部调用后进程句柄 533→523，不再随调用次数增长。
+- **右键菜单不再每次新建**：建卡时构造一次并挂 `ContextMenu`，右键只经 `ContextMenuOpening` 刷新 `IsEnabled`；`start/stop/restart` 刻意不按状态置灰（右键是 StopPending 的逃生口）。
+- **清单外部改动检查降频**：tick 里的 `Test-SvcFileChanged` 从每 400ms 一次改为 5s 一次（`Invoke-SvcFileCheck` 节流，首帧仍立即查），判定语义不变。
+- **空 catch 再收口**：16 处转 `Write-Verbose`，全仓 22 → 6 处，且每处必须紧邻「# 空 catch 有意：」注释；新增 `tests/test-empty-catch.ps1` 作机器门禁（数量只许降不许升）。
+
 ## [1.0.19] - 2026-11-16
 
 收尾六项（评审遗留 + 可诊断性）：

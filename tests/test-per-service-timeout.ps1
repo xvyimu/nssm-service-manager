@@ -387,4 +387,47 @@ try {
   Close-FakePoll $worker
 }
 
+# 8d 停止等待的进度生产端：$sync.stopProgress 给 UI 状态栏读，结束时必须清空。
+# 采样点放在 Get-SvcStateQuiet 里——等待循环每轮必经这一步，这里读到的就是 UI 会读到的。
+# 状态恒 Running（等不到）、notice 阈值调大（不写状态栏消息，与本用例无关）、步长 50ms、预算 400ms。
+$script:progressScans = [Collections.Generic.List[object]]::new()
+$script:progressRefs  = [Collections.Generic.List[object]]::new()
+function Get-SvcStateQuiet([string]$name, [int]$timeoutMs = 0){
+  $p = $script:sync.stopProgress
+  if ($p) {
+    $script:progressRefs.Add($p)
+    $script:progressScans.Add([pscustomobject]@{ name = $p.name; elapsedMs = [int]$p.elapsedMs; totalMs = [int]$p.totalMs })
+  }
+  'Running'
+}
+function Get-ServiceQueryCode([string]$name, [int]$timeoutMs = 0){ 0 }
+$script:sync = @{ stopProgress = $null; waitStoppedPollMs = 50; svcStateTimeoutMs = 50; waitStoppedNoticeMs = 600000 }
+$rProg = Wait-Stopped 'ProgSvc' -TimeoutMs 400
+Assert ($rProg -eq $false) '状态恒 Running 时预算耗尽应返回 false'
+Assert ($script:progressScans.Count -ge 2) "等待过程中应能读到 stopProgress，实际 $($script:progressScans.Count) 次"
+foreach ($s in $script:progressScans) {
+  Assert ($s.name -eq 'ProgSvc') "stopProgress.name 应为服务名，实际 $($s.name)"
+  Assert ($s.totalMs -eq 400) "stopProgress.totalMs 应为本次预算 400，实际 $($s.totalMs)"
+}
+$pFirst = [int]$script:progressScans[0].elapsedMs
+$pLast  = [int]$script:progressScans[-1].elapsedMs
+Assert ($pLast -gt $pFirst) "stopProgress.elapsedMs 应随等待递增：首 $pFirst ms → 末 $pLast ms"
+$sameRef = $true
+foreach ($o in $script:progressRefs) { if (-not [object]::ReferenceEquals($o, $script:progressRefs[0])) { $sameRef = $false } }
+Assert $sameRef '等待期间应复用同一个 stopProgress 对象（每轮新建会让 UI 拿着过期引用）'
+Assert ($null -eq $script:sync.stopProgress) '结束后 $sync.stopProgress 必须置 $null（UI 不能残留进度）'
+Write-Output 'PASS: Wait-Stopped publishes $sync.stopProgress (name/elapsedMs/totalMs, same object) and clears it on exit.'
+
+# 没有该键 / $sync 不存在（CLI 单文件点源）：静默跳过，不抛错、不凭空加键
+$script:progressScans.Clear()
+$script:sync = @{ waitStoppedPollMs = 20; svcStateTimeoutMs = 50; waitStoppedNoticeMs = 600000 }
+$rNoKey = Wait-Stopped 'NoKeySvc' -TimeoutMs 200
+Assert ($rNoKey -eq $false) '没有 stopProgress 键时等待行为不变'
+Assert (-not $script:sync.ContainsKey('stopProgress')) '没有该键时不该凭空加键'
+$script:sync = $null
+$rNoSync = Wait-Stopped 'NoSyncSvc' -TimeoutMs 120
+Assert ($rNoSync -eq $false) '$sync 不存在时不抛错、等待行为不变'
+$script:sync = @{}
+Write-Output 'PASS: Wait-Stopped skips progress silently without the key / without $sync.'
+
 Write-Output 'PASS: parallel probe block references both timeouts only via $using: (static scan).'

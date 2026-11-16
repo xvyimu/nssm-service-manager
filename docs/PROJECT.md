@@ -230,6 +230,6 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 
 ## 测试
 
-`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 自动收集的 `tests/test-*.ps1`（当前 33 项；`test-helpers.ps1` 是夹具）。详见 README「测试与截图」节。
+`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 自动收集的 `tests/test-*.ps1`（当前 35 项；`test-helpers.ps1` 是夹具）。详见 README「测试与截图」节。
 
 CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）。

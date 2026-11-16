@@ -60,7 +60,12 @@ function Install-NssmService([string]$n,[string]$exe,[string]$dir,[string]$par,$
 
 # 删除 NSSM 服务（同步、失败抛异常）；序列本体在 svc-common.ps1。无生产调用方是有意保留，死代码扫描请勿删。§Remove-NssmService
 function Remove-NssmService([string]$n){
-  $r = Invoke-ServiceRemove $n $script:nssm
+  # 停止预算按服务取：services.json 的 waitStoppedTimeoutMs（与 GUI 侧 poll.ps1 的 Get-WaitStoppedMs 同源）。
+  # CLI 单独点源时 $script:svc 可能没加载、或没有这个服务——取不到就传 0 让 Wait-Stopped 回落全局值，不抛错。
+  $waitMs = 0
+  if ($script:svc) { try { $waitMs = [int]$script:svc[$n].waitStoppedTimeoutMs } catch { $waitMs = 0 } }
+  if ($waitMs -lt 0) { $waitMs = 0 }
+  $r = Invoke-ServiceRemove $n $script:nssm $waitMs
   if(-not $r.ok){
     if($r.exitCode -ne 0){ throw "NSSM remove 失败($($r.exitCode)): $($r.detail)" }
     throw "NSSM remove 未生效：$($r.why)"

@@ -167,6 +167,32 @@ if ([string]$rBusy.why -notmatch '中止删除') { throw "删除中止的原因�
 if ($script:removeCalled) { throw '服务还在跑就调用了 nssm remove。' }
 Write-Output 'PASS: remove aborts with a clear reason (and never calls nssm) when the service will not stop.'
 
+# CLI 删除路径的 per-service 预算：清单里该服务的 waitStoppedTimeoutMs 必须传给 Wait-Stopped；
+# 清单没加载 / 没有该服务时传 0（CLI 单独点源不能因为取不到值就抛错）。
+# 遮蔽 Wait-Stopped 只记收到的 -TimeoutMs，stop→remove 序列其余部分照旧走真实现。
+$svcBeforeCli = $script:svc
+$script:removeWaitMs = @()
+function Wait-Stopped([string]$n, [int]$TimeoutMs = 0) { $script:removeWaitMs += $TimeoutMs; $true }
+try {
+  $script:nssm = 'Invoke-TestNssmRemove'
+  $script:svc = [ordered]@{ __sm_cli_timeout__ = [pscustomobject]@{ port = 0; waitStoppedTimeoutMs = 150 } }
+  [void]$script:nssmInstalled.Add('__sm_cli_timeout__')
+  Remove-NssmService '__sm_cli_timeout__'
+  [void]$script:nssmInstalled.Add('__sm_cli_nokey__')
+  Remove-NssmService '__sm_cli_nokey__'
+  $script:svc = $null
+  [void]$script:nssmInstalled.Add('__sm_cli_nosvc__')
+  Remove-NssmService '__sm_cli_nosvc__'
+} finally {
+  ${function:Wait-Stopped} = $realWaitStopped
+  $script:svc = $svcBeforeCli
+}
+if ($script:removeWaitMs.Count -ne 3) { throw "CLI 删除路径应调 Wait-Stopped 三次，实际 $($script:removeWaitMs.Count)" }
+if ($script:removeWaitMs[0] -ne 150) { throw "per-service waitStoppedTimeoutMs=150 没传给 Wait-Stopped（实际 $($script:removeWaitMs[0])）" }
+if ($script:removeWaitMs[1] -ne 0) { throw "清单里没有该服务时应传 0（实际 $($script:removeWaitMs[1])）" }
+if ($script:removeWaitMs[2] -ne 0) { throw "清单未加载时应传 0 而不是抛错（实际 $($script:removeWaitMs[2])）" }
+Write-Output 'PASS: CLI remove passes per-service waitStoppedTimeoutMs into Wait-Stopped; 0 when unknown or manifest absent.'
+
 # 启动失败路径：注册成功但 sc.exe start 返回非零时，CLI **不得**报「已启动」。
 # 该 CLI 是给 agent 用的，谎报成功会让调用方以为服务在跑。走子进程（Add-SvcFromCli 用 Write-Host）。
 $probeStart = Join-Path ([IO.Path]::GetTempPath()) "sm-start-fail-$([guid]::NewGuid().ToString('N')).ps1"

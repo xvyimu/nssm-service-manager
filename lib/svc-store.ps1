@@ -147,13 +147,13 @@ function Save-Svc($s) {
       # 任何「只读」线索。这就是我们自己的配置文件，写前清属性；清不掉再翻译成一句人话。§Save-Svc
       $target = Get-Item -LiteralPath $cfg -Force
       if ($target.IsReadOnly) {
-        try { $target.IsReadOnly = $false } catch {}
+        try { $target.IsReadOnly = $false } catch { Write-Verbose "lib/svc-store.ps1: 清 services.json 只读属性失败，忽略：$($_.Exception.Message)" }
         if ((Get-Item -LiteralPath $cfg -Force).IsReadOnly) { throw "services.json 是只读的：$cfg（去掉只读属性后重试）" }
       }
       # 第三参给备份路径：Replace 顺手把上一版留成 services.json.bak（清单不在 git 里，没有这层就无回滚）。
       # .bak 是自己上一版，被标只读时 File.Replace 会直接失败（「无法删除要被替换的文件」）——先清属性。
       $bak = "$cfg.bak"
-      if (Test-Path -LiteralPath $bak) { try { (Get-Item -LiteralPath $bak).IsReadOnly = $false } catch {} }
+      if (Test-Path -LiteralPath $bak) { try { (Get-Item -LiteralPath $bak).IsReadOnly = $false } catch { Write-Verbose "lib/svc-store.ps1: 清 services.json.bak 只读属性失败，忽略：$($_.Exception.Message)" } }
       [IO.File]::Replace($tmp, $cfg, $bak)
     } else { [IO.File]::Move($tmp, $cfg) }
   } finally {
@@ -184,6 +184,22 @@ function Invoke-RetrySaveSvc {
   Set-StatusMessage "已保存清单：$($pending.Count) 项删除已落盘"
 }
 
+# 清单外部改动的检查节流：UI 帧 400ms，5s 一次 stat 就够（人改文件不是 400ms 级事件；常驻几天
+# 按帧 stat 是几十万次）。基线用 TickCount64（单调，不受系统时间跳变影响）；0 = 还没查过 →
+# 首次调用立刻查，行为与改前一致。间隔不进 config：这是内部节流不是用户调参项，进 config 还得
+# 同步 config.example.json（tests/test-config-params.ps1 有键集等值断言钉住）。
+$script:SVC_FILE_CHECK_MS = 5000
+$script:lastSvcFileCheck = 0
+
+# tick 里的唯一入口：到点才真查一次，返回是否发现外部修改（调用方据此提示按 F5）。
+# 「外部改动」的判定语义仍只由 Test-SvcFileChanged 定义，这里只管频率。
+function Invoke-SvcFileCheck {
+  $now = [Environment]::TickCount64
+  if ($script:lastSvcFileCheck -and ($now - $script:lastSvcFileCheck) -lt $script:SVC_FILE_CHECK_MS) { return $false }
+  $script:lastSvcFileCheck = $now
+  Test-SvcFileChanged
+}
+
 # 清单是否被外部改过（GUI 常驻时手改、或另一个会话抢先写）：只做一次 stat，不读文件。
 # Save-Svc 自己写完会刷新 stamp 并清提示标记，所以自己的保存不会触发。§Test-SvcFileChanged
 function Test-SvcFileChanged {
@@ -194,6 +210,7 @@ function Test-SvcFileChanged {
       $script:svcFileHintShown = $true
       return $true
     }
+  # 空 catch 有意：stat 拿不到（被占用/权限/刚被删）就当没改，下一拍再试（每 tick 路径，加日志会刷屏）
   } catch {}
   $false
 }

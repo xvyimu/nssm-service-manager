@@ -38,9 +38,9 @@ function Invoke-ExternalQuiet([string]$exe, [string[]]$argv, [int]$timeoutMs = 0
   if (-not $p.WaitForExit($timeoutMs)) {
     # Kill 之后必须再 WaitForExit 并 Dispose：否则进程对象与两个 ReadToEndAsync 任务一起悬空，
     # 每次超时都留一份待回收句柄（探测是长跑循环，泄漏会累积）。
-    try { $p.Kill($true) } catch {}
-    try { [void]$p.WaitForExit(1000) } catch {}
-    try { $p.Dispose() } catch {}
+    try { $p.Kill($true) } catch { Write-Verbose "lib/svc-common.ps1: 超时后 Kill 子进程失败，忽略：$($_.Exception.Message)" }
+    try { [void]$p.WaitForExit(1000) } catch { Write-Verbose "lib/svc-common.ps1: 超时后等子进程退出失败，忽略：$($_.Exception.Message)" }
+    try { $p.Dispose() } catch { Write-Verbose "lib/svc-common.ps1: 超时后释放子进程句柄失败，忽略：$($_.Exception.Message)" }
     return @{ exit = -1; out = "外部命令超时（${timeoutMs}ms）：$exe" }
   }
   # WaitForExit 只等进程退出，不等管道 EOF：若子进程派生的孙进程继承了 stdout 句柄，
@@ -52,9 +52,14 @@ function Invoke-ExternalQuiet([string]$exe, [string[]]$argv, [int]$timeoutMs = 0
   # $left < 120 → 0：Task.Wait(0) 非阻塞，管道已 EOF 就取结果，没 EOF 就取空输出。
   $eofWait = if ($left -lt 120) { 0 } else { [int][Math]::Min(2000, [Math]::Max(50, [int]($left / 2))) }
   $stdout = ''; $stderr = ''
-  try { if ($stdoutTask.Wait($eofWait)) { $stdout = $stdoutTask.Result } } catch {}
-  try { if ($stderrTask.Wait($eofWait)) { $stderr = $stderrTask.Result } } catch {}
-  @{ exit = $p.ExitCode; out = ($stdout + $stderr).Trim() }
+  try { if ($stdoutTask.Wait($eofWait)) { $stdout = $stdoutTask.Result } } catch { Write-Verbose "lib/svc-common.ps1: 读子进程 stdout 失败，输出按空处理，忽略：$($_.Exception.Message)" }
+  try { if ($stderrTask.Wait($eofWait)) { $stderr = $stderrTask.Result } } catch { Write-Verbose "lib/svc-common.ps1: 读子进程 stderr 失败，输出按空处理，忽略：$($_.Exception.Message)" }
+  # 成功路径同样要 Dispose：不释放的话每次 sc.exe/nssm.exe 调用都留一个进程句柄 +
+  # 两个管道 FileStream + 两个异步读取 Task，只能等终结器回收——按天累积就是句柄泄漏。
+  # 先取 ExitCode 再释放，顺序不能反（Dispose 后读 ExitCode 会抛）。
+  $code = $p.ExitCode
+  try { $p.Dispose() } catch { Write-Verbose "lib/svc-common.ps1: 释放子进程句柄失败，忽略：$($_.Exception.Message)" }
+  @{ exit = $code; out = ($stdout + $stderr).Trim() }
 }
 
 # sc.exe 的静默包装：只回退出码，输出留给需要诊断时走 Invoke-ExternalQuiet。
@@ -87,49 +92,64 @@ function Wait-Stopped([string]$n, [int]$TimeoutMs = 0){
   $capMs = if ($svcStateMs -gt 0) { $svcStateMs } else { 3000 }
   $reserve = [int][Math]::Min(1000, [Math]::Floor($timeoutMs / 4))
   $deadline = $timeoutMs - $reserve
-  $sliceFloor = [int][Math]::Min(50, [Math]::Max(10, [Math]::Floor($timeoutMs / 10)))
-  while($sw.ElapsedMilliseconds -lt $deadline){
-    if (-not $notified -and $sync -and $sync.msg -and $sw.ElapsedMilliseconds -ge $noticeMs) {
-      $notified = $true
-      $elapsedS = [int][Math]::Floor($sw.ElapsedMilliseconds / 1000)
-      $capS     = [int][Math]::Round($timeoutMs / 1000)
-      try { $sync.msg.Enqueue("正在等待 $n 停止（已 ${elapsedS}s，上限 ${capS}s）") } catch {}
+  # 停止进度（UI 状态栏消费）：{ name, elapsedMs, totalMs }。对象只建一次、每轮覆盖字段，
+  # 避免等待期间（步长 300ms）每轮新建一个、让 UI 拿到过期引用。
+  # $sync 不存在或没有该键时（CLI 单文件点源、单测直调）静默跳过，不影响等待本身。
+  $progress = $null
+  if ($sync -is [System.Collections.IDictionary] -and $sync.ContainsKey('stopProgress')) {
+    $progress = [pscustomobject]@{ name = $n; elapsedMs = 0; totalMs = $timeoutMs }
+    $sync.stopProgress = $progress
+  }
+  try {
+    $sliceFloor = [int][Math]::Min(50, [Math]::Max(10, [Math]::Floor($timeoutMs / 10)))
+    while($sw.ElapsedMilliseconds -lt $deadline){
+      # 每轮把已等时长写回同一个对象：UI 直接读它算进度，不必自己维护计时。
+      if ($progress) { $progress.elapsedMs = [int]$sw.ElapsedMilliseconds }
+      if (-not $notified -and $sync -and $sync.msg -and $sw.ElapsedMilliseconds -ge $noticeMs) {
+        $notified = $true
+        $elapsedS = [int][Math]::Floor($sw.ElapsedMilliseconds / 1000)
+        $capS     = [int][Math]::Round($timeoutMs / 1000)
+        try { $sync.msg.Enqueue("正在等待 $n 停止（已 ${elapsedS}s，上限 ${capS}s）") } catch { Write-Verbose "lib/svc-common.ps1: 停服进度消息入队失败，忽略：$($_.Exception.Message)" }
+      }
+      # 不用 Get-Service：它没有超时开关，SCM 挂起时这一行会永久阻塞，
+      # 循环里的 $timeoutMs 根本轮不到判断。Get-SvcStateQuiet 走 sc.exe query（硬超时 + Kill）。
+      # 两次查询与步长都按同一份剩余预算收口，否则「≤预算」是假话。
+      $remain = $deadline - $sw.ElapsedMilliseconds
+      $qms = [int][Math]::Min($capMs, $remain)
+      if ($qms -lt $sliceFloor) { break }
+      $st = Get-SvcStateQuiet $n $qms
+      if($st -eq 'Stopped'){return $true}
+      if(-not $st){
+        # $null 既可能是「服务没了」也可能是「查询超时」——只有 1060/1072 才算没了。
+        $remain2 = $deadline - $sw.ElapsedMilliseconds
+        if ($remain2 -ge $sliceFloor) {
+          $code = Get-ServiceQueryCode $n ([int][Math]::Min($capMs, $remain2))
+          if($code -in 1060,1072){return $true}
+        }
+      }
+      $remain3 = $deadline - $sw.ElapsedMilliseconds
+      if ($remain3 -le 0) { break }
+      Start-Sleep -Milliseconds ([int][Math]::Min($stepMs, $remain3))
     }
-    # 不用 Get-Service：它没有超时开关，SCM 挂起时这一行会永久阻塞，
-    # 循环里的 $timeoutMs 根本轮不到判断。Get-SvcStateQuiet 走 sc.exe query（硬超时 + Kill）。
-    # 两次查询与步长都按同一份剩余预算收口，否则「≤预算」是假话。
-    $remain = $deadline - $sw.ElapsedMilliseconds
-    $qms = [int][Math]::Min($capMs, $remain)
-    if ($qms -lt $sliceFloor) { break }
-    $st = Get-SvcStateQuiet $n $qms
-    if($st -eq 'Stopped'){return $true}
-    if(-not $st){
-      # $null 既可能是「服务没了」也可能是「查询超时」——只有 1060/1072 才算没了。
-      $remain2 = $deadline - $sw.ElapsedMilliseconds
-      if ($remain2 -ge $sliceFloor) {
-        $code = Get-ServiceQueryCode $n ([int][Math]::Min($capMs, $remain2))
-        if($code -in 1060,1072){return $true}
+    # 收尾补一次：剩余不足一格时旧实现直接 break，会漏掉「服务恰好在最后一刻停了」。
+    # 还剩多少就给多少（至少 sliceFloor），仍然落在总预算内。
+    $tail = [int]($timeoutMs - $sw.ElapsedMilliseconds)
+    if ($tail -ge $sliceFloor) {
+      $st = Get-SvcStateQuiet $n ([int][Math]::Min($capMs, $tail))
+      if ($st -eq 'Stopped') { return $true }
+      if (-not $st) {
+        $tail2 = [int]($timeoutMs - $sw.ElapsedMilliseconds)
+        if ($tail2 -ge $sliceFloor) {
+          $code = Get-ServiceQueryCode $n ([int][Math]::Min($capMs, $tail2))
+          if ($code -in 1060,1072) { return $true }
+        }
       }
     }
-    $remain3 = $deadline - $sw.ElapsedMilliseconds
-    if ($remain3 -le 0) { break }
-    Start-Sleep -Milliseconds ([int][Math]::Min($stepMs, $remain3))
+    $false
+  } finally {
+    # 三条出口（Stopped / 服务消失 / 超时）都走这里：残留一条已结束的进度会让 UI 一直转圈。
+    if ($null -ne $progress -and $sync -is [System.Collections.IDictionary]) { $sync.stopProgress = $null }
   }
-  # 收尾补一次：剩余不足一格时旧实现直接 break，会漏掉「服务恰好在最后一刻停了」。
-  # 还剩多少就给多少（至少 sliceFloor），仍然落在总预算内。
-  $tail = [int]($timeoutMs - $sw.ElapsedMilliseconds)
-  if ($tail -ge $sliceFloor) {
-    $st = Get-SvcStateQuiet $n ([int][Math]::Min($capMs, $tail))
-    if ($st -eq 'Stopped') { return $true }
-    if (-not $st) {
-      $tail2 = [int]($timeoutMs - $sw.ElapsedMilliseconds)
-      if ($tail2 -ge $sliceFloor) {
-        $code = Get-ServiceQueryCode $n ([int][Math]::Min($capMs, $tail2))
-        if ($code -in 1060,1072) { return $true }
-      }
-    }
-  }
-  $false
 }
 
 # sc.exe / NSSM 退出码 → 中文文案（单一映射源）。

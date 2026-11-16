@@ -26,6 +26,67 @@ function Update-CardAutomationName($card){
   } catch {}
 }
 
+# 停止/重启进度条的控件模板：WPF 默认模板是带高光与动画的绿色棒，跟本项目扁平静面色系冲突，
+# 这里换成「圆角轨道 + 圆角填充」两段 Border。PART_Track / PART_Indicator 是 ProgressBar 的
+# 契约名字——WPF 自己按 Value/Minimum/Maximum 算 PART_Indicator 宽度，不用手量 ActualWidth。
+# 模板只解析一次并 Seal，之后所有卡片共享同一份。
+function Get-StopBarTemplate {
+  if ($script:StopBarTemplate) { return $script:StopBarTemplate }
+  $xaml = @"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 TargetType="ProgressBar">
+  <Border x:Name="PART_Track" CornerRadius="2" Background="{TemplateBinding Background}">
+    <Border x:Name="PART_Indicator" HorizontalAlignment="Left" CornerRadius="2" Background="{TemplateBinding Foreground}"/>
+  </Border>
+</ControlTemplate>
+"@
+  $tpl = [System.Windows.Markup.XamlReader]::Parse($xaml)
+  if (-not $tpl.IsSealed) { $tpl.Seal() }
+  $script:StopBarTemplate = $tpl
+  $tpl
+}
+
+# 取 $script:sync.stopProgress 的快照（poll 侧生产：name / elapsedMs / totalMs，等待结束置 $null）。
+# 卡片侧只消费不生产。形状不对（缺字段、值不可转数字）一律当「没有」：这函数每帧都跑，
+# 一条脏数据不能带崩整屏刷新。
+function Get-StopProgressSnapshot {
+  $sp = $null
+  if ($script:sync) { try { $sp = $script:sync['stopProgress'] } catch { $sp = $null } }
+  if (-not $sp) { return $null }
+  if ($sp -is [System.Collections.IDictionary]) {
+    if (-not ($sp.Contains('name') -and $sp.Contains('elapsedMs') -and $sp.Contains('totalMs'))) { return $null }
+    return $sp
+  }
+  $props = $sp.PSObject.Properties
+  if (-not ($props['name'] -and $props['elapsedMs'] -and $props['totalMs'])) { return $null }
+  $sp
+}
+
+# 每帧：把等待进度写进卡片上的细进度条（0..1）。只认 name 与本卡服务名一致的快照，
+# 否则同屏多张卡会同时长出同一条进度（串台）。
+# totalMs 缺失/非正时**隐藏**而不是按 1s 兜底：总时长未知时兜底会画出一条 1 秒就满格、
+# 一直挂到超时才消失的假进度，比没有更误导；隐藏即退回原来的纯文字提示。
+function Update-CardStopProgress($card) {
+  if (-not $card -or -not $card.StopBar) { return }
+  $bar = $card.StopBar
+  $show = $false
+  $sp = Get-StopProgressSnapshot
+  if ($sp -and [string]$sp.name -eq [string]$card.SvcName) {
+    $total = 0.0; $elapsed = 0.0
+    try { $total = [double]$sp.totalMs; $elapsed = [double]$sp.elapsedMs } catch { $total = 0.0 }
+    if ($total -gt 0) {
+      $ratio = $elapsed / $total
+      # 夹在 0..1：时钟抖动或预算中途改小都可能让 elapsed 越界，越界值不能漏进控件
+      if ($ratio -lt 0) { $ratio = 0.0 } elseif ($ratio -gt 1) { $ratio = 1.0 }
+      $bar.Value = $ratio
+      $show = $true
+    }
+  }
+  # 无数据时 Collapsed：不占位，卡片不因缺数据而抖动
+  $bar.Visibility = if ($show) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+}
+
 # 置过渡态：转琥珀（Busy 语义色）、禁用按钮、记命令纪元。启停与删除共用。§Set-CardTransition
 function Set-CardTransition($card, [string]$state, [int]$epoch, [datetime]$at){
   # 这里**故意**无条件覆盖 PrevST：restart 的启动阶段失败时，停止已经执行过了，
@@ -77,6 +138,9 @@ function Update-CardClock($card, [datetime]$now) {
   }
   $base = if ($null -ne $card.LblUpBase) { [string]$card.LblUpBase } else { '' }
   $card.LblUp.Text = $base + $suffix
+  # 进度条与时长后缀同源同频：Update-CardClock 由每帧 tick（Update-StatusTick）逐卡调用，
+  # 顺手在这里更新进度条即可——不新起定时器，也不做任何 Dispatcher.Invoke 阻塞调用。
+  Update-CardStopProgress $card
 }
 
 # 过渡阈值：per-service 覆盖优先，缺省回落全局。两处共用，免得改判据只改一边。
@@ -111,6 +175,35 @@ function Update-CardButtons($card){
   $card.ReadyToToggle = Test-CardCanStop $card.ST
   $card.Btn.IsEnabled = Test-CardCanStart $card.ST
   if ($card.BtnStop) { $card.BtnStop.IsEnabled = $card.ReadyToToggle }
+}
+
+# 刷新常驻右键菜单：只改状态、不重建。菜单在 New-Card 里建一次挂到 Border 上（旧实现每次右键
+# 都 New 一套 ContextMenu + MenuItem，从不释放）。调用点：ContextMenuOpening、Open-CardContextMenu。
+# 只跟两处真实状态走：面板项复用卡片按钮的 URL 可用性（同源，不另算一套）；「重试保存清单」只有
+# 待保存卡才有——建卡时不是待保存卡，菜单里没有这一项，进了待保存态再补上（卡片红字把用户指向它）。
+# start/stop/restart 一律保持可用：右键是逃生口，按状态置灰会把 StopPending 时的唯一入口锁死
+# （PROJECT.md 已知限制里承诺过），所以这里不跟 Test-CardCanStart/Stop 的门闩走。
+function Update-CardMenuState($card){
+  if (-not $card) { return }
+  $ctx = $card.ContextMenu
+  if (-not $ctx) { return }
+  $hasRetry = $false
+  foreach ($mi in $ctx.Items) {
+    $act = if ($mi.Tag -and $mi.Tag.act) { [string]$mi.Tag.act } else { '' }
+    if ($act -eq 'open') { $mi.IsEnabled = [bool]$card.OpenBtn.IsEnabled }
+    elseif ($act -eq 'retry-save') { $hasRetry = $true }
+  }
+  if ($card.PendingSave -and -not $hasRetry) {
+    $miRetry = New-Object System.Windows.Controls.MenuItem -Property @{ Header='重试保存清单'; Tag=@{act='retry-save'} }
+    $miRetry.Add_Click({ Invoke-RetrySaveSvc })
+    [void]$ctx.Items.Add($miRetry)
+  }
+  elseif (-not $card.PendingSave -and $hasRetry) {
+    # 重试保存成功后卡片回到常规态：条目撤掉，形态与 New-CardContextMenu 保持一致。
+    foreach ($mi in @($ctx.Items)) {
+      if ($mi.Tag -and $mi.Tag.act -eq 'retry-save') { [void]$ctx.Items.Remove($mi) }
+    }
+  }
 }
 
 # 失败/超时逃生时放回确定终态并解封按钮。不能复用方向推导：失败时状态没变，要的是回到原样。§Set-CardRollback
@@ -305,6 +398,16 @@ function New-Card([string]$name, $info){
   $lblUp=New-Object System.Windows.Controls.TextBlock -Property @{Text='正在获取服务状态'; FontFamily=$script:cjkFont; FontSize=12; Foreground=$script:T.Dim; Margin='19,4,0,0'; TextTrimming='CharacterEllipsis'}
   [void]$stateLine.Children.Add($dot); [void]$stateLine.Children.Add($lblSt)
   [void]$state.Children.Add($stateLine); [void]$state.Children.Add($lblUp)
+  # 停止/重启的确定进度条：放在副标题正下方，也就是状态文字那块（过渡态区域），
+  # 不另起一行也不改行高——它属于第 2 行（*=伸缩行），显隐只挤压该行留白，卡片总高不变。
+  # 4px、圆角、前景用现有强调色；无 stopProgress 时 Collapsed（不占位）。
+  $stopBar=New-Object System.Windows.Controls.ProgressBar -Property @{
+    Height=4; Minimum=0; Maximum=1; Value=0; Margin='19,7,0,0'
+    Foreground=$script:T.BrushAccent; Background=$script:T.CardBrd
+    BorderThickness=0; Focusable=$false; Visibility='Collapsed'
+  }
+  $stopBar.Template = Get-StopBarTemplate
+  [void]$state.Children.Add($stopBar)
   [void]$grid.Children.Add($state); [System.Windows.Controls.Grid]::SetRow($state,2)
 
   $actions=New-Object System.Windows.Controls.Grid
@@ -358,6 +461,8 @@ function New-Card([string]$name, $info){
     # per-service 过渡态超时（services.json 的 toggleTimeoutMs），缺省用全局
     ToggleTimeoutMs=$(Resolve-ToggleTimeoutMs $info)
     Dot=$dot; LblSt=$lblSt; LblUp=$lblUp; Btn=$btn; BtnStop=$btnStop
+    # 过渡态区域的停止进度条（数据来自 $sync.stopProgress，见 Update-CardStopProgress）
+    StopBar=$stopBar
     # 失败/待保存提示条与它的数据；Stale 标记陈旧样本，Offline 标记后台已死（拒绝再应用结果）。
     LblErr=$lblErr; LastError=$null; Stale=$false; PendingSave=$false; Offline=$false
     PortText=$portText; Endpoint=$endpoint; OpenBtn=$open
@@ -373,13 +478,11 @@ function New-Card([string]$name, $info){
   $btnStop.Tag = $border
   $btnStop.Add_Click({ Invoke-CardAction $this.Tag 'stop' })
 
-  # 右键菜单：鼠标右键与键盘 Shift+F10 / Apps 共用一份构造，避免两条路径各建一套后漂移。
-  $border.Add_MouseRightButtonDown({
-    param($s,$e)
-    $ctx = New-CardContextMenu $s
-    $ctx.IsOpen = $true
-    $e.Handled = $true
-  })
+  # 右键菜单：建卡时构造一次并挂到 Border，右键走 WPF 默认弹出。旧写法每次右键都 New 一套
+  # ContextMenu + 8 个 MenuItem 且从不释放——常驻几天，右键多少次就漏多少套。
+  # 状态刷新在 ContextMenuOpening 里做（Update-CardMenuState）；鼠标右键与键盘 Shift+F10 / Apps 共用这一份。
+  $border.ContextMenu = New-CardContextMenu $border
+  $border.Add_ContextMenuOpening({ param($s) Update-CardMenuState $s })
 
   # 键盘可达性：Enter = 主方向动作（与双击同一条 Invoke-CardToggle 路径，只换 source 文案）；
   # Shift+F10 / Apps = 右键菜单。焦点在卡片按钮上时按钮自己处理 Enter/Tab，不进这两个分支。
@@ -400,7 +503,8 @@ function New-Card([string]$name, $info){
   $border
 }
 
-# 构造卡片右键菜单（不打开）。鼠标与键盘两条入口共用，菜单内容只有这一份。
+# 构造卡片右键菜单（不打开）。建卡时一次、之后复用（鼠标右键走 WPF 默认弹出，键盘走
+# Open-CardContextMenu），菜单内容只有这一份；状态变化由 Update-CardMenuState 就地刷新。
 function New-CardContextMenu($card){
   $n = $card.SvcName
   $ctx = New-Object System.Windows.Controls.ContextMenu
@@ -436,17 +540,20 @@ function New-CardContextMenu($card){
   # 待保存卡自带恢复入口：卡片红字写着「右键重试保存清单」，这里就必须真有这一项，
   # 否则提示把用户指向一个不存在的菜单。
   if ($card.PendingSave) {
-    $miRetry = New-Object System.Windows.Controls.MenuItem -Property @{ Header='重试保存清单' }
+    # Tag 标身份：常驻菜单在卡片后来才进待保存态时，Update-CardMenuState 靠它补/撤这一项。
+    $miRetry = New-Object System.Windows.Controls.MenuItem -Property @{ Header='重试保存清单'; Tag=@{act='retry-save'} }
     $miRetry.Add_Click({ Invoke-RetrySaveSvc })
     [void]$ctx.Items.Add($miRetry)
   }
   $ctx
 }
 
-# 键盘入口弹菜单：没有鼠标位置可依，锚在卡片上沿。
+# 键盘入口弹菜单：没有鼠标位置可依，锚在卡片上沿。用卡片上常驻的那份，不另建。
 function Open-CardContextMenu($card){
   if (-not $card) { return }
-  $ctx = New-CardContextMenu $card
+  if (-not $card.ContextMenu) { $card.ContextMenu = New-CardContextMenu $card }
+  Update-CardMenuState $card
+  $ctx = $card.ContextMenu
   $ctx.PlacementTarget = $card
   $ctx.Placement = [System.Windows.Controls.Primitives.PlacementMode]::Bottom
   $ctx.IsOpen = $true

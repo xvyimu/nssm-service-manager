@@ -75,7 +75,7 @@ function Invoke-ServiceStart([string]$n,[string]$fail='启动失败'){
     if ($real -in @('StartPending','Running')) { return $true }
     return (Invoke-Sc 'start' $n $fail)           # 取退出码文案，比内层英文异常友好
   } finally {
-    if ($svc) { try { $svc.Dispose() } catch {} }
+    if ($svc) { try { $svc.Dispose() } catch { Write-Verbose "lib/poll.ps1: 启动失败后释放服务对象失败，忽略：$($_.Exception.Message)" } }
   }
 }
 
@@ -257,8 +257,14 @@ while(-not $sync.stop){
       $tcp=[System.Net.Sockets.TcpClient]::new()
       try {
         $iar=$tcp.BeginConnect('127.0.0.1',$p,$null,$null)
-        if($iar.AsyncWaitHandle.WaitOne($tcpMsLocal,$false)){ try{$tcp.EndConnect($iar);$listen=$true}catch{} }
-      } finally { try{$tcp.Close()}catch{} }
+        if($iar.AsyncWaitHandle.WaitOne($tcpMsLocal,$false)){
+          # 空 catch 有意：端口没人听时 EndConnect 必然抛，这是常态不是异常（每轮探测都走，加日志会刷屏）
+          try{$tcp.EndConnect($iar);$listen=$true}catch{}
+        }
+      } finally {
+        # 空 catch 有意：Close 失败只影响本次探测的 socket 回收，不影响判定（每轮探测都走，加日志会刷屏）
+        try{$tcp.Close()}catch{}
+      }
 
       # 已停止服务的探测只回答「端口是否被别的进程占着」，不参与健康判定
       if($_.stopped){ return [pscustomobject]@{n=$n;h=($(if($listen){'端口被占用'}else{''}));stopped=$true} }

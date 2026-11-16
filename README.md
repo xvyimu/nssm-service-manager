@@ -285,7 +285,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 ## 测试与截图
 
 ```powershell
-pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 自动收集 tests/test-*.ps1（当前 33 项）
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 自动收集 tests/test-*.ps1（当前 35 项）
 pwsh -NoProfile -File tests/analyze.ps1              # PSScriptAnalyzer（Error/Warning 必须为 0）
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-tmp/，已 git 忽略）
@@ -327,6 +327,8 @@ pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-t
 | `test-remove-save-fail` | 删除后保存失败回滚、待保存态提示、右键菜单项随状态启用/禁用 |
 | `test-shutdown` | 关窗收尾：后台 runspace 3 秒内停、日志落盘、重复调用幂等 |
 | `test-webview` | token 校验、快照/HTML 转义、loopback 服务器 200/403、非 GET 拒绝、端口占用报错 |
+| `test-stop-progress-ui` | 卡片过渡区的停止进度条：name 匹配才显示、比例夹取 0..1、模板必须含 ``PART_Indicator``、无数据不占位 |
+| `test-empty-catch` | 空 catch 数量 ≤6 且每处上一行必须是「# 空 catch 有意：」注释；tick 里的清单 stat 节流 5s（首帧立即查） |
 | `test-wait-stopped-budget` | `Wait-Stopped` 总耗时受预算封顶：多轮切片 / 小预算（100/300/1200ms，阈值 budget+150）/ 收尾补查 / 阶段提示只写一条四段；去掉预留、收尾块或提示去重即红 |
 | `test-security-verdicts` | ACL 三态（是/否/未知）在判据层与汇总层用行为断言（注入读不到 / 抛错 / 可写三种桩，并断言 Unknown 的 Key/Path/Reason/Detail）；`lib/add-svc.ps1` 用 AST 断言调用必须落在 `Add-SvcFromCli` 函数体内、且 `$notice` 由判定结果派生；单独点源 add-svc 时的「判据未加载」降级另用子进程断言 |
 | `test-probe-static` | `tests/probe-1053-timing.ps1` 不得硬编码 45000/12000，阈值必须取自 `lib/config.ps1`（探针不进 run-all，靠这条守漂移） |
