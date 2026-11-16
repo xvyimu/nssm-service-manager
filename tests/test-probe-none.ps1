@@ -5,6 +5,7 @@
 #   - card.ps1 把这条提示渲染成副标题，而不是继续说「随时可以启动」。
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
+. (Join-Path $RepoRoot 'lib/config.ps1')
 . (Join-Path $RepoRoot 'lib/util.ps1')
 . (Join-Path $PSScriptRoot 'test-helpers.ps1')
 

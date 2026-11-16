@@ -4,6 +4,7 @@
 # 下一次保存把原文件整份覆盖成 `{}`（清单不在 git 里，覆盖后无法恢复）。
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
+. (Join-Path $RepoRoot 'lib/config.ps1')
 . (Join-Path $RepoRoot 'lib/util.ps1')
 . (Join-Path $PSScriptRoot 'test-helpers.ps1')
 

@@ -52,9 +52,7 @@ function Update-FreshnessPill {
       # 那是在替不可信的数据背书。颜色已经转琥珀，文案也必须说实话。
       "$head · 更新时间在未来（检查系统时钟）"
     } else {
-      $secs = [int]$delta.TotalSeconds
-      if ($secs -lt 0) { $secs = 0 }
-      $ageText = if ($secs -lt 60) { "${secs}s" } elseif ($secs -lt 3600) { "$([int][math]::Floor($secs/60)) 分钟" } else { "$([int][math]::Floor($secs/3600)) 小时" }
+      $ageText = Format-Duration $newest $now -Style Short
       "$head · 更新于 $ageText 前"
     }
   } else {

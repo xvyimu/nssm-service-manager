@@ -16,7 +16,7 @@ $script:svc = [ordered]@{
   'ServiceF' = @{ port = 9000;  url = 'http://127.0.0.1:9000/health' }
 }
 $script:sync = @{ wake = [Threading.AutoResetEvent]::new($false) }
-function Stop-Background {}
+. (Join-Path $PSScriptRoot 'test-helpers.ps1')   # 共用空桩（Write-CrashLog / Stop-Background），不要在渲染脚本里各写一份
 
 $win = New-MainWindow
 try {

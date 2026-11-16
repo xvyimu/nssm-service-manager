@@ -9,6 +9,7 @@ $cfg=Join-Path $RepoRoot 'services.json'
 # 存在则记录哈希核对未被改动；不存在则结束时确认仍不存在。
 $cfgExisted = Test-Path -LiteralPath $cfg
 $before = if ($cfgExisted) { (Get-FileHash -LiteralPath $cfg).Hash } else { $null }
+. (Join-Path $RepoRoot 'lib/config.ps1')
 . (Join-Path $RepoRoot 'lib/util.ps1')
 . (Join-Path $RepoRoot 'lib/add-svc.ps1')
 . (Join-Path $PSScriptRoot 'test-helpers.ps1')

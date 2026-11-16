@@ -15,6 +15,10 @@ Assert ((Format-Duration $now.AddSeconds(-60)  $now) -eq '1分0秒')      '整�
 Assert ((Format-Duration $now.AddSeconds(-90)  $now) -eq '1分30秒')     '1 分 30 秒'
 Assert ((Format-Duration $now.AddSeconds(-3600) $now) -eq '1小时0分')   '整小时边界'
 Assert ((Format-Duration $now.AddSeconds(-3900) $now) -eq '1小时5分')   '1 小时 5 分'
+# Short 样式 = 状态栏药丸文案；XAML 不再自己拼串，这里锁边界
+Assert ((Format-Duration $now.AddSeconds(-90)   $now -Style Short) -eq '1 分钟')  'Short 90 秒应为 1 分钟'
+Assert ((Format-Duration $now.AddSeconds(-7200) $now -Style Short) -eq '2 小时')  'Short 7200 秒应为 2 小时'
+Assert ((Format-Duration $now.AddSeconds(5)     $now -Style Short) -eq '0s')      'Short 负值夹成 0s'
 Assert ((Format-Duration $now.AddSeconds(10)   $now) -eq '')            '负值（时钟回拨）应返回空串'
 Write-Output 'PASS: Format-Duration 的秒/分/时边界与负值。'
 

@@ -4,6 +4,7 @@
 # 当前日志 `MySvc.err-20260101.out.log` 的 BaseName 也命中，服务停着时当前日志被真删。
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
 $ErrorActionPreference = 'Stop'
+. (Join-Path $RepoRoot 'lib/config.ps1')
 . (Join-Path $RepoRoot 'lib/util.ps1')
 . (Join-Path $PSScriptRoot 'test-helpers.ps1')
 

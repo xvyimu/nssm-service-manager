@@ -4,6 +4,7 @@ $ErrorActionPreference='Stop'
 $cfg=Join-Path $RepoRoot 'services.json'
 $cfgExisted = Test-Path -LiteralPath $cfg
 $before = if ($cfgExisted) { (Get-FileHash -LiteralPath $cfg).Hash } else { $null }
+. (Join-Path $RepoRoot 'lib/config.ps1')
 . (Join-Path $RepoRoot 'lib/util.ps1')
 . (Join-Path $RepoRoot 'lib/add-svc.ps1')
 . (Join-Path $RepoRoot 'lib/logview.ps1')
