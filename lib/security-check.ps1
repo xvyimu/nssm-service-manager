@@ -84,3 +84,13 @@ function Show-SecurityCheck([string]$n){
   $msg = "$n`n`n路径: $path`n`n引号加固: $qTxt`n目录: $dir`n目录 ACL 过宽: $permissive"
   [System.Windows.MessageBox]::Show($msg,"$n 安全检查",'OK',$(if($quoted -and $permissive -eq '否'){'Information'}else{'Warning'})) | Out-Null
 }
+
+# exe 路径 → 所在目录的三态判定（LocalSystem 场景的提权面）。空路径或判据未加载都算「无法定位」，
+# 不折成「否」——把「没检查」说成「安全」正是这条链路反复出问题的地方。放这里而不是 dialogs：
+# CLI 的 -Add 也要用，不该为了一个判定去加载对话框模块。
+function Get-ExeDirVerdict([string]$exe){
+  if (-not $exe) { return '未知（无法定位目录）' }
+  if (-not (Get-Command Get-DirAclVerdict -ErrorAction SilentlyContinue)) { return '未知（无法定位目录）' }
+  $dir = try { Split-Path $exe -Parent -ErrorAction Stop } catch { '' }
+  Get-DirAclVerdict $dir
+}

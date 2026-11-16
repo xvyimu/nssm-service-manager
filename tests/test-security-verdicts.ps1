@@ -56,12 +56,27 @@ try {
   Assert ($r.Unknown.Count -eq 1 -and $r.Unknown[0].Reason -eq 'unresolved' -and $r.Unknown[0].Path -eq '') "未解析路径的 Reason 必须是 unresolved，got $($r.Unknown[0].Reason)"
 } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -EA SilentlyContinue }
 
-# ---- 3. 入口脚本必须走这个函数，不得再内联判定（断言看剥掉注释后的代码） ----
-$guiRaw = Get-Content (Join-Path $RepoRoot 'service-manager-gui.ps1') -Raw -Encoding utf8
-$gui = Get-SourceCodeOnly $guiRaw
-Assert ($gui -match '(?m)^\$verdicts\s*=\s*Get-SecurityVerdicts\s+\$securityTargets') 'GUI 必须有真实的 Get-SecurityVerdicts 调用行（注释里的不算）'
-Assert ($gui -notmatch '\$verdict\s*=\s*try') 'GUI 不得再内联 verdict 判定'
-Assert ($gui -notmatch 'Get-Acl') '三态只在 lib 里：入口剥掉注释后不得再出现 Get-Acl'
-Assert ($gui -match 'securityUnknown') '入口仍要消费未知项'
+# ---- 3. 入口必须走这个函数：用 AST 认命令调用，不看字面量（here-string / 注释都骗不过） ----
+$guiPath = Join-Path $RepoRoot 'service-manager-gui.ps1'
+$tk = $null; $parseErrors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($guiPath, [ref]$tk, [ref]$parseErrors)
+Assert ($parseErrors.Count -eq 0) "入口脚本必须可解析，got $($parseErrors.Count) 个语法错误"
+$aclCalls = $ast.FindAll({
+    param($a) $a -is [System.Management.Automation.Language.CommandAst] -and $a.GetCommandName() -eq 'Get-Acl'
+  }, $true)
+Assert ($aclCalls.Count -eq 0) '三态只在 lib 里：入口的 AST 里不得出现 Get-Acl 命令调用'
+# here-string 里的同样字串不是 CommandAst，按命令调用计数即可——正则做不到这一点。
+$verdictCalls = $ast.FindAll({
+    param($a) $a -is [System.Management.Automation.Language.CommandAst] -and $a.GetCommandName() -eq 'Get-SecurityVerdicts'
+  }, $true)
+Assert ($verdictCalls.Count -ge 1) '入口必须真的调用 Get-SecurityVerdicts（放进 here-string 或注释里不算）'
+$guiCode = Get-SourceCodeOnly (Get-Content $guiPath -Raw -Encoding utf8)
+Assert ($guiCode -match 'securityUnknown') '入口仍要消费未知项'
 
+# ---- 4. 未知分支要带出原因：对话框与 CLI 都不能统一说成「读不到 ACL」 ----
+$dlgCode = Get-SourceCodeOnly (Get-Content (Join-Path $RepoRoot 'lib\dialogs.ps1') -Raw -Encoding utf8)
+Assert ($dlgCode -notmatch '读不到可执行文件所在目录的 ACL') '未知分支不得把三种原因统一说成「读不到 ACL」'
+Assert ($dlgCode -match '\$exeDirVerdict' -and $dlgCode -match '无法判定') '未知分支要把判定结果（含原因）带进提示'
+$cliCode = Get-SourceCodeOnly (Get-Content (Join-Path $RepoRoot 'lib\add-svc.ps1') -Raw -Encoding utf8)
+Assert ($cliCode -match 'Get-ExeDirVerdict') 'CLI 的 -Add 也要看 exe 目录的 ACL，否则 scoop 目录注册的服务无人提示'
 Write-Output 'PASS: ACL 三态唯一实现在 Get-DirAclVerdict（未解析/不存在/读不到都带原因），汇总层给对象化未知名，入口与对话框都走这一份。'

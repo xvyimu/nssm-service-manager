@@ -3,12 +3,20 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
+## [1.0.16] - 2026-11-16
+
+- **CLI 提权面提示**：`-Add` 也检查 exe 所在目录，可写 / 无法判定各一行非阻断提示（GUI 是模态警告，CLI 不弹窗、不改退出码）。
+- **未知分支带出原因**：对话框不再把「目录不存在 / 定位不到 / 读不到 ACL」统一说成「读不到 ACL」，直接用判定文案，异常原文可见。
+- **入口断言改 AST**：不再用正则匹配源码行——here-string 里放调用、注释里写同样字串都骗不过；同时断言入口 AST 里没有 `Get-Acl`。
+- **史实修正**：`CHANGELOG` 与 NOTES 里「`Test-DirAclPermissive` 的布尔返回值废除」不成立——该函数自引入起即三态；本次只是把目录级三态抽成 `Get-DirAclVerdict`。
+
 ## [1.0.15] - 2026-11-16
 
 三态判定收口到单一实现，未知态不再退化成「安全」：
 
 - **判据收敛**：三态判定（可写 / 不可写 / 无法判定）只保留 `Get-DirAclVerdict` 一份实现，
-  `Test-DirAclPermissive` 的布尔返回值废除；调用方一律取三态，没人再把「未知」折成「否」。
+  `Test-DirAclPermissive` 自引入起即返回三态；本次只是把「目录级三态」（定位不到 / 不存在 / 读不到 ACL 的措辞）
+  抽成 `Get-DirAclVerdict`，并让 GUI 侧三个消费点都取三态。CLI 的 `-Add` 在 1.0.16 补上。
 - **未知态结构化**：`Get-SecurityVerdicts` 的 Unknown 从字符串改为对象（`Key` / `Path` / `Reason` / `Detail`），
   `Reason` 取 `unresolved|missing|unreadable`，异常原因不再只留在 crash log 里。
 - **消费端不再 fail-open**：`dialogs` 的 exe 目录判定改用 `Get-ExeDirVerdict`，未知单独提示

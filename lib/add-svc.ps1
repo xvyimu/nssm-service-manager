@@ -28,6 +28,14 @@ function Add-SvcFromCli([string]$spec){
   # 校验顺序：名称 → 可执行文件 → 端口 → 重名（与 GUI 同，抽进 Test-SvcInput）
   $bad = Test-SvcInput $n $p $exe $script:svc $probe
   if($bad){ Write-Host $bad.msg; exit 1 }
+  # CLI 不走对话框：提权面用一行非阻断提示代替 GUI 的模态警告。不弹窗、不改退出码，但不静默。
+  if (Get-Command Get-ExeDirVerdict -ErrorAction SilentlyContinue) {
+    $exeVerdict = Get-ExeDirVerdict $exe
+  } else {
+    $exeVerdict = '未知（判据未加载）'
+  }
+  if($exeVerdict -eq '是'){ Write-Host "警告：$exe 所在目录可被普通用户写入，以 LocalSystem 运行时该 exe 可被替换；建议移到仅管理员可写的目录。" }
+  elseif($exeVerdict -like '未知*'){ Write-Host "提示：无法判定 $exe 所在目录的权限（$exeVerdict）。这不等于安全，请人工确认。" }
   # 先按分号切再按逗号切：NO_PROXY 的多地址保留为一条，A=1,B=2 拆成两条。
   $envPairs = @(ConvertTo-EnvPairs $envRaw ';' | ForEach-Object { ConvertTo-EnvPairs $_ ',' })
   try {
