@@ -150,6 +150,8 @@ function Update-StatusTick {
   # 而状态栏还在每 4 秒打「状态自动刷新」，看起来是活的——用户只能杀进程重开。
   if ($script:bgHandle -and $script:bgHandle.IsCompleted -and -not $script:bgDeathReported) {
     $script:bgDeathReported = $true
+    # 后台死了没人再推进度：清空共享槽位，避免冻结的半截进度条一直转到超时逃生。
+    if ($script:sync -is [System.Collections.IDictionary]) { $script:sync['stopProgress'] = $null }
     try { Write-CrashLog 'Background runspace completed unexpectedly' } catch { Write-Verbose "ui-status.ps1: 记录后台 runspace 异常结束失败，忽略：$($_.Exception.Message)" }
     Set-StatusMessage '后台已停止响应，状态不可用；请关闭重开'
     foreach ($card in @($script:cards.Values)) {

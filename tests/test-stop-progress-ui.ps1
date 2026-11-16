@@ -104,3 +104,31 @@ try {
 } finally {
   $win.Close()
 }
+
+# ---- GUI 接线判据 + 生产端不凭空加键 ----
+# 上面对进度条消费端做足了用例，但若 GUI 入口的 $script:sync 字面量没有 stopProgress 键，
+# Wait-Stopped 永远不发布进度——两组用例各自为绿，真实 GUI 里却永远看不到进度条。
+# 这里把「GUI 到底有没有这个键」变成源码级机器判据，再验生产端缺键时不凭空加键。
+$guiSrc = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'service-manager-gui.ps1') -Encoding utf8
+$guiCode = Get-SourceCodeOnly $guiSrc
+$m = [regex]::Match($guiCode, '(?s)\$script:sync\s*=\s*\[hashtable\]::Synchronized\(@\{(.*?)\r?\n\}\)')
+Assert $m.Success '在 gui 源码里找不到 $script:sync 字面量（选择器失效，断言形同虚设）。'
+# 键名按「行首或分号之后」抓：字面量里有 `svc = ...; queue = ...` 这种一行多键的写法。
+$syncKeys = @([regex]::Matches($m.Groups[1].Value, '(?m)(?:^|;)\s*([A-Za-z_]\w*)\s*=') | ForEach-Object { $_.Groups[1].Value })
+# 自检：选择器本身要能抓到已知邻居键，否则「恰好抓到 stopProgress」可能只是巧合。
+Assert ($syncKeys -contains 'waitStoppedTimeoutMs' -and $syncKeys -contains 'probeThrottleLimit') "sync 键名提取选择器失效，实际键：$($syncKeys -join ',')"
+Assert ($syncKeys -contains 'stopProgress') "GUI 的 `$script:sync 字面量必须含 stopProgress 键（否则进度条永远不显示）；实际键：$($syncKeys -join ',')"
+Write-Output "PASS: GUI 的 `$script:sync 字面量含 stopProgress（源码级判据，共 $($syncKeys.Count) 键）。"
+
+# 生产端不凭空加键：用**不带**该键的同步哈希表跑 Wait-Stopped，必须不抛错、不补键。
+. (Join-Path $RepoRoot 'lib/svc-common.ps1')
+$script:waitScans = 0
+function Get-SvcStateQuiet([string]$name, [int]$timeoutMs = 0){ $script:waitScans++; 'Running' }
+function Get-ServiceQueryCode([string]$name, [int]$timeoutMs = 0){ 0 }
+$bareSync = @{ waitStoppedPollMs = 30; svcStateTimeoutMs = 50; waitStoppedNoticeMs = 600000 }
+$script:sync = $bareSync
+$rBare = Wait-Stopped 'NoKeySvc' -TimeoutMs 150
+Assert ($rBare -eq $false) '无 stopProgress 键时等待行为应不变（超时应返回 false）。'
+Assert (-not $bareSync.ContainsKey('stopProgress')) '没有该键时 Wait-Stopped 不该凭空加键。'
+Assert ($script:waitScans -ge 1) '没观察到等待轮询（用例没真正跑起来）。'
+Write-Output "PASS: 缺 stopProgress 键时 Wait-Stopped 静默跳过（$($script:waitScans) 次轮询，未加键）。"

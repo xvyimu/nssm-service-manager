@@ -258,6 +258,9 @@ $script:sync = [hashtable]::Synchronized(@{
   httpTimeoutMs        = [int]$script:config.HttpTimeoutMs
   waitStoppedTimeoutMs = [int]$script:config.WaitStoppedTimeoutMs
   waitStoppedNoticeMs  = [int]$script:config.WaitStoppedNoticeMs
+  # 停止进度共享槽位：runspace 侧 Wait-Stopped 生产（name/elapsedMs/totalMs），UI 侧卡片每帧消费。
+  # 必须在字面量里预置这个键——Wait-Stopped 只在键已存在时发布进度，缺键进度条永远长不出来。
+  stopProgress         = $null
   extCommandTimeoutMs  = [int]$script:config.ExtCommandTimeoutMs
   svcStateTimeoutMs    = [int]$script:config.SvcStateTimeoutMs
   scmPendingStates     = [string[]]$script:SCM_PENDING_STATES

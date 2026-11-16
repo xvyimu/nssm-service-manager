@@ -12,22 +12,29 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
 # ---- 1. 空 catch：数量上限 + 每处带标记注释 ----
+# 只扫 lib/*.ps1 + 入口，不扫 tests/scripts：测试里的空桩 catch（替身函数吞异常）是夹具技巧，
+# 不是「生产路径刻意吞错」，纳入会把门禁变成噪音；这里守的是产品代码的静默失败。
 $marker = '# 空 catch 有意：'
 $sources = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'lib') -Filter '*.ps1' -File | Sort-Object Name)
 $sources += @(Get-Item -LiteralPath (Join-Path $RepoRoot 'service-manager-gui.ps1'))
 $emptyTotal = 0
 $unmarked = @()
 $perFile = @()
+# 跨行判空：`catch { }`、多行 `catch {\n}`、以及「体里只有块注释」`catch { <# ... #> }` 都算空。
+# 原实现只看单行 catch\s*\{\s*\}，把后两种漏成绿灯——空 catch 的门禁不能有这种盲区。
+$emptyCatchRx = '(?s)catch\s*\{\s*(?:<#.*?#>)?\s*\}'
 foreach ($f in $sources) {
-  $lines = @(Get-Content -LiteralPath $f.FullName -Encoding utf8)
+  $text = Get-Content -LiteralPath $f.FullName -Encoding utf8 -Raw
+  $lines = @($text -split "\r?\n")
   $count = 0
-  for ($i = 0; $i -lt $lines.Count; $i++) {
-    if ($lines[$i] -notmatch 'catch\s*\{\s*\}') { continue }
+  foreach ($m in [regex]::Matches($text, $emptyCatchRx)) {
     $count++
+    # 由 match.Index 反推 catch 所在行（1-based）：其前出现的换行数 + 1。
+    $lineNo = ([regex]::Matches($text.Substring(0, $m.Index), "`n").Count) + 1
     # 上一行必须是标记注释；允许中间隔一行空白，隔任何语句都算不合格。
-    $j = $i - 1
+    $j = $lineNo - 2
     if ($j -ge 0 -and [string]::IsNullOrWhiteSpace($lines[$j])) { $j-- }
-    if ($j -lt 0 -or -not $lines[$j].Contains($marker)) { $unmarked += "$($f.Name):$($i + 1)" }
+    if ($j -lt 0 -or -not $lines[$j].Contains($marker)) { $unmarked += "$($f.Name):$lineNo" }
   }
   if ($count) { $perFile += "$($f.Name)=$count" }
   $emptyTotal += $count

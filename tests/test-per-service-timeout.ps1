@@ -431,3 +431,34 @@ $script:sync = @{}
 Write-Output 'PASS: Wait-Stopped skips progress silently without the key / without $sync.'
 
 Write-Output 'PASS: parallel probe block references both timeouts only via $using: (static scan).'
+
+# 8e GUI 形状 sync（含 stopProgress 键）跑 restart：等待期间该键非空、结束后置 null。
+# 用真 runspace（Start-FakePoll）走 poll 的 restart 分支，而不是直调 Wait-Stopped：
+# 验的是「GUI 预置的键 → runspace 生产 → UI 读到非空 → finally 清空」整条链路。
+$workerProg = Start-FakePoll 1 'Running' 0 @{
+  svc = [ordered]@{ Fake0 = @{ port = 0; url = ''; probe = 'none'; waitStoppedTimeoutMs = 400 } }
+  waitStoppedTimeoutMs = 3000; waitStoppedPollMs = 50; svcStateTimeoutMs = 50; waitStoppedNoticeMs = 100000
+  stopProgress = $null
+}
+try {
+  Assert ($workerProg.Sync.probeStarted.WaitOne(3000)) 'Progress worker did not start.'
+  $workerProg.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='restart';e=1})
+  [void]$workerProg.Sync.wake.Set()
+  # 采样：restart 的停止阶段（预算 400ms）里 stopProgress 必须出现非空对象。
+  $sawProgress = $false
+  $deadlineP = [datetime]::UtcNow.AddSeconds(6)
+  $ackP = $null
+  while ([datetime]::UtcNow -lt $deadlineP) {
+    if ($null -ne $workerProg.Sync.stopProgress) { $sawProgress = $true }
+    $x = $null
+    while ($workerProg.Sync.queue.TryDequeue([ref]$x)) { if ($x.done) { $ackP = $x } }
+    if ($ackP) { break }
+    Start-Sleep -Milliseconds 20
+  }
+  Assert ($null -ne $ackP) 'restart 命令没产生回执（后台没跑起来或超时）。'
+  Assert $sawProgress 'restart 等待期间应能读到非空 $sync.stopProgress（GUI 形状 sync 下进度没发布）。'
+  Assert ($null -eq $workerProg.Sync.stopProgress) 'restart 结束后 $sync.stopProgress 必须置 $null（不能残留进度）。'
+  Write-Output 'PASS: GUI 形状 sync 跑 restart：等待期 stopProgress 非空、结束置 $null。'
+} finally {
+  Close-FakePoll $workerProg
+}

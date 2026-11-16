@@ -92,7 +92,12 @@ function Invoke-PendingCommands {
     try {
     switch($act){
       'start'   { $ok=Invoke-ServiceStart $n }
-      'stop'    { $ok=Invoke-Sc 'stop' $n '停止失败' }
+      'stop'    {
+        # 先发 stop，再等 Stopped（≤该服务预算），最后回执：等待期进度条由 Wait-Stopped 发布。
+        if(Invoke-Sc 'stop' $n '停止失败'){
+          if(-not (Wait-Stopped $n -TimeoutMs (Get-WaitStoppedMs $n))) { $ok=$false; $why='停止未在超时内完成' }
+        } else { $ok=$false }
+      }
       'restart' {
         if(-not (Invoke-Sc 'stop' $n '停止失败，重启中断')) { $ok=$false; break }
         # 等不到 Stopped 就不能往下 start：此时 SCM 多半回 1056（已在运行/正在停止），
