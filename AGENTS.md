@@ -38,7 +38,7 @@ lib/                      # 模块（config/theme/util/acl/poll/svc-common/svc-i
 scripts/                  # 独立脚本（deploy-local.ps1 / deploy.cmd / package-release.ps1 / set-service-params-acl.ps1）
 tests/                    # 回归测试（run-all.ps1 汇总；test-*.ps1 单项）
 docs/                     # PROJECT.md（架构与决策）/ HANDOFF.md
-CHANGELOG.md              # 仓根，当前 1.0.10
+CHANGELOG.md              # 分段更新都写这里（当前版本以 VERSION 为准）
 config.example.json       # 配置示例（实配 config.json 已 gitignore）
 services.example.json     # 服务清单示例（实配 services.json 已 gitignore）
 ```

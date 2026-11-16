@@ -206,7 +206,11 @@ foreach ($key in $securityTargets.Keys) {
     if ((Test-Path -LiteralPath $path) -and (Test-DirAclPermissive (Get-Acl -LiteralPath $path -EA Stop)) -eq '是') {
       $script:securityFindings += "$key 可被普通用户写入：$path"
     }
-  } catch {}
+  } catch {
+    # 读不到 ACL ≠ 安全：记一条「无法判定」并进 crash log，避免宽 ACL 目标被静默跳过。
+    $script:securityFindings += "$key 的 ACL 无法读取，判定跳过（$($securityTargets[$key])）"
+    Write-CrashLog "Security: $key 的 ACL 读取失败 — $($_.Exception.Message)"
+  }
 }
 if ($script:securityFindings.Count) {
   $script:securityNotice = "安全姿态：$($script:securityFindings -join '；')。管理员进程会执行这些位置的代码，建议迁到仅管理员可写的目录。"

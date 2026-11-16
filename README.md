@@ -325,6 +325,8 @@ pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-t
 | `test-remove-save-fail` | 删除后保存失败回滚、待保存态提示、右键菜单项随状态启用/禁用 |
 | `test-shutdown` | 关窗收尾：后台 runspace 3 秒内停、日志落盘、重复调用幂等 |
 | `test-webview` | token 校验、快照/HTML 转义、loopback 服务器 200/403、非 GET 拒绝、端口占用报错 |
+| `test-wait-stopped-budget` | `Wait-Stopped` 总耗时受预算封顶：多轮切片 / 小预算（100/300/1200ms）/ 收尾补查三段；去掉预留或收尾块即红 |
+| `test-probe-static` | `tests/probe-1053-timing.ps1` 不得硬编码 45000/12000，阈值必须取自 `lib/config.ps1`（探针不进 run-all，靠这条守漂移） |
 
 NSSM、服务启停、配置保存及菜单的外部操作都用替身，不会注册测试服务或改 `services.json`。真实 UAC、Mica 效果与 NSSM 生命周期需本机交互验证。
 

@@ -3,13 +3,23 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
+## [1.0.12] - 2026-11-16
+
+文档口径与安全自检收口（第 14 轮评审点名的 P3，无行为回归）：
+
+- **安全自检不再吞错**：`service-manager-gui.ps1` 读不到 ACL 时不再 `catch {}` 静默跳过，改为记一条「ACL 无法读取，判定跳过」进 `securityFindings` 与 crash log——宽 ACL 目标不会被无声漏报。
+- 空 catch 计数修正为 54 处（占 52 行），此前按行计写成 53，判据小节自身失准。
+- `AGENTS.md` 去掉硬编码版本指针（写死 1.0.10），改为「以 VERSION 为准」。
+- README 用例表补 `test-wait-stopped-budget` / `test-probe-static` 两行。
+- 修正 1.0.11 小节笔误（`est-poll-commands` → `test-poll-commands`）与一个多余 TAB。
+
 ## [1.0.11] - 2026-11-16
 
-- **CI 判据去耦合**：	est-poll-commands 的空闲派发断言不再依赖全局默认值——夹具显式注入 probeIdleMs = 8000，
+- **CI 判据去耦合**：test-poll-commands 的空闲派发断言不再依赖全局默认值——夹具显式注入 probeIdleMs = 8000，
   断言改为 `< 4000`（注入值的一半），改 config 默认不会让门槛漂移。
 - **v1.0.9 悬空 tag 收口**：该版本的 release 因上面的误红失败、未产出资产。已补一个 **draft + prerelease**
   的 release 记录（写明失败原因、指向 v1.0.10），版本历史不再断档，该构建不发布。
-- **文档补记**：IMPLEMENTATION-NOTES 增加「空 catch 的取舍」，把 53 处静默 catch 按清理 / 可选读取 /
+- **文档补记**：IMPLEMENTATION-NOTES 增加「空 catch 的取舍」，把 54 处静默 catch（占 52 行） 按清理 / 可选读取 /
   已另有提示三类写明判据。
 ## [1.0.10] - 2026-11-16
 
