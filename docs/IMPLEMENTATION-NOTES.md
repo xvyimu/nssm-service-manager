@@ -406,16 +406,33 @@ AbandonedMutexException 等：视为「有实例曾持有」——保守判为�
 安全检查（借鉴 PSSM：路径引号加固 + 目录 ACL 过宽）。纯解析：从 Win32_Service PathName
 提取 exe 目录与引号状态，不碰 UI 也不抛错。
 
-### Test-DirAclPermissive
+### Get-DirAclVerdict
 
+三态判定的**唯一实现**（曾名 `Test-DirAclPermissive`，已改为返回三态而非布尔）。
 判定目录 ACL 是否「过宽」——本机任意标准用户可写。纯函数，不碰 UI（Show-SecurityCheck 会弹框）。
 判据：主体是 Users/Everyone 之一，且权限含 Write/Modify/FullControl。
-传入已读到的 ACL 对象（不在此处 Get-Acl），返回 '是' / '否' / '未知（无法读取 ACL）'。
+入参是目录路径 + 可注入的 `-AclProvider`（默认真读 ACL），返回 '是' / '否' / '未知（…）'。
+目录为空、目录不存在、读 ACL 抛错都归「未知」——不折成「否」。
 
 「宽泛主体」= 本机任意登录用户即可写。Authenticated Users 是最常见的漏判形态
 （目录只对 NT AUTHORITY\Authenticated Users 开放时，任何登录用户可替换 exe → 提权）；
 AppContainer 包 SID（S-1-15-3-*）同理。判据与 set-service-params-acl.ps1 的
 Test-LeakyAce 概念一致，但这里是文件系统 ACL、权限枚举不同，故不共用函数、只对齐主体清单。
+
+### Get-SecurityVerdicts
+
+汇总多个目标的三态判定，入口与测试共用一份；ACL 读取经 `-AclProvider` 注入，
+测试用桩就能覆盖「读不到 / 抛错 / 可写」三种结果，不必靠正则断言入口脚本里的字面量。
+
+- **判据只有一个实现**：单目录的三态永远出自 `Get-DirAclVerdict`（`Test-DirAclPermissive`
+  时代的两态返回值已废除）。这里只做遍历与归类，不另立判据。
+- **Unknown 是对象，不是字符串**：每条含 `Key` / `Path` / `Reason` / `Detail`，
+  `Reason` 取 `unresolved`（路径没解析出来）/ `missing`（路径不存在）/ `unreadable`（读 ACL 抛错）三值，
+  `Detail` 保留原始异常或路径。分开是为了让消费端按原因给不同措辞，也让测试能断言「为什么未知」
+  而不是只断言「有个未知」。
+- **读不到 ACL 不能当安全**：把「没检查」印成「检查过没问题」是最坏的失败方式——
+  目录真被人改成用户可写时，报告反而显示一切正常。故三态一律保留到 UI：可写建议迁移，
+  无法判定只请人工确认权限（不迁移，避免把「读不到」误当「可写」去动系统目录）。
 
 ## poll.ps1
 

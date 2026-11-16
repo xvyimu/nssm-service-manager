@@ -3,6 +3,20 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
+## [1.0.15] - 2026-11-16
+
+三态判定收口到单一实现，未知态不再退化成「安全」：
+
+- **判据收敛**：三态判定（可写 / 不可写 / 无法判定）只保留 `Get-DirAclVerdict` 一份实现，
+  `Test-DirAclPermissive` 的布尔返回值废除；调用方一律取三态，没人再把「未知」折成「否」。
+- **未知态结构化**：`Get-SecurityVerdicts` 的 Unknown 从字符串改为对象（`Key` / `Path` / `Reason` / `Detail`），
+  `Reason` 取 `unresolved|missing|unreadable`，异常原因不再只留在 crash log 里。
+- **消费端不再 fail-open**：`dialogs` 的 exe 目录判定改用 `Get-ExeDirVerdict`，未知单独提示
+  「无法判定、请人工确认权限」，不再当作「不可写」静默放过。
+- **测试**：`Get-SourceCodeOnly` 补剥行首注释（避免被注释掉的判定骗过源码检查）；
+  `test-security-verdicts` 加四条行为断言（ACL 读不到 / 抛错 / 可写 / 目录缺失），
+  入口侧仍留「只调汇总函数」的源码检查。
+
 ## [1.0.14] - 2026-11-16
 
 安全自检的三态判定收口：

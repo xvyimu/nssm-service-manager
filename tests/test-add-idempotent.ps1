@@ -30,7 +30,7 @@ function Send-ServiceCommand([string]$name, [string]$action) { $script:cmdCalls 
 function Show-DialogError($owner, [string]$msg) { $script:dialogErrors += $msg }
 function Show-DialogWarning($owner, [string]$msg, [string]$title) { $script:dialogWarnings += @{ msg = $msg; title = $title } }
 # 单测不该受运行机器真实 ACL 影响
-function Test-ExeDirPermissive([string]$exe) { return $false }
+function Get-ExeDirVerdict([string]$exe) { return '否' }
 
 # Test-SvcInput 要求 exe 是真实存在的文件（PathType Leaf），用临时目录里的空文件满足。
 $tmpDir = New-TestTempDir 'sm-addidem'

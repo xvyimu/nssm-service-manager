@@ -26,18 +26,33 @@ function Test-DirAclPermissive($acl){
   '否'
 }
 
+# 目录三态判定的**唯一**实现：'是' / '否' / '未知（…）'。判据层、汇总层、入口与对话框都走它。
+# 定位不到目录、目录不存在、读不到 ACL 都是「未知」——默认成「否」等于把「没检查」印成「检查过且没问题」。
+# -AclProvider 可注入（默认真读 ACL），测试用桩就能覆盖「读不到 / 抛错 / 可写」三种结果。
+function Get-DirAclVerdict([string]$dir, [scriptblock]$AclProvider = { param($p) Get-Acl -LiteralPath $p -EA Stop }){
+  if (-not $dir) { return '未知（无法定位目录）' }
+  if (-not (Test-Path -LiteralPath $dir)) { return '未知（目录不存在）' }
+  try { Test-DirAclPermissive (& $AclProvider $dir) }
+  catch { "未知（无法读取 ACL：$($_.Exception.Message)）" }
+}
+
 # 汇总多个目标的三态判定，供入口与测试共用。
-# -AclProvider 可注入（默认真读 ACL）：测试用桩就能覆盖「读不到 / 抛错 / 可写」三种结果，
-# 不必再靠正则去断言入口脚本里的字面量——那种断言写注释都能满足。
+# .Findings：可写项，字符串数组（"<目标>（<路径>）可被普通用户写入"）。
+# .Unknown：未知项，对象数组 @{ Key; Path; Reason('unresolved'|'missing'|'unreadable'); Detail }。
+#   带原因是为了让调用方分措辞：「读不到」要人工确认，「可写」才建议迁移，两者处置不同。
 function Get-SecurityVerdicts($Targets, [scriptblock]$AclProvider = { param($p) Get-Acl -LiteralPath $p -EA Stop }){
   $findings = @(); $unknown = @()
   foreach ($key in $Targets.Keys) {
     $path = [string]$Targets[$key]
-    if (-not $path) { $unknown += "$key 的路径未解析"; continue }
-    if (-not (Test-Path -LiteralPath $path)) { $unknown += "$key 不存在：$path"; continue }
-    $verdict = try { Test-DirAclPermissive (& $AclProvider $path) } catch { "异常：$($_.Exception.Message)" }
-    if ($verdict -eq '是') { $findings += "$key 可被普通用户写入：$path" }
-    elseif ($verdict -ne '否') { $unknown += "$key 的 ACL 无法判定：$path" }
+    $verdict = Get-DirAclVerdict $path $AclProvider
+    if ($verdict -eq '是') { $findings += "$key（$path）可被普通用户写入"; continue }
+    if ($verdict -eq '否') { continue }
+    $reason = switch -Wildcard ($verdict) {
+      '未知（无法定位目录*' { 'unresolved' }
+      '未知（目录不存在*'   { 'missing' }
+      default               { 'unreadable' }
+    }
+    $unknown += [pscustomobject]@{ Key = $key; Path = $path; Reason = $reason; Detail = $verdict }
   }
   @{ Findings = $findings; Unknown = $unknown }
 }
@@ -62,12 +77,9 @@ function Show-SecurityCheck([string]$n){
   }
   $r = Resolve-ServiceExeDir $path
   $dir = $r.dir; $quoted = $r.quoted
-  # 三态：定位不到目录、目录不存在、读不到 ACL 都属于「未知」，不能默认成「否（安全）」——
-  # 那正是把「没检查」印成「检查过且没问题」。只有判据明确返回 '否' 才算不宽。
-  $permissive =
-    if (-not $dir) { '未知（无法定位目录）' }
-    elseif (-not (Test-Path -LiteralPath $dir)) { '未知（目录不存在）' }
-    else { try { Test-DirAclPermissive (Get-Acl -LiteralPath $dir -EA Stop) } catch { '未知（无法读取 ACL）' } }
+  # 三态只在 Get-DirAclVerdict 里实现一份：看不到目录 / 读不到 ACL 都是「未知」，
+  # 只有判据明确返回 '否' 才算不宽。
+  $permissive = Get-DirAclVerdict $dir
   $qTxt = if($quoted){'是（已加固）'}else{'否（路径含空格时有提权风险）'}
   $msg = "$n`n`n路径: $path`n`n引号加固: $qTxt`n目录: $dir`n目录 ACL 过宽: $permissive"
   [System.Windows.MessageBox]::Show($msg,"$n 安全检查",'OK',$(if($quoted -and $permissive -eq '否'){'Information'}else{'Warning'})) | Out-Null

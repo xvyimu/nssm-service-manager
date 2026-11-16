@@ -2,17 +2,13 @@
 # 依赖调用时解析；从调用方作用域读 $script:svc / $script:cards / $sync.gate / $script:statusBar。
 # 实现细节与踩坑记录：docs/IMPLEMENTATION-NOTES.md
 
-# exe 目录是否对普通用户可写（LocalSystem 服务的提权面）。缺依赖或读不到 ACL 时一律当「否」——
-# 这是告警不是门闩，误报比漏报更烦人。抽成函数让单测能 stub，不受运行机器真实 ACL 影响。
-function Test-ExeDirPermissive([string]$exe){
-  if (-not $exe) { return $false }
-  if (-not (Get-Command Test-DirAclPermissive -EA SilentlyContinue)) { return $false }
-  try {
-    $dir = Split-Path $exe -Parent
-    if (-not $dir) { return $false }
-    return ((Test-DirAclPermissive (Get-Acl -LiteralPath $dir -EA Stop)) -eq '是')
-    # 这里把「未知」当「不告警」：这只是输入框旁的一句提示，不是门禁，而全局安全自检那侧会单独报「无法判定」。
-  } catch { return $false }
+# exe 目录的三态判定（LocalSystem 服务的提权面）：'是' / '否' / '未知（…）'，与 lib/security-check.ps1 同一份实现。
+# 读不到 ACL 不能压成「否」——那等于把「没检查」说成「安全」。抽成函数让单测能 stub，不受运行机器真实 ACL 影响。
+function Get-ExeDirVerdict([string]$exe){
+  if (-not $exe) { return '未知（无法定位目录）' }
+  if (-not (Get-Command Get-DirAclVerdict -EA SilentlyContinue)) { return '未知（无法定位目录）' }
+  $dir = try { Split-Path $exe -Parent -EA Stop } catch { '' }
+  Get-DirAclVerdict $dir
 }
 
 # 删除提交体（Show-Remove 的 del_Click 执行部分），抽出以便直测。§Submit-RemoveCommand
@@ -196,8 +192,14 @@ function Submit-AddService($owner,[hashtable]$fields){
   # LocalSystem + 用户可写目录：UNC 已被拒，本地可写目录是同一根因（scoop 装出来的服务就长这样）。
   # 只提示不阻断：阻断会直接打断现有部署；先把「可被替换」这件事说出来。
   # 判定抽成函数：单测不该受运行机器真实 ACL 影响，stub 它即可。
-  if((-not $account -or $account -ieq 'LocalSystem') -and (Test-ExeDirPermissive $exe)){
-    Show-DialogWarning $owner "「$n」将以 LocalSystem 运行，但可执行文件位于普通用户可写的目录：`n$(Split-Path $exe -Parent)`n`n该目录的任何可写者都能替换 exe，服务重启后即以 SYSTEM 运行。`n建议先把程序移到仅管理员可写的目录，再注册服务。" '安全姿态提示'
+  # 三态分处置：'是' 才建议迁移；'未知' 只说「读不到 ACL，无法确认」——不把「没检查」当「安全」。
+  if(-not $account -or $account -ieq 'LocalSystem'){
+    $exeDirVerdict = Get-ExeDirVerdict $exe
+    if($exeDirVerdict -eq '是'){
+      Show-DialogWarning $owner "「$n」将以 LocalSystem 运行，但可执行文件位于普通用户可写的目录：`n$(Split-Path $exe -Parent)`n`n该目录的任何可写者都能替换 exe，服务重启后即以 SYSTEM 运行。`n建议先把程序移到仅管理员可写的目录，再注册服务。" '安全姿态提示'
+    } elseif($exeDirVerdict -like '未知*'){
+      Show-DialogWarning $owner "「$n」将以 LocalSystem 运行，但读不到可执行文件所在目录的 ACL，无法确认该目录是否可被普通用户替换：`n$(Split-Path $exe -Parent)`n`n这不等于安全——请人工确认该目录仅管理员可写。" '安全姿态未知'
+    }
   }
   # 幂等续做：上次注册成功但清单没写成时，重试会走到这里。再 install 只会报「已存在」，
   # 因此已存在就只补写参数——用户点重试即可收敛，不必先 nssm remove 再重来。

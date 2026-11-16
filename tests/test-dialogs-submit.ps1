@@ -21,9 +21,9 @@ $fakeExe = New-FakeExe 'sm-dlg'
 $script:dialogErrors = @(); $script:dialogWarnings = @(); $script:confirmAnswer = $true; $script:confirmSeen = $null
 function Show-DialogError($owner, [string]$msg) { $script:dialogErrors += $msg }
 function Show-DialogWarning($owner, [string]$msg, [string]$title) { $script:dialogWarnings += @{ msg=$msg; title=$title } }
-# 单测不该受运行机器真实 ACL 影响：默认「不可写」，要验告警的用例自己置 $true。
-$script:exeDirPermissive = $false
-function Test-ExeDirPermissive([string]$exe) { return [bool]$script:exeDirPermissive }
+# 单测不该受运行机器真实 ACL 影响：默认「不可写」，要验告警的用例自己置 '是' / '未知…'。
+$script:exeDirVerdict = '否'
+function Get-ExeDirVerdict([string]$exe) { return [string]$script:exeDirVerdict }
 function Confirm-SensitiveEnvKeys($owner, [string]$tip) { $script:confirmSeen = $tip; $script:confirmAnswer }
 # NSSM / 保存 替身
 $script:installed = @()
@@ -102,15 +102,27 @@ try {
   Assert ($script:dialogWarnings[0].msg -match 'LocalSystem') '提示应点明 LocalSystem'
 
   # ---- T3-i2：LocalSystem + 可写 exe 目录 → 再多一条安全姿态提示，且仍继续注册 ----
-  $script:exeDirPermissive = $true
+  $script:exeDirVerdict = '是'
   $script:installed = @(); $script:dialogErrors = @(); $script:dialogWarnings = @()
   $ok = Submit-AddService $win @{ n='SvcG2'; p='8088'; exe=$fakeExe; url=''; dir=''; par=''; env=''
       account='LocalSystem'; gpu=$false }
-  $script:exeDirPermissive = $false
+  $script:exeDirVerdict = '否'
   Assert ($ok) '可写目录告警不该阻断注册。'
   Assert ($script:installed -contains 'SvcG2') '告警后应继续注册。'
   Assert ($script:dialogWarnings.Count -eq 1 -and $script:dialogWarnings[0].title -eq '安全姿态提示') "应弹一条安全姿态提示，got $($script:dialogWarnings.Count)"
   Assert ($script:dialogWarnings[0].msg -match 'SYSTEM') '提示应点明可被替换后以 SYSTEM 运行'
+
+  # ---- T3-i3：LocalSystem + 读不到 ACL → 另一条非阻断提示，且不得说成安全 ----
+  # 三态改成 '未知…' 后不能再压成「否（安全）」：这条守住「没检查 ≠ 安全」。
+  $script:exeDirVerdict = '未知（无法读取 ACL：拒绝访问。）'
+  $script:installed = @(); $script:dialogErrors = @(); $script:dialogWarnings = @()
+  $ok = Submit-AddService $win @{ n='SvcG3'; p='8089'; exe=$fakeExe; url=''; dir=''; par=''; env=''
+      account='LocalSystem'; gpu=$false }
+  $script:exeDirVerdict = '否'
+  Assert ($ok) 'ACL 读不到不该阻断注册。'
+  Assert ($script:installed -contains 'SvcG3') '未知判定后应继续注册。'
+  Assert ($script:dialogWarnings.Count -eq 1 -and $script:dialogWarnings[0].title -eq '安全姿态未知') "应弹一条「无法确认」提示，got $($script:dialogWarnings.Count)"
+  Assert ($script:dialogWarnings[0].msg -match '不等于安全') '未知提示必须点明这不等于安全'
 
   # ---- T3-j：未知账户直接拒绝，不注册（静默回落会让用户以为按最小权限跑了）----
   $script:installed = @(); $script:dialogErrors = @(); $script:dialogWarnings = @()

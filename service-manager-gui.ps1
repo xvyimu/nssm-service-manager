@@ -205,7 +205,7 @@ if ($script:nssm) { $securityTargets['NSSM 目录'] = (Split-Path $script:nssm -
 $verdicts = Get-SecurityVerdicts $securityTargets
 $script:securityFindings = @($verdicts.Findings)
 $script:securityUnknown  = @($verdicts.Unknown)
-foreach ($u in $script:securityUnknown) { Write-CrashLog "Security: $u" }
+foreach ($u in $script:securityUnknown) { Write-CrashLog "Security($($u.Reason)): $($u.Key) $($u.Path) — $($u.Detail)" }
 if ($script:securityFindings.Count -or $script:securityUnknown.Count) {
   $parts = @()
   if ($script:securityFindings.Count) {
@@ -213,8 +213,18 @@ if ($script:securityFindings.Count -or $script:securityUnknown.Count) {
     $parts += "$($script:securityFindings -join '；')。管理员进程会执行这些位置的代码，建议迁到仅管理员可写的目录。"
   }
   if ($script:securityUnknown.Count) {
-    # 读不到 ACL 与「可写」是两种处置：前者要人工确认权限，后者才建议迁移。
-    $parts += "$($script:securityUnknown -join '；')。读不到 ACL 不等于安全，请手动确认这些目录的权限。"
+    # 未知项按 Reason 分措辞：读不到 ACL 要人工确认权限；路径缺失/目录不存在则是自检没覆盖到。
+    # 两种都不能当「安全」——「可写」才建议迁移，这两种只要求核对。
+    $unknownUnreadable = @($script:securityUnknown | Where-Object { $_.Reason -eq 'unreadable' })
+    $unknownAbsent     = @($script:securityUnknown | Where-Object { $_.Reason -ne 'unreadable' })
+    if ($unknownUnreadable.Count) {
+      $list = ($unknownUnreadable | ForEach-Object { "$($_.Key)（$($_.Path)）" }) -join '；'
+      $parts += "$list。这些目录的 ACL 读不到（$($unknownUnreadable[0].Detail)），无法确认是否可被普通用户替换——这不等于安全，请手动确认它们仅管理员可写。"
+    }
+    if ($unknownAbsent.Count) {
+      $list = ($unknownAbsent | ForEach-Object { "$($_.Key)（$($_.Path)）" }) -join '；'
+      $parts += "$list。这些目标定位不到或已不存在（$($unknownAbsent[0].Detail)），自检没有覆盖到，不等于安全，请确认装机路径。"
+    }
   }
   $script:securityNotice = "安全姿态：" + ($parts -join ' ')
 }

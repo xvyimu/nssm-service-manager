@@ -31,7 +31,7 @@ service-manager-gui.ps1（主入口：CLI 分支 + 提权 + 模块加载 + 窗�
 ├─ lib/ui-status.ps1  命令入队（Send-ServiceCommand）、打开面板（Open-PanelUrl）、
 │                     状态栏与租约（Set-StatusMessage）、每帧 tick、单实例检测
 ├─ lib/log-retention.ps1  每服务日志目录解析（Get-SvcLogDir，读注册表 AppStdout）、轮转档清理
-├─ lib/security-check.ps1 安全检查（Resolve-ServiceExeDir/Test-DirAclPermissive/Show-SecurityCheck）
+├─ lib/security-check.ps1 安全检查（Resolve-ServiceExeDir/Get-DirAclVerdict/Get-ExeDirVerdict/Get-SecurityVerdicts/Show-SecurityCheck）
 ├─ lib/acl.ps1        ACL 判据唯一来源（宽面主体 + 写能力；GUI 自检 / 注册表收紧脚本 / 部署门禁共用）
 ├─ lib/shutdown.ps1   关窗收尾（Stop-Background）
 ├─ lib/svc-input.ps1  纯函数族：输入校验（Test-SvcInput/Test-SvcAccount）、env 解析
@@ -207,7 +207,7 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 - **后台 runspace 死亡会被检测**：每帧判 `$script:bgHandle.IsCompleted`，完成即写一行 crash log、状态栏提示「后台已停止响应，状态不可用」，并把**所有**卡片收敛到「未知」且禁用动作——只改「查询中」会让其余卡继续显示上一次的「运行中/正常」，等于整屏在说谎。另外「陈旧样本」（超过 `2 × ProbeIntervalMs` 没新结果）走独立判定 `Update-CardFreshness`，同样降级为未知。
 - **`Show-SecurityCheck` 的 ACL 判定是启发式**：只认 `Users`/`Everyone`/`Authenticated Users`/AppContainer SID 这几类宽泛主体 + `Write|Modify|FullControl`。目录若被改写为其它宽松形态（如某个具体用户账户 FullControl），判定为「否」。不是权威审计。
 - **NSSM 与 pwsh 只认固定路径**：2026-11-04 改。原先按 `NSSM_PATH` → PATH → scoop 三档探测，`launch.vbs` 也有 scoop 回退；两者都让标准用户能决定管理员进程执行哪个二进制（预置一个副本，等你下次 UAC 同意）。现在 GUI 只认两个固定候选（按序取先存在的 `C:\Program Files\nssm\nssm.exe` → `C:\Program Files\nssm\win64\nssm.exe`），启动器只认 `C:\Program Files\PowerShell\7\pwsh.exe`，缺失时明确报错并给出第一个候选路径。**不加签名校验**：本机 scoop 包的 `nssm.exe` 实测 `NotSigned`，加了会误报所有正常安装。
-- **提权面的真实边界是 ACL，不是自检**：启动时对程序目录、`lib`、NSSM 目录跑 `Test-DirAclPermissive`，可写则写 crash log + 状态栏提示；添加服务时若 `LocalSystem` + exe 目录可写，再弹一次告警。这些都只是「装错能被发现」。真正的边界由 `scripts/deploy-local.ps1` 建立：程序放管理员独占目录，`Users` 只读执行。
+- **提权面的真实边界是 ACL，不是自检**：启动时对程序目录、`lib`、NSSM 目录跑 `Get-DirAclVerdict`（三态：可写 / 不可写 / 无法判定），可写则写 crash log + 状态栏提示并建议迁移，无法判定则只提示人工确认权限；添加服务时若 `LocalSystem` + exe 目录可写，再弹一次告警。这些都只是「装错能被发现」。真正的边界由 `scripts/deploy-local.ps1` 建立：程序放管理员独占目录，`Users` 只读执行。
 - **`Open-PanelUrl` 只放行 `http` / `https`**：2026-10-29 改为白名单。原实现直接 `Start-Process` 任意 URI，`file:///` 或自定义协议在提权 GUI 下等于以管理员**执行**任意程序（不只是「打开网页」）。非 http/https 的地址现在只更新状态栏，不启动。
 - **健康探测有 `probe` 口径（`auto` / `tcp` / `http` / `none`），关闭按钮不再看健康**：2026-10-30 加。原实现只有「TCP 通 + HTTP 200」一条路，非 HTTP 服务（数据库、gRPC、纯 socket）永远不是绿点；更糟的是 `Test-CardCanStop` 把健康一起判进去，这类服务的「关闭」按钮被永久禁用，只剩右键菜单。现在 `probe: tcp`（或 `url` 为空）时 TCP 通即正常，健康门闩只留在双击路径。
 - **`services.json` 的三道写入门闩**：解析失败拒写（原有）、顶层形状必须是对象（2026-10-30 加：`[]` / `"x"` 这类合法 JSON 取不到键，旧实现返回空清单并当成功，下一次保存把原文件覆盖成 `{}`）、载入后 mtime 变化拒写（手改或另一个会话抢先写时不让全量写回抹掉别人的改动）。写前顺手把上一版留成 `services.json.bak`。
