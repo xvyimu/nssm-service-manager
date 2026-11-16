@@ -73,6 +73,7 @@ UI 线程 (STA)                          后台 runspace (STA)
 
 - **过渡态**（启动中/停止中/删除中）：命令驱动，绑 epoch，有硬上限逃生（`ToggleTimeoutMs × TransitionHardCapFactor`）。
 - **陈旧态**：`svcState.at` 超过 `2 × ProbeIntervalMs` 未更新 → 显示「状态未知」，禁用动作。
+- **陈旧判据的例外**：worker 正在执行阻塞命令（start / stop / restart / remove）时 `$sync.busy` 为真，`Update-CardFreshness` 直接返回、不判陈旧——阻塞期间没有任何探测，不设例外的话所有「运行中」卡片都会误判成未知。`busy` 由 GUI 预置、由 poll 的 `Set-PollBusy` 置位复位；键缺失时静默跳过，供没有「其它卡片」概念的 CLI 复用同一函数。
 - **离线态**：后台 runspace 结束 → 所有卡片转未知（`Set-CardOffline`）。
 - **待保存**：服务已从 SCM 删除但清单写盘失败 → 卡片保留，右键「重试保存清单」。
 

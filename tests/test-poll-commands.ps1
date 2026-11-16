@@ -300,31 +300,108 @@ foreach ($k in $statusMap.Keys) {
 }
 Assert ((Convert-ServiceStatus 'Bogus') -eq '未知') 'Unknown SCM status must fall back to 未知.'
 
-# ---- busy 标记：三处阻塞等待都必须在 try/finally 里置位（源码级，防回退） ----
-# 阻塞期间 worker 不产探测结果（停/删最长 12s），卡片判据只有 2×ProbeIntervalMs（默认 8s）：
-# 少一处 finally 就是「那一路操作期间所有运行中卡片翻状态未知」。运行时用例只能盖住 stop 一路，
-# 另两路（restart / remove）在这里按源码结构守：锚点前 300 字符内要有置位，其后 400 字符内要有复位。
+# ---- busy 标记：四处阻塞等待都必须在 try/finally 里成对置位（源码级切片，防回退） ----
+# 阻塞期间 worker 不产探测结果（停/删最长 12s；start 慢启动要等满 ServicesPipeTimeout，实测 30s），
+# 卡片判据只有 2×ProbeIntervalMs（默认 8s）：少一处 finally 就是「那一路操作期间所有运行中卡片翻状态未知」。
+# 运行时用例只盖得住 stop 一路，其余三路（start / restart / remove）在这里按 switch 分支切片守结构：
+# 每支必须恰好一对「Set-PollBusy $true」+「finally { Set-PollBusy $false }」，且阻塞调用夹在两者之间。
+# 不写成「次数 >= N」：那样漏配对（置位后没复位、复位挪出 finally）照样能绿。
 $pollSrc = Get-SourceCodeOnly (Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'lib/poll.ps1') -Encoding utf8)
 $busySet = ([regex]::Matches($pollSrc, [regex]::Escape('Set-PollBusy $true'))).Count
-$busyClear = ([regex]::Matches($pollSrc, [regex]::Escape('finally { Set-PollBusy $false }'))).Count
-Assert ($busySet -eq 3) "阻塞等待的 busy 置位应有三处（stop/restart/remove），实际 $busySet 处。"
-Assert ($busyClear -eq 3) "busy 复位应有三处 finally，实际 $busyClear 处（漏一处就永远不再判陈旧）。"
-$seen = 0
-foreach ($anchor in @('(Wait-Stopped $n -TimeoutMs (Get-WaitStoppedMs $n))', 'Invoke-ServiceRemove $n $sync.nssm')) {
-  $from = 0
-  while ($true) {
-    $idx = $pollSrc.IndexOf($anchor, $from)
-    if ($idx -lt 0) { break }
-    $before = $pollSrc.Substring([Math]::Max(0, $idx - 300), [Math]::Min(300, $idx))
-    $after = $pollSrc.Substring($idx, [Math]::Min(400, $pollSrc.Length - $idx))
-    Assert ($before.Contains('Set-PollBusy $true')) "阻塞点 '$anchor'（@$idx）之前没有 Set-PollBusy `$true。"
-    Assert ($after.Contains('finally { Set-PollBusy $false }')) "阻塞点 '$anchor'（@$idx）之后没有 finally 复位 busy。"
-    $seen++
-    $from = $idx + 1
+$busyClear = ([regex]::Matches($pollSrc, [regex]::Escape('Set-PollBusy $false'))).Count
+Assert ($busySet -eq 4) "阻塞等待的 busy 置位应有四处（start/stop/restart/remove），实际 $busySet 处。"
+Assert ($busyClear -eq 4) "busy 复位应有四处（每处都在 finally 里），实际 $busyClear 处（漏一处就永远不再判陈旧）。"
+Assert ($busySet -eq $busyClear) "置位 $busySet 处、复位 $busyClear 处：必须成对，否则 busy 会永久钉住或永不置位。"
+
+# 分支边界 = switch($act){ 之后相邻 case 标签的位置；最后一支截到 switch 的收尾括号（4 空格缩进的单独 '}'）。
+$swAt = $pollSrc.IndexOf('switch($act){')
+Assert ($swAt -ge 0) '找不到 switch($act){——分支切片判据失效，改 poll.ps1 结构时请同步更新本门禁。'
+$branchSpec = [ordered]@{
+  start   = 'Invoke-ServiceStart $n'
+  stop    = 'Wait-Stopped $n -TimeoutMs (Get-WaitStoppedMs $n)'
+  restart = 'Wait-Stopped $n -TimeoutMs (Get-WaitStoppedMs $n)'
+  remove  = 'Invoke-ServiceRemove $n $sync.nssm'
+}
+$branchNames = @($branchSpec.Keys)
+$labelAt = @{}
+$cursor = $swAt
+foreach ($name in $branchNames) {
+  $idx = $pollSrc.IndexOf("'$name'", $cursor)
+  Assert ($idx -gt 0) "switch($act) 里找不到 '$name' 分支（改名或门禁被绕过）。"
+  $labelAt[$name] = $idx
+  $cursor = $idx + 1
+}
+$swEndMatch = [regex]::Match($pollSrc.Substring($labelAt['remove']), '(?m)^ {4}\}[ \t]*$')
+Assert ($swEndMatch.Success) '找不到 switch($act){ 的收尾括号，remove 分支切片失败。'
+$swEnd = $labelAt['remove'] + $swEndMatch.Index
+$pairCount = 0
+for ($k = 0; $k -lt $branchNames.Count; $k++) {
+  $name = $branchNames[$k]
+  $from = $labelAt[$name]
+  $to = if ($k + 1 -lt $branchNames.Count) { $labelAt[$branchNames[$k + 1]] } else { $swEnd }
+  $body = $pollSrc.Substring($from, $to - $from)
+  $setCount = ([regex]::Matches($body, [regex]::Escape('Set-PollBusy $true'))).Count
+  $clearCount = ([regex]::Matches($body, [regex]::Escape('Set-PollBusy $false'))).Count
+  Assert ($setCount -eq 1) "分支 '$name' 的 Set-PollBusy `$true 应恰好一处，实际 $setCount 处。"
+  Assert ($clearCount -eq 1) "分支 '$name' 的 Set-PollBusy `$false 应恰好一处，实际 $clearCount 处。"
+  $iSet = $body.IndexOf('Set-PollBusy $true')
+  $iCall = $body.IndexOf($branchSpec[$name])
+  Assert ($iCall -gt $iSet) "分支 '$name'：阻塞调用「$($branchSpec[$name])」不在置位之后（置位必须包住它）。"
+  $reset = [regex]::Match($body, 'finally\s*\{\s*Set-PollBusy \$false\s*\}')
+  Assert ($reset.Success) "分支 '$name' 的复位不在 finally 里（挪到 try 尾部后，抛异常或 break 就不再复位）。"
+  Assert ($reset.Index -gt $iCall) "分支 '$name' 的 finally 复位必须在阻塞调用之后。"
+  $pairCount++
+}
+Assert ($pairCount -eq 4) "四个阻塞分支应各有一对（start/stop/restart/remove），实际 $pairCount 对。"
+Write-Output 'PASS: 四处阻塞等待（start/stop/restart/remove）各有 try/finally 的 busy 置位与复位（源码级分支切片）。'
+
+# ---- busy 缺键（writer 侧）：$sync 没有 busy 键时 Set-PollBusy 静默跳过，且不许凭空加键 ----
+# CLI 路径与夹具都可能没预置这个键；Set-PollBusy 的守卫是 ContainsKey。凭空补一个 busy=$false
+# 会让 UI 侧以为注入齐了，把真正的注入缺失掩盖成「一切正常」。
+$worker=Start-FakePoll 1 'Stopped' 0 @{ waitStoppedTimeoutMs = 300; waitStoppedPollMs = 20 }
+try {
+  Assert ($worker.Sync.probeStarted.WaitOne(3000)) 'No-busy worker did not start.'
+  Assert (-not $worker.Sync.ContainsKey('busy')) '夹具：这一路刻意不注入 busy 键。'
+  $worker.Sync.cmd.Enqueue([pscustomobject]@{n='Fake0';act='stop';e=71})
+  [void]$worker.Sync.wake.Set()
+  $ackNoBusy = Wait-FakePollAck $worker
+  Assert ($null -ne $ackNoBusy) '缺 busy 键时 stop 没有产出回执——Set-PollBusy 抛异常了？'
+  Assert ($ackNoBusy.ok -eq $true) "缺 busy 键不该影响停止结果，got ok=$($ackNoBusy.ok) why=$($ackNoBusy.why)"
+  Assert (-not $worker.Sync.ContainsKey('busy')) 'Set-PollBusy 不得往 $sync 里凭空加 busy 键。'
+  Write-Output 'PASS: $sync 缺 busy 键时 stop 照常完成，且该键仍不存在（Set-PollBusy 静默跳过）。'
+} finally { Close-FakePoll $worker }
+
+# ---- busy 缺键（reader 侧）：Update-CardFreshness 的行为必须与 busy=false 一致 ----
+# 只加断言、不改 lib/card.ps1：缺键时 $script:sync['busy'] -eq $true 为 $false，照常判陈旧。
+# 两种 $sync 各跑一次同一夹具（60s 前的样本 > 2×ProbeIntervalMs=8s），逐项结果必须相同。
+. (Join-Path $RepoRoot 'lib/util.ps1')
+. (Join-Path $RepoRoot 'lib/card.ps1')
+function Update-CardAutomationName($card) { }   # 读屏名字要真 WPF 控件，与陈旧判据无关，置空桩
+$script:T = @{ BrushStale = 'BrushStale#stub' }
+$script:svcState = @{ Fake0 = @{ st='运行中'; h='正常'; at=[datetime]::Now.AddSeconds(-60) } }
+function New-StaleFixtureCard {
+  [pscustomobject]@{
+    SvcName='Fake0'; ST='运行中'; Stale=$false; PendingSave=$false; Offline=$false
+    LblSt=[pscustomobject]@{ Text='运行中'; Foreground=$null }
+    Dot=[pscustomobject]@{ Fill=$null }
+    LblUpBase=''
+    Btn=[pscustomobject]@{ IsEnabled=$true }
+    BtnStop=[pscustomobject]@{ IsEnabled=$true }
+    ReadyToToggle=$true
   }
 }
-Assert ($seen -eq 3) "阻塞锚点应命中 3 处（stop / restart 的等停 + remove 的删除序列），实际 $seen 处。"
-Write-Output 'PASS: 三处阻塞等待都有 try/finally 的 busy 置位与复位（源码级，3 个锚点）。'
+$script:sync = @{ gate = [object]::new() }                    # 刻意没有 busy 键
+$cardNoBusyKey = New-StaleFixtureCard
+Update-CardFreshness $cardNoBusyKey (Get-Date)
+$script:sync = @{ gate = [object]::new(); busy = $false }     # 同样「不忙」，只是键存在
+$cardBusyFalse = New-StaleFixtureCard
+Update-CardFreshness $cardBusyFalse (Get-Date)
+Assert ($cardNoBusyKey.Stale -eq $cardBusyFalse.Stale) "缺 busy 键与 busy=false 的 Stale 必须一致（$($cardNoBusyKey.Stale) vs $($cardBusyFalse.Stale)）。"
+Assert ($cardNoBusyKey.Stale -eq $true) '缺 busy 键时 60s 前的样本也必须判陈旧（缺键不等于永久豁免）。'
+Assert ($cardNoBusyKey.LblSt.Text -eq $cardBusyFalse.LblSt.Text) "缺键与 busy=false 的状态文案必须一致（$($cardNoBusyKey.LblSt.Text) vs $($cardBusyFalse.LblSt.Text)）。"
+Assert ($cardNoBusyKey.LblSt.Text -eq '状态未知') "陈旧样本应显示「状态未知」，实际「$($cardNoBusyKey.LblSt.Text)」。"
+Assert ($cardNoBusyKey.Btn.IsEnabled -eq $false -and $cardBusyFalse.Btn.IsEnabled -eq $false) '两种 $sync 都必须禁用主按钮。'
+Write-Output 'PASS: $sync 缺 busy 键时 Update-CardFreshness 与 busy=false 判定一致（reader 侧正则守卫）。'
 
 # 退出码映射是用户可见文案（sc.exe 失败时状态栏就显示这个），单列一张真值表守住
 $codeMap=@{ 0=''; 1056='已在运行'; 1062='未启动'; 1060='服务未安装'; 1051='禁止启动（禁用或只读）'

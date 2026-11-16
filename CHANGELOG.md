@@ -3,6 +3,15 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
+## [1.0.24] - 2026-11-16
+
+让「worker 忙时不误判陈旧」覆盖到整类阻塞命令（上一版只覆盖了等停的三处），并补上真正的门禁。
+
+- **start 纳入 busy**：`lib/poll.ps1` 的 `start` 分支此前直接调 `Invoke-ServiceStart`；慢启动服务会让 `$svc.Start()` 等满 ServicesPipeTimeout（实测 30032ms），期间不产探测样本，其它「运行中」卡片照样翻「状态未知」。现在四类阻塞命令（start / stop / restart / remove）都走 `try` + `Set-PollBusy $true` / `finally { Set-PollBusy $false }`。
+- **门禁从计数改为锚点**：旧断言写死「`Set-PollBusy $true` 出现 3 次」，等于把「漏了 start」固化成正确——加上 start 反而变红。现在按 `switch` 分支切片：四个分支各必须恰好一对置位/复位，复位必须在 `finally` 内，且置位在阻塞调用之前。
+- **busy 缺键的两侧行为补断言**：writer 侧（`$sync` 无 `busy` 键时 stop 照常完成、结束后仍不造键）与 reader 侧（无键与 `busy=false` 对同一陈旧样本给出完全一致的 stale/文案/按钮态）。
+- **文档补 busy 契约**：`docs/ARCHITECTURE.md` 的陈旧判据、`docs/PROJECT.md` 的 runspace 死亡条目都补上 busy 例外；`docs/IMPLEMENTATION-NOTES.md` 新增 `§Set-PollBusy`，写清为什么需要、谁置位、谁读、键为什么必须先存在，以及「布尔没有 since 兜底」这个已知缺口。
+
 ## [1.0.23] - 2026-11-16
 
 停服期间不再误伤其它卡片，并补齐上一版的自述与门禁缺口：

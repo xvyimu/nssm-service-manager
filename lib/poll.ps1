@@ -99,7 +99,13 @@ function Invoke-PendingCommands {
     $why=''
     try {
     switch($act){
-      'start'   { $ok=Invoke-ServiceStart $n }
+      'start'   {
+        # 启动也可能阻塞：Invoke-ServiceStart 内部 $svc.Start() 对慢启动服务要等满 ServicesPipeTimeout
+        # （实测 30032ms），期间 worker 不产探测样本——与停/删同理先标 busy，
+        # 否则别的「运行中」卡片会按 2×ProbeIntervalMs（默认 8s）翻「状态未知」并禁用按钮。
+        Set-PollBusy $true
+        try { $ok=Invoke-ServiceStart $n } finally { Set-PollBusy $false }
+      }
       'stop'    {
         # 先发 stop，再等 Stopped（≤该服务预算），最后回执：等待期进度条由 Wait-Stopped 发布。
         # 判据用退出码而不是再查一次状态：1062（服务未启动）表示目标态已达成，按成功处理；
