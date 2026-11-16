@@ -1,7 +1,7 @@
 #requires -Version 7.0
 <#
 用途：实测「启动失败（SCM 1053）路径的真实耗时」，判定 lib/config.ps1 的
-      ToggleTimeoutMs = 45000 是否够大。
+      ToggleTimeoutMs = （默认值读 lib/config.ps1 的 ToggleTimeoutMs） 是否够大。
 
 背景：ToggleTimeoutMs 必须大于**正常路径**最长耗时，否则过渡态超时逃生会在正常
       失败流程里抢先触发。未实测的是启动失败路径——Invoke-ServiceStart 在
@@ -83,14 +83,19 @@ try {
 
   Write-Output '== 结论 =='
   $max = [Math]::Max($msSvc, $msSc)
-  Write-Output "  实测最长 $max ms；当前 ToggleTimeoutMs = 45000 ms"
-  # 门槛按 ToggleTimeoutMs 留 12s 删除路径余量反推：低于 (45000-12000)=33000 才算安全。
-  if ($max -ge 33000) {
-    $suggest = [Math]::Ceiling(($max + 12000) / 5000) * 5000
-    Write-Output "  ⚠ 启动失败路径已达 $max ms，逼近 ToggleTimeoutMs=45000 —— 过渡态超时逃生会在"
-    Write-Output "    正常失败流程里抢先触发。建议把 ToggleTimeoutMs 提到 $suggest ms（留出删除路径 12s 余量）。"
+  # 阈值从 config 读，不在探针里硬编码：改默认值后这里自动跟着走。
+  . (Join-Path $PSScriptRoot '..\lib\config.ps1')
+  $toggleMs = [int]$script:config.ToggleTimeoutMs
+  $stopBudgetMs = [int]$script:config.WaitStoppedTimeoutMs
+  $stopBudgetSec = [int]($stopBudgetMs / 1000)
+  Write-Output "  实测最长 $max ms；当前 ToggleTimeoutMs = $toggleMs ms"
+  # 门槛按 ToggleTimeoutMs 留 12s 删除路径余量反推：低于 ($toggleMs-$stopBudgetMs) 才算安全。
+  if ($max -ge ($toggleMs - $stopBudgetMs)) {
+    $suggest = [Math]::Ceiling(($max + $stopBudgetMs) / 5000) * 5000
+    Write-Output "  ⚠ 启动失败路径已达 $max ms，逼近 ToggleTimeoutMs=$toggleMs —— 过渡态超时逃生会在"
+    Write-Output "    正常失败流程里抢先触发。建议把 ToggleTimeoutMs 提到 $suggest ms（留出停止/删除路径 $stopBudgetSec s 余量）。"
   } else {
-    Write-Output '  ✓ 启动失败路径远小于 ToggleTimeoutMs(45000)，当前默认值够用。'
+    Write-Output '  ✓ 启动失败路径远小于 ToggleTimeoutMs($toggleMs)，当前默认值够用。'
   }
 } finally {
   Write-Output ''

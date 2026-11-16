@@ -62,28 +62,34 @@ function Wait-Stopped([string]$n){
   $timeoutMs = if     ($sync -and $sync.waitStoppedTimeoutMs)                   { [int]$sync.waitStoppedTimeoutMs }
                elseif ($script:config -and $script:config.WaitStoppedTimeoutMs) { [int]$script:config.WaitStoppedTimeoutMs }
                else                                                             { 12000 }
-  # 预算按真实耗时算：查询本身最坏要吃满 SvcStateTimeoutMs（3s），
-  # 只按步长累加会把「12s 预算」放大成 40 轮 × 单次查询上限（3s）。Stopwatch 兜住这个放大。
+  # 预算按真实耗时算，且要把「最后一次查询」和「超时后 Kill 的收尾」都算进去：
+  # 只按步长累加会把「12s 预算」放大成 40 轮 × 两次查询，减掉 1000ms 兜住 Kill 后的 WaitForExit。
   $sw = [Diagnostics.Stopwatch]::StartNew()
   # 步长从 config 收口（WaitStoppedPollMs，默认 300）；测试夹具经 $sync 注入
   $stepMs = if ($sync -and $sync.waitStoppedPollMs) { [int]$sync.waitStoppedPollMs } else { 300 }
   $svcStateMs = if ($sync -and $sync.svcStateTimeoutMs) { [int]$sync.svcStateTimeoutMs } else { 0 }
-  while($sw.ElapsedMilliseconds -lt $timeoutMs){
+  $capMs = if ($svcStateMs -gt 0) { $svcStateMs } else { 3000 }
+  $deadline = $timeoutMs - 1000
+  if ($deadline -lt 200) { $deadline = 200 }
+  while($sw.ElapsedMilliseconds -lt $deadline){
     # 不用 Get-Service：它没有超时开关，SCM 挂起时这一行会永久阻塞，
     # 循环里的 $timeoutMs 根本轮不到判断。Get-SvcStateQuiet 走 sc.exe query（硬超时 + Kill）。
-    # 单次查询也要按剩余预算收口，否则「12s 预算」会多出一次完整查询（默认 3s）——
-    # 文档写的 ≤12s 就成了假话。
-    $remain = $timeoutMs - $sw.ElapsedMilliseconds
-    $qms = if ($svcStateMs -gt 0) { [int][Math]::Min($svcStateMs, $remain) } else { [int][Math]::Min(3000, $remain) }
+    # 两次查询与步长都按同一份剩余预算收口，否则「≤12s」是假话。
+    $remain = $deadline - $sw.ElapsedMilliseconds
+    $qms = [int][Math]::Min($capMs, $remain)
     if ($qms -lt 100) { break }
     $st = Get-SvcStateQuiet $n $qms
     if($st -eq 'Stopped'){return $true}
     if(-not $st){
       # $null 既可能是「服务没了」也可能是「查询超时」——只有 1060/1072 才算没了。
-      $code = Get-ServiceQueryCode $n $qms
+      $remain2 = $deadline - $sw.ElapsedMilliseconds
+      if ($remain2 -lt 100) { break }
+      $code = Get-ServiceQueryCode $n ([int][Math]::Min($capMs, $remain2))
       if($code -in 1060,1072){return $true}
     }
-    Start-Sleep -Milliseconds $stepMs
+    $remain3 = $deadline - $sw.ElapsedMilliseconds
+    if ($remain3 -le 0) { break }
+    Start-Sleep -Milliseconds ([int][Math]::Min($stepMs, $remain3))
   }
   $false
 }

@@ -3,7 +3,19 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
-## [未发布]（2026-11-13 / 11-16）
+## [1.0.8] - 2026-11-16
+
+停止路径预算封顶与发布状态对齐：
+
+- **`Wait-Stopped` 真正封顶**：两次状态查询、步长与超时后 `WaitForExit(1000)` 的收尾全部按剩余预算收口
+  （预留 1000ms 给 kill 收尾），「≤12s」可核验；新增 `tests/test-wait-stopped-budget.ps1`，
+  去掉预留即红（实测 2213ms > 1200+200ms 容差）。
+- **诊断脚本去硬编码**：`tests/probe-1053-timing.ps1` 的 `ToggleTimeoutMs` 与停止预算从 `lib/config.ps1` 读取。
+- **源码断言先剥注释**：`tests/test-state-sets.ps1` 匹配前去掉注释行，注释里写同形字面量不再能骗过它。
+- **发布状态**：`v1.0.7` 已发布（release #9，资产 140862 B，digest `sha256:9da0f630…bad0`）；
+  本节起 `VERSION` = 1.0.8。
+
+## [1.0.7] - 2026-11-16
 
 工程化整理 + 一处行为补齐（`tests/run-all.ps1` 30 项 + `tests/analyze.ps1` 全绿后交付）：
 
@@ -36,7 +48,7 @@
 - **补 16 处函数头中文说明**（`Load-Svc` / `New-Card` / `New-MainWindow` / `Render-Page` / `Invoke-ScQuiet` /
   `Test-SvcAccount` / `Get-WebPageHtml` 等），都是跨文件调用、原来只有内联注释的函数。
 - **文档同步**：README 测试命令旁的「当前 29 项」改成 30 项、HANDOFF 回归项数 20 → 30、PROJECT.md 目录树、ARCHITECTURE.md 分层表；
-  IMPLEMENTATION-NOTES 的 `util.ps1` 小节加拆分说明；HANDOFF 发布状态从 `v0.9.0` 更到 `v1.0.6`（`VERSION` 1.0.7 未打 tag）。
+  IMPLEMENTATION-NOTES 的 `util.ps1` 小节加拆分说明；HANDOFF 发布状态从 `v0.9.0` 更到 `v1.0.6`（`VERSION` 当时已是 1.0.7，而 tag 停在 v1.0.6）。
 - `deploy-local.ps1` 自检不再硬编码模块清单：解析入口 dot-source（与 `package-release.ps1` 共用 `scripts/lib-entry-modules.ps1`）+ `lib/*.ps1` 全集；两处各写一遍正则的漂移点一并消掉。
 - **CHANGELOG 拆分**：0.9.0 及以前的内容整体移到 `docs/CHANGELOG-archive.md`（归档文件 591 行，含 4 行头注），根文件只留 1.0.x 与未发布。
 - **README 测试表补齐**：22 行补到 30 行，与 `run-all.ps1` 自动收集数对齐；文件表补 `deploy-local.ps1` / `deploy.cmd` 与文档导航。
@@ -49,7 +61,7 @@
 - **测试夹具收口**：24 处 `Stop-Background` / `Write-CrashLog` 桩、临时目录与假 exe 样板统一进 `tests/test-helpers.ps1`（`test-shutdown` 先点 helpers 再点 lib，真实 `Stop-Background` 覆盖空桩）；只有 `tests/make-demo.ps1` / `make-screenshot.ps1` 保留本地空桩（它们不起 GUI 入口）。
 - **NSSM 语义实测**：nssm 2.24 下 `set Application` 不改 `AppParameters` / `AppDirectory`，结论写进 `docs/IMPLEMENTATION-NOTES.md`。
 
-## [1.0.7]（2026-11-09）
+### 2026-11-09 批次（并入 v1.0.7）
 
 一台机器的真实事故：装的是 11-04 的旧版，`services.json` 里 `OpenList-Mount` 已经改成
 `{"probe":"none"}`（无端口服务），旧版 `Read-SvcFile` 还要求 port ≥ 1 → 整份清单被判无效，

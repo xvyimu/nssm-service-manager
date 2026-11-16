@@ -15,14 +15,14 @@
   健康历史在 `logs/health/health-YYYYMMDD.ndjson`（留 30 天，只记变化）。
 - **质量门**（两条都要绿，改动后各跑一次）：
   ```powershell
-  pwsh -NoProfile -File tests/run-all.ps1     # parser + 30 项回归（自动收集 tests/test-*.ps1）
+  pwsh -NoProfile -File tests/run-all.ps1     # parser + 32 项回归（自动收集 tests/test-*.ps1）
   pwsh -NoProfile -File tests/analyze.ps1     # PSScriptAnalyzer，Error/Warning 必须为 0
   ```
   `analyze.ps1` 需要一次性 `Install-Module PSScriptAnalyzer -Scope CurrentUser`；规则集与每条
   豁免的理由在 `PSScriptAnalyzerSettings.psd1`（CI 的 `static-analysis` 任务跑同一条命令）。
 - **CI**（`.github/workflows/`）：`test.yml` = `regression` + `static-analysis` + `secrets`(gitleaks)；
   `release.yml` = 打 tag `v*` → 跑回归 → `scripts/package-release.ps1` 出 zip → `gh release create`。
-- **发布状态**（2026-11-13 实测）：最新 tag 是 `v1.0.6`（`git tag --sort=-v:refname` 首行）；工作区 `VERSION` 已到 `1.0.7`，尚未打 tag。
+- **发布状态**（2026-11-16 实测）：最新 tag `v1.0.7` 已发布到 GitHub Release（run #9，资产 `service-manager-1.0.7.zip` 140862 B）；`VERSION` 与 tag 一致过，下一个待发布版本为 `1.0.8`。
   发版流程：改 `VERSION` → 在根 `CHANGELOG.md` 加版本小节 → commit →
   `git tag v<版本>` → `git push origin main --tags`。`release.yml` 会校验 `VERSION` 与 tag 一致，
   并在 tag 上补跑静态分析；重跑同一 tag 会走 `gh release upload --clobber`，不会红。
@@ -75,9 +75,9 @@
 1. **可选优化（批次 D，等真实痛点再做）**：跨页过滤/排序（服务数 > 12 才值得）、
    两份 `services.json` 的差异对比（换机迁移用）、健康历史可视化、Web 只读拓扑图。
    这四项都是新需求而非修复，没有实际使用反馈前不要开工。
-2. **发布**：已发布至 `v1.0.6`，下一步打 `v1.0.7` tag → 确认 Release 附件能解压即跑（zip 里 `launch.vbs` + `lib/` +
+2. **发布**：已发布至 `v1.0.7`（2026-11-16），下一步打 `v1.0.8` tag → 确认 Release 附件能解压即跑（zip 里 `launch.vbs` + `lib/` +
    example 配置齐）。之后每次发版只改 `VERSION` + CHANGELOG 再打 tag。
 3. **文档漂移巡检**：改了行为就同步 `README.md`（功能/文件表/CLI 用法）与
-   `docs/PROJECT.md`（取舍、已知限制）；根 `CHANGELOG.md` 的 `[未发布]` 段在发版时改成版本号。
+   `docs/PROJECT.md`（取舍、已知限制）；根 `CHANGELOG.md` 的当版小节在发版时定版。
 4. **测试数量**：`tests/run-all.ps1` 自动收集，新增用例不必登记；README 与 PROJECT.md 里
-   写死的「30 项」在新增 `test-*.ps1` 时要一起改。
+   写死的「32 项」在新增 `test-*.ps1` 时要一起改。
