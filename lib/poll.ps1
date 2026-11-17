@@ -106,6 +106,11 @@ function Invoke-PendingCommands {
     try {
     switch($act){
       'start'   {
+        # 伴随服务先起（依赖先就绪）。伴随失败只报消息、不阻断主服务：真依赖没起来时
+        # 主服务的健康探测会自己红，卡片副标题也会点名是哪一层。
+        # 失败文案由 Invoke-ServiceStart 自己入队（它知道退避码与原因）；这里不再补第二条，
+        # 否则同一次失败会在状态栏出现两遍，且第一条会把服务名重复一次。
+        $null = Invoke-CompanionStart $n $sync.svc $sync.gate { param($c) Invoke-ServiceStart $c '启动失败（伴随服务）' }
         $ok=Invoke-ServiceStart $n
       }
       'stop'    {
@@ -121,6 +126,17 @@ function Invoke-PendingCommands {
           # why 与状态栏消息同源写入：卡片靠回执的 why 显示原因（状态栏那条只有 5 秒租约，过后看不到）。
           $why="$n 停止失败（$code $(Convert-ScExitCode $code)）"
           $sync.msg.Enqueue("$n 停止失败($code $(Convert-ScExitCode $code))")
+        }
+        # 主服务确实停了才撤依赖：主服务还在跑就把伴随停掉，等于把正在用的服务脚下抽走。
+        if ($ok) {
+          $stopOne = {
+            param($c)
+            $cc = Invoke-ScQuiet @('stop', $c)
+            if ($cc -ne 0 -and $cc -ne 1062) { return $false }
+            [bool](Wait-Stopped $c -TimeoutMs (Get-WaitStoppedMs $c))
+          }
+          $compFailed = @(Invoke-CompanionStop $n $sync.svc $sync.gate $stopOne)
+          foreach ($cn in $compFailed) { $sync.msg.Enqueue("$cn 停止失败（$n 的伴随服务）") }
         }
       }
       'restart' {

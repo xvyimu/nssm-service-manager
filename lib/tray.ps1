@@ -25,7 +25,14 @@ $script:trayHintShown = $false
 function Get-TrayStatusText {
   try {
     $count = 0
-    if ($script:svc) { $count = @($script:svc.Keys).Count }
+    if ($script:svc) {
+      # 与卡片/状态栏同口径：伴随服务不出卡片，托盘计数也不该把它算进去。
+      $names = @($script:svc.Keys)
+      if (Get-Command Test-SvcIsCompanion -EA SilentlyContinue) {
+        $names = @($names | Where-Object { -not (Test-SvcIsCompanion $_) })
+      }
+      $count = $names.Count
+    }
     if ($count -le 0) { return '服务管理' }
     $pending = 0
     if ($script:svcState) {

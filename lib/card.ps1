@@ -270,6 +270,9 @@ function Invoke-CardAction($card, [string]$action, [string]$source='Button') {
 
   # 先置 UI 过渡态再入队命令；入队返回值作纪元。§Invoke-CardAction
   $state = if ($action -eq 'stop') { '停止中' } else { '启动中' }
+  # 伴随服务（companions）的级联在后台执行器里做（lib/poll.ps1 的 start/stop 分支）：
+  # 只有那里知道主服务到底停成没停成，也才能顺手带上右键与批量这两条入口。
+  # UI 这边只下发主服务这一条命令。
   Set-CardTransition $card $state 0 $now
   $card.PendingEpoch = (Send-ServiceCommand $name $action)
   Set-StatusMessage "$name $state..."
@@ -334,28 +337,52 @@ function Invoke-BatchCommand([string]$act) {
   $stale = 0
   $targets = @()
   foreach ($n in @($script:svc.Keys)) {
+    # 伴随服务不单独下发：它随主服务级联（见下面两段），重复下发只会让队列多等一轮。
+    if (Test-SvcIsCompanion $n) { continue }
     $seen = $script:svcState[$n]
     if (-not $seen -or $seen.st -ne $want) { continue }
     # 没有 at 的条目当作新鲜：旧夹具/外部直接写 svcState 时不该被静默跳过
     if ($seen.at -and ($now - [datetime]$seen.at).TotalMilliseconds -gt $maxAgeMs) { $stale++; continue }
     $targets += $n
   }
+  # 孤儿伴随（只对停止有意义）：主服务已经停了、伴随还在跑。伴随服务没有自己的卡片，
+  # 「全部停止」是它唯一的入口。判据要求主服务**新鲜地**处于「已停止」：主服务还在启动中/
+  # 运行中/状态未知时撤掉依赖，等于把正在用的服务脚下抽走——那种情形由主服务自己的停止命令
+  # 在后台级联处理（见 lib/poll.ps1）。
+  $orphans = @()
+  if ($act -eq 'stop') {
+    foreach ($n in @($script:svc.Keys)) {
+      if (-not (Test-SvcIsCompanion $n)) { continue }
+      $seen = $script:svcState[$n]
+      if (-not $seen -or $seen.st -ne '运行中') { continue }
+      if ($seen.at -and ($now - [datetime]$seen.at).TotalMilliseconds -gt $maxAgeMs) { continue }
+      $owner = Get-SvcCompanionOwner $n
+      if (-not $owner) { continue }
+      $ownerSeen = $script:svcState[$owner]
+      if (-not $ownerSeen -or $ownerSeen.st -ne '已停止') { continue }
+      if ($ownerSeen.at -and ($now - [datetime]$ownerSeen.at).TotalMilliseconds -gt $maxAgeMs) { continue }
+      $orphans += $n
+    }
+  }
   $staleNote = if ($stale) { "（$stale 个状态过期已跳过）" } else { '' }
-  if (-not $targets.Count) { return "没有可$label 的服务（只处理已停止/运行中的终态）$staleNote" }
+  if (-not $targets.Count -and -not $orphans.Count) { return "没有可$label 的服务（只处理已停止/运行中的终态）$staleNote" }
   if ($act -eq 'stop') {
     # 停止可逆但仍要一次确认：一次误点会把整台机器的服务全停掉
     $ok = $true
-    try { $ok = Confirm-BatchStop $script:window $targets.Count $targets } catch { $ok = $false }
+    $all = @($targets) + @($orphans)
+    try { $ok = Confirm-BatchStop $script:window $all.Count $all } catch { $ok = $false }
     if (-not $ok) { return '已取消' }
   }
   $now = [datetime]::Now
   foreach ($n in $targets) {
+    # 伴随服务由后台执行器级联（lib/poll.ps1），这里只下发主服务这一条命令。
     $ep = Send-ServiceCommand $n $act
     $c = $script:cards[$n]
     # 有卡片才置过渡态（省一次探测周期的滞后）；没有卡片的服务靠探测收敛
     if ($c) { Set-CardTransition $c $(if ($act -eq 'start') { '启动中' } else { '停止中' }) $ep $now }
   }
-  "已下发 $($targets.Count) 个${label}命令$staleNote"
+  foreach ($cn in $orphans) { [void](Send-ServiceCommand $cn 'stop') }
+  "已下发 $($targets.Count + $orphans.Count) 个${label}命令$staleNote"
 }
 
 # 建一张服务卡片：只搭视觉树与事件挂接，不查服务、不下命令；
@@ -685,6 +712,22 @@ function Update-CardData([string]$n,[string]$st,[string]$h,[int]$e=0,[switch]$ac
     $h
   } else {
     '等待服务状态更新'
+  }
+  # 伴随服务不合预期时在副标题点名：它们没有自己的卡片，这里是用户唯一能看见它们的地方。
+  # 正常情况（主服务运行中→伴随都在跑，主服务已停→伴随都停了）不加任何字，卡片保持干净。
+  # 只有主服务处于终态时才有「该不该跑」的判据：启动中/停止中本来就是级联过程，此时点名
+  # 只会把正常时序写成故障（重启不级联，伴随保持运行也是预期）。
+  if ($script:svcState -and $st -in @('运行中','已停止') -and (Get-Command Get-SvcCompanions -EA SilentlyContinue)) {
+    $wantSt = if ($running) { '运行中' } else { '已停止' }
+    $mismatch = @()
+    foreach ($cn in @(Get-SvcCompanions $n)) {
+      $cs = $script:svcState[$cn]
+      if (-not $cs -or -not $cs.st -or $cs.st -eq $wantSt) { continue }
+      # 伴随自身的过渡态/未知态还不构成结论，等探测器给出终态再说。
+      if ($cs.st -notin @('运行中','已停止')) { continue }
+      $mismatch += "$cn $($cs.st)"
+    }
+    if ($mismatch.Count) { $c.LblUpBase = "$($c.LblUpBase) · 伴随 " + ($mismatch -join ' / ') }
   }
   Update-CardClock $c ([datetime]::Now)
   Update-CardButtons $c
