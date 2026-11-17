@@ -324,7 +324,7 @@ pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-t
 | `test-exit-confirm` | 退出确认只拦过渡态；无可见窗口或 `NSSM_SM_HEADLESS=1` 时不弹框 |
 | `test-freshness` | 30 秒新鲜度、`Stale` 判定、时钟回拨提示、超时转「无响应」；卡片/批量/胶囊共用 worker 发布的实际采样间隔 |
 | `test-probe-responsiveness` | 命令与关停能打断 5s HTTP 探测、只读响应头即判健康、退出后不留探测 job、无端口服务的采样间隔按状态发布 |
-| `test-deploy-local` | 部署失败恢复旧文件并撤销本轮新增、清理已退役的 `deploy.cmd`、缺失 NSSM 源时报出候选路径 |
+| `test-deploy-local` | 部署失败恢复旧文件并撤销本轮新增、清理已退役的 `deploy.cmd`、缺失 NSSM 源时在覆盖前终止并给出安装提示 |
 | `test-runner-timeout` | 挂起的测试在截止时间被杀并记失败，后续测试照常运行 |
 | `test-probe-none` | `probe=none` 无端口服务：注册/启停/端口占用提示/状态显示不发 HTTP |
 | `test-remove-save-fail` | 删除后保存失败回滚、待保存态提示、右键菜单项随状态启用/禁用 |

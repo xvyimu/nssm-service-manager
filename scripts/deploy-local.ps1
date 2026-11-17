@@ -73,6 +73,26 @@ function Restore-Backup([string[]]$paths, [string]$backupDir, [string]$targetDir
   $failed
 }
 
+# 本机实配只在目标缺失时迁移一次：重复部署不能把用户的清单盖回源仓版本。
+# Copy-Item 可能先建出半截目标再抛（磁盘满 / 杀软占用）；留下的坏清单会让下次部署跳过迁移，
+# GUI 随后按坏清单启动。清掉半成品再抛，让外层照常回滚程序文件。
+function Copy-LocalConfig([string]$SourceRoot, [string]$Target) {
+  foreach ($f in 'services.json', 'config.json') {
+    $src = Join-Path $SourceRoot $f
+    $dst = Join-Path $Target $f
+    if ((Test-Path -LiteralPath $src) -and -not (Test-Path -LiteralPath $dst)) {
+      try { Copy-Item -LiteralPath $src -Destination $dst -Force }
+      catch {
+        try {
+          if (Test-Path -LiteralPath $dst) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($dst, 'OnlyErrorDialogs', 'SendToRecycleBin') }
+        } catch { Write-Warning "迁移失败的半成品未能删除，请手动清理：$dst" }
+        throw
+      }
+      Write-Host "已迁移本机配置：$f"
+    }
+  }
+}
+
 function Invoke-DeployFiles([string]$SourceRoot, [string]$Target, [string]$backup, [string[]]$files, [scriptblock]$Complete) {
   $attempted = @()
   try {
@@ -202,15 +222,7 @@ Invoke-DeployFiles $SourceRoot $Target $backup $files {
   $stale = @($old | Where-Object { $files -notcontains $_ -and $_ -ne 'scripts\deploy.cmd' })
   if ($stale.Count) { Write-Host "提示：这些旧文件新版本里已没有，保留未删：$($stale -join ', ')" }
 
-  # 本机实配只在目标缺失时迁移一次：重复部署不能把用户的清单盖回源仓版本。
-  foreach ($f in 'services.json', 'config.json') {
-    $src = Join-Path $SourceRoot $f
-    $dst = Join-Path $Target $f
-    if ((Test-Path -LiteralPath $src) -and -not (Test-Path -LiteralPath $dst)) {
-      Copy-Item -LiteralPath $src -Destination $dst -Force
-      Write-Host "已迁移本机配置：$f"
-    }
-  }
+  Copy-LocalConfig $SourceRoot $Target
 
   Set-AdminOnlyAcl $Target
   Write-Host '程序目录 ACL：Administrators/SYSTEM 完全控制，Users 只读执行'

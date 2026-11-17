@@ -706,6 +706,9 @@ configWarning 由 config.ps1（"config.json 无效：…"）或 Load-Svc（"serv
 
 ### Submit-AddService
 
+> 已废弃（2026-11-17）：函数拆成 `Prepare-AddService`（UI 校验）/ `Invoke-AddServiceRegistration`（后台调用）/
+> `Complete-AddService`（回 UI 写清单），当前实现见 `§AsyncRegistration`；下面保留历史描述，不再对应代码。
+
 添加提交体（Show-Add 的 ok_Click 执行的部分），$fields 各值已 trim。
 返回 $true = 关弹窗（注册成功，或成功但保存失败）；$false = 被拦下，弹窗保持打开。
 抽出来是为了可直测（原先全内联在 Click 里，没有测试缝）。
@@ -725,9 +728,9 @@ $script:toggleMax、logview.ps1 的 $load 那两处），变量在**点击时**�
 New-AddDialog 返回后它的局部作用域就没了，不建闭包的话 $f / $inName 全是 $null ——
 点「注册并启动」抛 null-valued 异常，Submit-AddService 一次都进不去，界面表现为点了没反应。
 
-提交逻辑抽到 Submit-AddService 以便直测（校验顺序、Test-EnvPairs、敏感键 OKCancel
-分支、Save 失败分支原本全内联在 Click 里，没有测试缝）。$f 作 owner 供 MessageBox 用。
-返回 $true 表示注册成功（调用方据此关弹窗）。
+提交逻辑抽到 Prepare-AddService / Complete-AddService 以便直测（校验顺序、Test-EnvPairs、
+敏感键 OKCancel 分支、Save 失败分支原本全内联在 Click 里，没有测试缝）。$f 作 owner 供 MessageBox 用；
+注册完成、清单写成功后由调用方关弹窗（见 §AsyncRegistration）。
 
 ### Show-Add
 

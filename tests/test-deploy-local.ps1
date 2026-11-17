@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 # 只加载函数，不执行提权、真实 ACL 或部署。文件操作仍用真实临时目录。
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $RepoRoot 'scripts/deploy-local.ps1'), [ref]$tokens, [ref]$errors)
-foreach ($name in 'Restore-Backup','Invoke-DeployFiles','Get-NssmSource') {
+foreach ($name in 'Restore-Backup','Copy-LocalConfig','Invoke-DeployFiles','Get-NssmSource') {
   $fn = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }.GetNewClosure(), $true)
   if ($fn) { . ([scriptblock]::Create($fn.Extent.Text)) }
 }
@@ -72,6 +72,28 @@ try {
   Assert (-not (Test-Path -LiteralPath (Join-Path $target 'scripts\deploy.cmd'))) '部署成功后应精确退役旧cmd入口'
   Assert ((Get-Content -LiteralPath (Join-Path $target 'old.ps1') -Raw) -eq 'new') '部署成功应保留新程序内容'
   Write-Output 'PASS: 部署成功保留新版且退役旧cmd入口，失败时可恢复旧入口'
+
+  # 首次部署迁移本机配置：复制中途失败不得留下半截清单——留下后下次部署因目标存在而跳过迁移，
+  # GUI 会按坏清单启动。
+  $migrateSource = Join-Path $fixture 'migrate-source'; $migrateTarget = Join-Path $fixture 'migrate-target'
+  New-Item -ItemType Directory -Path $migrateSource,$migrateTarget | Out-Null
+  [IO.File]::WriteAllText((Join-Path $migrateSource 'program.ps1'),'new')
+  foreach ($f in 'services.json','config.json') { [IO.File]::WriteAllText((Join-Path $migrateSource $f),'src') }
+  function Copy-Item {
+    param([string]$LiteralPath,[string]$Destination,[switch]$Force)
+    if ($LiteralPath -eq (Join-Path $migrateSource 'services.json')) {
+      [IO.File]::WriteAllText($Destination,'truncated')
+      throw 'injected migration failure'
+    }
+    Microsoft.PowerShell.Management\Copy-Item -LiteralPath $LiteralPath -Destination $Destination -Force:$Force
+  }
+  $failure = $null
+  try { Copy-LocalConfig $migrateSource $migrateTarget } catch { $failure = $_ }
+  Remove-Item Function:Copy-Item
+  Assert ($failure.Exception.Message -match 'injected migration failure') '迁移失败应保留原始错误'
+  Assert (-not (Test-Path -LiteralPath (Join-Path $migrateTarget 'services.json'))) '半截清单不得留在目标目录'
+  Assert (-not (Test-Path -LiteralPath (Join-Path $migrateTarget 'config.json'))) '迁移首个文件失败后不得继续'
+  Write-Output 'PASS: 本机配置迁移失败时不留下半截清单'
 } finally {
   if (Test-Path -LiteralPath $fixture) {
     $tempPrefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
