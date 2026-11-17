@@ -326,3 +326,40 @@ function Get-SvcStateMapQuiet([int]$timeoutMs = 0){
     $null
   }
 }
+
+# ---- 伴随服务级联（companions）----
+# 放在本文件而不是 poll.ps1：poll 有顶层主循环，点源即启动；这里是纯函数，可单测。
+# 顺序口径由本文件唯一实现，UI（卡片/批量/右键）只负责把命令入队：
+#   start —— 先起伴随，再起主服务（依赖先就绪）；
+#   stop  —— 主服务停成功之后才停伴随（主服务没停成就撤依赖，等于把在跑的服务脚下抽走）。
+
+# 主服务的伴随服务名。$svc 是清单（$sync.svc 或 $script:svc），读枚举走 $gate（可能为 $null）。
+function Get-CompanionNames([string]$n, $svc, $gate) {
+  if (-not $svc -or -not $n) { return }
+  if ($gate) { [Threading.Monitor]::Enter($gate) }
+  try {
+    $entry = $svc[$n]
+    if ($entry -is [System.Collections.IDictionary] -and $entry.Contains('companions')) { return @($entry['companions']) }
+  } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }
+  return
+}
+
+# 启动伴随。执行器由调用方注入（runspace 里是真 sc 调用，单测里是记录脚本块）。
+# 伴随失败不阻断主服务：主服务起来后健康探测会报错、卡片副标题也会点名，比把主服务一起拦下
+# 更容易看出是哪一层坏了。返回失败的伴随名。
+function Invoke-CompanionStart([string]$n, $svc, $gate, [scriptblock]$startOne) {
+  $failed = @()
+  foreach ($cn in @(Get-CompanionNames $n $svc $gate)) {
+    if (-not (& $startOne $cn)) { $failed += $cn }
+  }
+  $failed
+}
+
+# 停止伴随。**调用方必须先确认主服务已经停了**——本函数只负责顺序与结果收集。
+function Invoke-CompanionStop([string]$n, $svc, $gate, [scriptblock]$stopOne) {
+  $failed = @()
+  foreach ($cn in @(Get-CompanionNames $n $svc $gate)) {
+    if (-not (& $stopOne $cn)) { $failed += $cn }
+  }
+  $failed
+}

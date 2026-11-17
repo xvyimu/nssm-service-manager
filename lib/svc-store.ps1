@@ -80,9 +80,28 @@ function Read-SvcFile([string]$path){
       }
       $entry[$opt] = $v
     }
+    # companions：随主服务一起启停的伴随服务（如 ARTEX 的 PostgreSQL-ARTEX）。伴随服务不再单独
+    # 出卡片，主卡片启停时按依赖方向级联。这里只解析形状；名字是否存在、是否被两个主服务同时
+    # 认领、是否嵌套，要等全表读完才能判，见下面的第二遍。
+    $actualComp = @($j[$k].Keys | Where-Object { $_ -ieq 'companions' }) | Select-Object -First 1
+    if ($actualComp) {
+      $rawComp = $j[$k][$actualComp]
+      if ($null -eq $rawComp -or $rawComp -is [System.Collections.IDictionary]) {
+        $script:svcFieldWarnings += "$k 的 companions 必须是服务名数组，已忽略"
+      } else {
+        $compNames = @()
+        foreach ($cn in @($rawComp)) {
+          $cn = ([string]$cn).Trim()
+          if (-not $cn) { continue }
+          if ($cn -ieq $k) { $script:svcFieldWarnings += "$k 的 companions 不能包含自己，已忽略"; continue }
+          if ($compNames -notcontains $cn) { $compNames += $cn }
+        }
+        if ($compNames.Count) { $entry['companions'] = $compNames }
+      }
+    }
     # 白名单外的键会被 Save-Svc 的全量写回静默抹掉——记一条提示。
     # 用户把字段名打错一个字母时，原来的表现是「配了但没生效」，且连提示都没有。
-    $known = @('port','url','probe','toggleTimeoutMs','httpTimeoutMs','tcpTimeoutMs','waitStoppedTimeoutMs')
+    $known = @('port','url','probe','toggleTimeoutMs','httpTimeoutMs','tcpTimeoutMs','waitStoppedTimeoutMs','companions')
     foreach ($key in $j[$k].Keys) {
       if (-not @($known | Where-Object { $_ -ieq $key }).Count) {
         $script:svcFieldWarnings += "$k 的字段 $key 不被识别，保存时会被丢弃"
@@ -90,7 +109,71 @@ function Read-SvcFile([string]$path){
     }
     $o[$k] = $entry
   }
+  # 第二遍校验 companions：名字必须能在同一份清单里找到（大小写不敏感，取清单里的真实键名）、
+  # 一个伴随服务只能被一个主服务认领、伴随服务自身不能再带 companions（不支持嵌套——两级已经
+  # 够用，串联会让「谁该先停」变成猜谜）。不合格的只丢这一条并记提示，不影响整份清单。
+  # 先固化「声明过 companions 的服务」快照。第二遍会就地改写条目（删掉坏写法），若边循环边读
+  # $o[...]，嵌套判定就会取决于键的遍历顺序——互相认领 A↔B 会塌缩成一个方向，只剩一张卡。
+  $declared = @{}
+  foreach ($k in @($o.Keys)) {
+    if ($o[$k].Contains('companions')) { $declared[$k] = $true }
+  }
+  $owners = @{}
+  foreach ($k in @($o.Keys)) {
+    if (-not $o[$k].Contains('companions')) { continue }
+    $kept = @()
+    foreach ($cn in @($o[$k]['companions'])) {
+      $actualName = @($o.Keys | Where-Object { $_ -ieq $cn }) | Select-Object -First 1
+      if (-not $actualName) {
+        $script:svcFieldWarnings += "$k 的 companions 指向不存在的服务 $cn，已忽略"
+        continue
+      }
+      if ($owners.ContainsKey($actualName)) {
+        $script:svcFieldWarnings += "$actualName 已经是 $($owners[$actualName]) 的伴随服务，$k 这条已忽略"
+        continue
+      }
+      if ($declared.ContainsKey($actualName)) {
+        $script:svcFieldWarnings += "$actualName 自己也配了 companions，不支持嵌套，$k 这条已忽略"
+        continue
+      }
+      $owners[$actualName] = $k
+      $kept += $actualName
+    }
+    if ($kept.Count) { $o[$k]['companions'] = $kept } else { $o[$k].Remove('companions') }
+  }
   $o
+}
+
+# 主服务的伴随服务名（无则空数组）。只在 UI 线程调用：$script:svc 只由 UI 线程改写，
+# 后台 runspace 读的是 $sync.svc（见 Get-CompanionNames），两套清单不混用，因此这里不加锁。
+function Get-SvcCompanions([string]$name) {
+  if (-not $script:svc -or -not $script:svc.Contains($name)) { return @() }
+  $entry = $script:svc[$name]
+  if ($entry -isnot [System.Collections.IDictionary] -or -not $entry.Contains('companions')) { return @() }
+  @($entry['companions'])
+}
+
+# 伴随服务的主服务名（不是伴随服务则返回空串）。批量停止要用它判断「主服务是否真的已停」：
+# 主服务还在启动中/运行中时停伴随 = 抽走依赖。
+function Get-SvcCompanionOwner([string]$name) {
+  if (-not $script:svc) { return '' }
+  foreach ($k in @($script:svc.Keys)) {
+    $entry = $script:svc[$k]
+    if ($entry -isnot [System.Collections.IDictionary] -or -not $entry.Contains('companions')) { continue }
+    if (@($entry['companions']) -contains $name) { return [string]$k }
+  }
+  ''
+}
+
+# 是否是某个主服务的伴随服务：是就不单独出卡片（由主卡片级联启停）。
+function Test-SvcIsCompanion([string]$name) {
+  if (-not $script:svc) { return $false }
+  foreach ($k in @($script:svc.Keys)) {
+    $entry = $script:svc[$k]
+    if ($entry -isnot [System.Collections.IDictionary] -or -not $entry.Contains('companions')) { continue }
+    if (@($entry['companions']) -contains $name) { return $true }
+  }
+  $false
 }
 
 # 载入服务清单：优先 services.json；缺失或解析失败时回落 services.example.json，
@@ -234,7 +317,9 @@ function Invoke-SvcReload {
   # 后台每轮重读 $sync.svc；换了对象必须同步这个键，否则探测的还是旧清单。
   if ($script:sync) { $script:sync.svc = $script:svc }
   foreach ($n in @($script:cards.Keys)) {
-    if (-not $script:svc.Contains($n)) { $script:cards.Remove($n) }
+    # 新声明为伴随服务的条目也不该留卡片：它不再显示，但过渡态门闩与超时逃生仍会读到它。
+    $companionNow = (Get-Command Test-SvcIsCompanion -EA SilentlyContinue) -and (Test-SvcIsCompanion $n)
+    if (-not $script:svc.Contains($n) -or $companionNow) { $script:cards.Remove($n) }
   }
   $script:curPage = 0
   $script:svcFileHintShown = $false

@@ -193,6 +193,21 @@ Copy-Item services.example.json services.json
 
 健康值只影响圆点颜色与双击切换；「关闭」按钮只看服务状态，不会因为探测不过而锁死。
 
+### 伴随服务（companions，一起启停）
+
+主服务离不开的依赖（如 ARTEX 的 PostgreSQL）可以挂在主服务条目上，作为**伴随服务**：它不再单独占一张卡片，启停跟着主服务走。
+
+```json
+{
+  "ARTEX":            { "port": 18787, "url": "http://127.0.0.1:18787", "companions": ["PostgreSQL-ARTEX"] },
+  "PostgreSQL-ARTEX": { "port": 5432, "probe": "tcp" }
+}
+```
+
+- **启动**先起伴随、再起主服务；**停止**先停主服务，**主服务真的停成了**才撤伴随（主服务停失败时依赖保持运行）。级联在后台执行器里做，所以卡片按钮、右键菜单、批量「全部启动 / 全部停止」三条入口都覆盖；重启主服务不动依赖。
+- 伴随服务仍要写在同一个 `services.json` 里（它是一条真实服务）；只是不出卡片、不单独下发命令。状态在卡片副标题上点名——例如主服务运行中而 PostgreSQL 已停止时显示「伴随 PostgreSQL-ARTEX 已停止」。
+- 限制：只支持两级，伴随服务自身不能再配 `companions`；一个伴随服务只能被一个主服务认领；指向不存在的服务只丢弃该条并在配置提示里说明，不影响整份清单。主服务已停但伴随还在跑时，「全部停止」会把它单独停掉（否则它没有别的入口）。
+
 > **环境变量与注册表暴露面：** NSSM 把 `AppEnvironmentExtra` 明文写进 `HKLM\SYSTEM\CurrentControlSet\Services\<服务名>\Parameters`，该键 ACL 默认允许 `BUILTIN\Users` 读取——本机任意标准用户无需提权即可读出明文。**含密钥的变量（`*_API_KEY` / `*_TOKEN` / `*SECRET` / `*PASSWORD` / `*ACCESS_KEY` / `*CREDENTIAL` / `*PRIVATE_KEY` / `*PASSPHRASE`）不要直接填环境变量框**，改为让服务本体从独立密钥文件读（仅 Administrators+SYSTEM 可读），路径不进注册表。GUI 与 CLI 在填此类键名时会提示；`*_FILE` 后缀仅在值看起来像路径时才跳过提示。要彻底收紧键 ACL 用下面的脚本。
 
 ### 收紧 Parameters 注册表键 ACL（可选，深度防御）

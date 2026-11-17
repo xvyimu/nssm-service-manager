@@ -236,7 +236,8 @@ function Get-SvcNames {
   $gate = if ($script:sync -and $script:sync.gate) { $script:sync.gate } else { $null }
   if ($gate) { [Threading.Monitor]::Enter($gate) }
   # 返回值会被调用方用 @() 包住：只有一个服务时函数输出会退化成单个字符串
-  try { @($script:svc.Keys) } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }
+  # 伴随服务（companions）不单独出卡片：它随主卡片级联启停，占位就白占一页。
+  try { @($script:svc.Keys | Where-Object { -not (Test-SvcIsCompanion $_) }) } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }
 }
 
 # 按 PerPage 算总页数；空清单也返回 1 页（Max），避免分页器出现「第 0 页」。
