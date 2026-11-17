@@ -9,6 +9,15 @@ $ErrorActionPreference = 'Stop'
 foreach ($module in 'config','util','svc-input','dialogs') { . (Join-Path $RepoRoot "lib/$module.ps1") }
 . (Join-Path $PSScriptRoot 'test-helpers.ps1')
 
+# 分阶段同步调用仅用于校验/幂等断言；真实按钮的异步路径另做Dispatcher测试。
+function Submit-AddService($owner,[hashtable]$fields) {
+  $request = Prepare-AddService $owner $fields
+  if (-not $request) { return $false }
+  try { $alreadyRegistered = Invoke-AddServiceRegistration $request @{} }
+  catch { Show-DialogError $owner $_.Exception.Message; return $false }
+  Complete-AddService $owner $request $alreadyRegistered
+}
+
 # ---- 夹具：不存在真实服务，全部副作用替身化 ----
 $script:svc = @{}
 $script:servicePresent = $true

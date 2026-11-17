@@ -72,7 +72,7 @@ UI 线程 (STA)                          后台 runspace (STA)
 ```
 
 - **过渡态**（启动中/停止中/删除中）：命令驱动，绑 epoch，有硬上限逃生（`ToggleTimeoutMs × TransitionHardCapFactor`）。
-- **陈旧态**：`svcState.at` 超过 `2 × ProbeIntervalMs` 未更新 → 显示「状态未知」，禁用动作。
+- **陈旧态**：`svcState.at` 超过 `2 × 实际采样间隔` 未更新 → 显示「状态未知」，禁用动作。实际间隔由 worker 每轮发布到 `$sync.sampleIntervalMs`，取「每个服务两次真样本之间的最长间隔」而不是本轮轮询睡眠时长：有运行中服务（含它们处于中间态）时是 `ProbeIntervalMs`（健康探测的限流节奏），只有停止服务在中间态时是 `ProbePendingMs`，全停空闲是 `ProbeIdleMs`。卡片、批量与胶囊共用同一口径——按固定 4s 算会把 15s 空闲轮询误判成陈旧，按中间态 1s 轮询算会把 4s 一次的健康样本误判成陈旧。
 - **陈旧判据的例外**：worker 正在执行命令队列里的命令（start / stop / restart / remove；实现上覆盖整段命令处理，含非阻塞部分）时 `$sync.busy` 为真，`Update-CardFreshness` 直接返回、不判陈旧——这些命令期间没有任何探测，不设例外的话所有「运行中」卡片都会误判成未知。`busy` 由 GUI 预置、由 poll 在命令处理外层成对置位复位（一处 `Set-PollBusy $true` 在 `switch` 之前、一处复位在 `finally`，分支内不再各自成对）；键缺失时静默跳过，供没有「其它卡片」概念的 CLI 复用同一函数。
 - **离线态**：后台 runspace 结束 → 所有卡片转未知（`Set-CardOffline`）。
 - **待保存**：服务已从 SCM 删除但清单写盘失败 → 卡片保留，右键「重试保存清单」。

@@ -1023,8 +1023,64 @@ lib/ 与入口合计 6 处 catch {}（占 6 行；累计把 50 处改成带场�
 
 > `lib/poll.ps1` 定义，`lib/card.ps1` 只读。跨 runspace 的粗粒度布尔槽位，语义是「worker 正在执行命令队列里的命令」——实现上覆盖整段命令处理（含非阻塞部分），不是只在阻塞调用两侧置位。
 
-- **为什么需要**：start / stop / restart / remove 都在 worker 的命令队列里同步执行，最长分别是 30s（`$svc.Start()` 等满 ServicesPipeTimeout）与 12s（`Wait-Stopped` 预算）。阻塞期间 worker 不产探测样本，而卡片陈旧判据是 `2 × ProbeIntervalMs`（默认 8000ms）；不设例外的话，阻塞一开始所有「运行中」卡片就翻「状态未知」并被禁用动作。
+- **为什么需要**：start / stop / restart / remove 都在 worker 的命令队列里同步执行，最长分别是 30s（`$svc.Start()` 等满 ServicesPipeTimeout）与 12s（`Wait-Stopped` 预算）。阻塞期间 worker 不产探测样本，而卡片陈旧判据是 `2 × 实际采样间隔`（有运行中服务时默认 8000ms）；不设例外的话，阻塞一开始所有「运行中」卡片就翻「状态未知」并被禁用动作。
 - **谁置位**：不在分支里各写成对。整个命令处理是一段：`switch($act){` 之前 `Set-PollBusy $true`，命令处理的 `catch` 之后接 `} finally { Set-PollBusy $false }`。这样 start / stop / restart / remove 的每一处阻塞调用（含 restart 的停止等待与随后的启动）都在窗口内，将来新增分支也不会漏包；复位在 finally，成功、失败、抛异常三条路都走到。
 - **谁读**：`Update-CardFreshness` 计算陈旧前先看 busy，为真直接 return（保持现有显示，既不刷新也不判陈旧）。
 - **键必须先存在**：`Set-PollBusy` 缺键时静默跳过，不凭空加键。GUI 端构造 `$script:sync` 时预置 `busy = $false`；CLI 路径没有这个键，也没有 busy 概念（CLI 串行调用，不存在「其它卡片」）。
 - **已知缺口**：busy 是布尔而非带 `since` 的对象，没有运行时不变式兜底。若某处漏写 finally，该槽位会永久为真，后果是卡片不再翻陈旧；worker 整体死亡另有 `bgDeathReported` 分支收敛，不依赖 busy。
+
+## §StateSampleInterval
+
+> `lib/config.ps1` 的 `Get-StateSampleInterval` 是唯一读点；worker 在 `lib/poll.ps1` 每轮末尾写 `$sync.sampleIntervalMs`；`lib/card.ps1` 与 `lib/xaml.ps1` 只读。
+
+- **问题**：陈旧判据原来固定按 `2 × ProbeIntervalMs`（默认 8000ms）算。但全停空闲时间隔是 `ProbeIdleMs`（15000ms），于是每轮探测之间 8–15s 的空档会被误判成「状态未知」——服务明明停止着，卡片却周期性翻未知、按钮被禁用。
+- **做法**：worker 每轮把**实际采样间隔**写进 `$sync.sampleIntervalMs`：有运行中服务或在途命令 → `ProbeIntervalMs`；只有停止服务在中间态 → `ProbePendingMs`；空闲 → `ProbeIdleMs`。卡片、批量目标筛选、新鲜度胶囊统一走 `Get-StateSampleInterval`；键缺失（CLI、旧测试夹具）时回落到 `ProbeIntervalMs`。
+- **不能直接发布睡眠时长**：中间态轮询是 1s，但运行中服务的健康探测仍按 `ProbeIntervalMs` 限流（跳过轮沿用旧 `at`）。按 1s 发布会让 `2×1s` 把 4s 一次的正常样本判成陈旧——每 4s 周期里有 1–2s 所有运行中卡片翻未知、批量命令把目标当过期跳过。第一版就踩了这个坑，`test-probe-responsiveness` 的「pending + running」用例钉住回归。
+- **为什么不是「先探测再等」**：间隔是循环尾算出来的，正是下一轮开始前要等的时间，用它做阈值与真实行为严格一致；另设一套「超时 = max(2×interval, 固定值)」只会制造第二个真相。
+- **测试**：`tests/test-freshness.ps1` 断言 9s 不陈旧、31s 陈旧；`tests/test-probe-responsiveness.ps1` 断言 worker 真的发布 1111ms / 8000ms。
+
+## §ZeroConfigValues
+
+> `lib/nssm.ps1` 的 `Set-NssmServiceParams` 读 `$script:config`；`lib/svc-input.ps1` 的 `Get-NssmSetSpec` 只负责拼值。
+
+- **问题**：`if ($script:config.AppRotateSeconds) { ... }` 这类真值判断把合法的 `0` 当成「没配置」，回落到默认值。`0` 在 NSSM 里有明确语义（不按大小/年龄轮转、不给控制台收尾时间），用户写了却被静默改掉，且只测 `Get-NssmSetSpec` 永远发现不了——丢零发生在更外层的包装。
+- **做法**：判断改为 `$null -ne $script:config.X`，零值原样下发。`tests/test-config-params.ps1` 写一份全零 `config.json`，断言最终 `nssm set` 的参数就是 `0`，不是默认值。
+
+## §ProbeCancellation
+
+> `lib/poll.ps1` 的探测轮：同一进程 `ForEach-Object -Parallel -AsJob` + 每轮一个 `CancellationTokenSource`。
+
+- **问题**：探测原来在 worker 里同步跑完才处理命令。HTTP 超时 3s、用户调到 5s 时，点「启动」要排队等完整轮探测——实测命令延迟从几十毫秒涨到秒级。
+- **做法**：每轮探测作为 job 启动，worker 每 25ms 看一次 `$sync.stop` 与命令队列；有命令/关停就 `Cancel()`（TCP 的 `WaitAny` 同时等连接和取消令牌，HTTP 用 linked CTS）并 `StopJob()`，不再 `continue` 等待结果。健康请求改为 `ResponseHeadersRead`：只看状态行/响应头，不下载用不到的响应体。
+- **回收**：`Remove-Job -Force` 放在 `finally`，退出时 job 不留在 runspace 里；`tests/test-probe-responsiveness.ps1` 关停后检查 `Get-Job` 数量为 0。
+- **不要加 `-ErrorAction Stop`**：`Receive-Job` 会把 job 的错误当终止错误抛出，而并行块里仍有 try 覆盖不到的同步异常（资源压力下 `BeginConnect`/`TcpClient` 构造就可能同步抛）。抛一次就终结整个轮询线程，UI 走 `bgDeathReported` 冻结且不自愈；让异常只进 error stream，本轮结果照常读取。
+- **测试坑**：测试里断言 `$worker.PowerShell.Streams.Error.Count` 可以，但**不要**枚举该集合——`PSDataCollection` 的枚举器会阻塞到管线结束，worker 还在跑时 `-join` 会把整个测试挂死（已写进测试注释）。
+
+## §AsyncRegistration
+
+> `lib/dialogs.ps1`：`Prepare-AddService`（UI 线程校验）→ `Start-AddServiceRegistration`（后台 `PowerShell` runspace）→ 计时器轮询 `Handle.IsCompleted` → `Complete-AddService`（UI 线程写清单）。
+
+- **问题**：注册要跑 `sc.exe` / `nssm.exe`（各带超时），在按钮点击里同步执行，注册期间窗口完全无响应，Windows 会把窗口标成「未响应」。
+- **做法**：UI 线程只做输入校验与确认。后台 runspace 收到一份请求快照、`$script:nssm`、配置快照、日志目录与一个 `Synchronized` 的进度哈希表，dot-source `nssm.ps1` + `dialogs.ps1` 后调用同一个 `Invoke-AddServiceRegistration`。UI 用现有 `AckPollIntervalMs` 计时器轮询完成状态，进度文字直接从哈希表读。
+- **刻意保留在主线程**：清单写入（`Add-SvcEntry`，小文件）与所有对话框；失败仍保留表单供重试，不假装撤销已注册的服务。
+- **完成前不能关窗**：底层注册没有可安全撤销的取消，`Closing` 事件在 `$registration.Operation` 非空时取消关闭；这是已知取舍，避免用户关窗后留下「注册了但清单没写」的孤儿。
+
+## §DeployRollback
+
+> `scripts/deploy-local.ps1`：`Restore-Backup` / `Invoke-DeployFiles`；双击入口 `scripts/deploy.vbs`。
+
+- **问题**：上一版只把「有旧备份的文件」复制回去，本轮新增的文件留在目标目录；ACL 收紧、NSSM 安装或启动阶段失败时也不会触发还原——结果可能是半新半旧，甚至新文件都在但 ACL 没设。
+- **做法**：所有会改变目标状态的动作包在同一个 `try` 里（复制 → SHA256 校验 → ACL → 固定 nssm）、任何一个阶段失败都还原：有备份的从备份复制，本轮新增的（备份里没有）删到回收站；还原本身失败的路径逐条列出。相对路径先做 `GetFullPath` 并断言落在目标目录内，防止清单里的 `..` 写到别处。
+- **退役文件**：`scripts\deploy.cmd` 不再随包发布；部署时若目标目录还有它，作为「本轮移除」一并清理（回收站），避免旧入口继续被双击。
+- **日志**：默认 `%LOCALAPPDATA%\ServiceManager\deploy.log`；`deploy.vbs` 用隐藏窗口跑（不弹黑窗），结束后弹结果框，失败时附日志末尾。
+- **测试**：`tests/test-deploy-local.ps1` 用真实临时目录跑 `Restore-Backup` 与 `Invoke-DeployFiles` 的失败路径，不碰现用装机目录。
+
+## §TestRunnerTimeout
+
+> `tests/run-all.ps1` 的 `Invoke-RegressionTest`：每个 `test-*.ps1` 起独立子进程，`WaitForExit(TestTimeoutSeconds * 1000)`。
+
+- **问题**：以前用 `& pwsh -File` 同步调用，一个挂死的测试（等待永不触发的事件、被阻塞的集合枚举）会让整个回归永远不结束，CI 只能等作业级超时。
+- **做法**：子进程 + 截止时间；超时 `Kill($true)` 整棵进程树并记一条失败，后续测试照常运行。默认 120s，可用 `-TestTimeoutSeconds` 覆盖。
+- **输出编码**：无控制台的子 pwsh 按系统 OEM 代码页（中文系统 936）写 stdout，父进程默认按控制台编码（常为 UTF-8）解码，中文 PASS 行会变成乱码。父进程按子进程实际使用的 OEM 代码页设 `StandardOutputEncoding`/`StandardErrorEncoding` 解码。
+- **为什么不用 `-Command` 改子进程编码**：`pwsh -Command "& '<脚本>'"` 会让脚本落到子作用域，`GetNewClosure()` 生成的脚本块看不到脚本级点源的函数——WPF 事件处理器直接报「术语 Resolve-ProbeSpec 不会被识别」。`-File` 让脚本在全局作用域执行，闭包才能解析到这些函数，必须保留。
+- **测试**：`tests/test-runner-timeout.ps1` 点源总入口的真实函数，用 1s 截止时间跑一个 `Start-Sleep 30` 的夹具，断言只失败挂起项、后一项仍产出 PASS。

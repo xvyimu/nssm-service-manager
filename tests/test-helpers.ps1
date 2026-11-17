@@ -167,7 +167,8 @@ function New-TestSc {
 # 上一版的 try/catch 把「一个 worker 从未关、另一个关两次」静默吞成绿灯——泄漏就是这么溜过去的。
 function Close-FakePoll($worker) {
   $worker.Sync.stop = $true; [void]$worker.Sync.wake.Set()
-  $worker.PowerShell.Stop(); $worker.PowerShell.Dispose(); $worker.Runspace.Dispose()
+  Assert ($worker.Handle.AsyncWaitHandle.WaitOne(2000)) 'Poll did not acknowledge shutdown within 2000ms.'
+  $worker.PowerShell.Dispose(); $worker.Runspace.Dispose()
   foreach ($name in 'wake', 'executedReady', 'probeStarted') { $worker.Sync[$name].Dispose() }
   $script:fakePollOpen = [int]$script:fakePollOpen - 1
 }

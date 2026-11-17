@@ -137,8 +137,8 @@ function Confirm-ExitBusy($owner,[string]$what){
     '有操作在途','YesNo','Warning','No')) -eq 'Yes'
 }
 
-# 添加提交体（ok_Click 执行部分），$fields 各值已 trim；返回 $true 关弹窗、$false 保持打开。§Submit-AddService
-function Submit-AddService($owner,[hashtable]$fields){
+# 添加前只在 UI 做输入校验与确认；注册参数随后交给后台。§Submit-AddService
+function Prepare-AddService($owner,[hashtable]$fields){
   $n=[string]$fields.n; $exe=[string]$fields.exe
   # 探测口径：auto（缺省，TCP 通且 HTTP 200）/ tcp（TCP 通即正常）/ http / none（无端口服务）。
   # 非 HTTP 服务（数据库、gRPC、纯 socket）必须选 tcp，否则卡片永远不是绿点；白名单与 CLI 同一份。§Read-SvcFile
@@ -168,7 +168,7 @@ function Submit-AddService($owner,[hashtable]$fields){
   $resolved = Resolve-ProbeSpec $probe $url $p
   $probe = $resolved.probe; $url = $resolved.url
   # GUI 的 env 以逗号分隔（字段分隔符），且多一层格式校验（CLI 不做）
-  $envPairs = ConvertTo-EnvPairs $envRaw ','
+  $envPairs = @(ConvertTo-EnvPairs $envRaw ',')
   $envErr = Test-EnvPairs $envPairs
   if($envErr){ Show-DialogError $owner $envErr; return $false }
   # 敏感键名只提示不阻断：明文会进注册表（BUILTIN\Users 可读），建议改用 *_FILE。
@@ -193,30 +193,55 @@ function Submit-AddService($owner,[hashtable]$fields){
       Show-DialogWarning $owner "「$n」将以 LocalSystem 运行，但无法判定可执行文件所在目录的权限（$exeDirVerdict）：`n$(Split-Path $exe -Parent)`n`n这不等于安全——请人工确认该目录仅管理员可写。" '安全姿态未知'
     }
   }
-  # 幂等续做：上次注册成功但清单没写成时，重试会走到这里。再 install 只会报「已存在」，
-  # 因此已存在就只补写参数——用户点重试即可收敛，不必先 nssm remove 再重来。
-  $alreadyRegistered = $false
-  try { $alreadyRegistered = Test-ServicePresent $n } catch { Write-Verbose "dialogs.ps1: 检测服务是否已注册失败（按未注册处理）：$($_.Exception.Message)" }
-  try {
-    if ($alreadyRegistered) {
-      Set-NssmServiceParams $n $exe $dir $par $envPairs $account
-      # Application 只在下一次启动时生效。这里刻意不查服务状态：UI 线程不能调 Get-Service
-      # （可能阻塞，违反 PROJECT.md「UI 线程绝不碰 I/O」），而「注册成功、清单没写成」的重试场景
-      # 往往连卡片缓存都没有。无状态可读，就无条件提示一句。
-      Show-DialogWarning $owner "「$n」参数已更新。若服务已在运行，需重启后才生效（右键卡片「重启」）；未运行会自动启动。" '参数已更新'
-    }
-    else { Install-NssmService $n $exe $dir $par $envPairs $account }
-  } catch {
-    Show-DialogError $owner $_.Exception.Message; return $false
+  @{ n=$n; p=$p; exe=$exe; url=$url; dir=$dir; par=$par; envPairs=$envPairs; account=$account; probe=$probe }
+}
+
+# 注册成功但清单没写成时，重试只补参数；不重复 install，也不在失败后删除已有服务。
+function Invoke-AddServiceRegistration([hashtable]$request,[hashtable]$progress){
+  $progress.Text = '正在检查服务…'
+  $alreadyRegistered = Test-ServicePresent $request.n
+  if ($alreadyRegistered) {
+    $progress.Text = '正在更新服务参数…'
+    Set-NssmServiceParams $request.n $request.exe $request.dir $request.par $request.envPairs $request.account
+  } else {
+    $progress.Text = '正在注册服务…'
+    Install-NssmService $request.n $request.exe $request.dir $request.par $request.envPairs $request.account
   }
-  $saveErr = Add-SvcEntry $n $p $url $probe
+  [bool]$alreadyRegistered
+}
+
+function Start-AddServiceRegistration([hashtable]$request){
+  $ps = [powershell]::Create()
+  $progress = [hashtable]::Synchronized(@{Text='正在检查服务…'})
+  [void]$ps.AddScript({
+    param($libRoot,$request,$nssmPath,$configSnapshot,$logPath,$progress)
+    $ErrorActionPreference = 'Stop'
+    $script:nssm = $nssmPath
+    $script:config = $configSnapshot
+    $script:logDir = $logPath
+    . (Join-Path $libRoot 'nssm.ps1')
+    . (Join-Path $libRoot 'dialogs.ps1')
+    Invoke-AddServiceRegistration $request $progress
+  }).AddArgument($PSScriptRoot).AddArgument($request).AddArgument($script:nssm).AddArgument($script:config).AddArgument($logDir).AddArgument($progress)
+  try { $handle = $ps.BeginInvoke() }
+  catch { $ps.Dispose(); throw }
+  @{ PowerShell=$ps; Handle=$handle; Request=$request; Progress=$progress }
+}
+
+# 只有注册完成后才回 UI 保存清单；失败保留表单供重试，不假装撤销已注册的服务。
+function Complete-AddService($owner,[hashtable]$request,[bool]$alreadyRegistered){
+  $n = $request.n
+  if ($alreadyRegistered) {
+    Show-DialogWarning $owner "「$n」参数已更新。若服务已在运行，需重启后才生效（右键卡片「重启」）；未运行会自动启动。" '参数已更新'
+  }
+  $saveErr = Add-SvcEntry $n $request.p $request.url $request.probe
   if ($saveErr) {
     # 服务已注册但没落盘：不 remove（那会丢掉一个实际可用的服务）。**保持窗口**：关窗会让人以为
     # 「没加成」，常见反应是再填一次 → NSSM 报服务已存在，越描越乱。§Submit-AddService
     Show-DialogError $owner "服务已在 NSSM 注册但没写入清单：$saveErr`n`n修好配置后点「注册并启动」重试——已注册的服务会直接补写清单，不会重复 install。"
     return $false
   }
-  Send-ServiceCommand $n 'start' | Out-Null   # 返回值是 epoch，函数契约只返回 $true/$false
+  Send-ServiceCommand $n 'start' | Out-Null
   $true
 }
 
@@ -298,22 +323,54 @@ function New-AddDialog(){
   $scroll=New-Object System.Windows.Controls.ScrollViewer -Property @{VerticalScrollBarVisibility='Auto'}
   $scroll.Content=$stack
   $f.Content=$scroll
+  $progress=New-Object System.Windows.Controls.TextBlock -Property @{Margin='0,8,0,0';TextWrapping='Wrap';FontFamily=$script:cjkFont}
+  [void]$stack.Children.Insert($stack.Children.Count - 1, $progress)
+  $registration = @{ Operation=$null }
+  $timer = [System.Windows.Threading.DispatcherTimer]::new()
+  $timer.Interval = [TimeSpan]::FromMilliseconds($script:config.AckPollIntervalMs)
+  $timer.Add_Tick({
+    $op = $registration.Operation
+    $progress.Text = "$($op.Progress.Text)完成后可关闭。"
+    if (-not $op.Handle.IsCompleted) { return }
+    $timer.Stop()
+    $completed = $false
+    try {
+      $result = $op.PowerShell.EndInvoke($op.Handle)
+      $completed = Complete-AddService $f $op.Request ([bool]$result[0])
+    } catch { Show-DialogError $f $_.Exception.Message }
+    finally {
+      $op.PowerShell.Dispose()
+      $registration.Operation = $null
+      $scroll.IsEnabled = $true
+      $progress.Text = ''
+    }
+    if ($completed) { $f.DialogResult=$true; $f.Close() }
+  }.GetNewClosure())
+  $f.Add_Closing({
+    param($sender,$eventArgs)
+    # 底层注册没有可安全撤销的取消；完成前保留窗口和结果接收者。
+    if ($registration.Operation) { $eventArgs.Cancel=$true }
+  }.GetNewClosure())
   # 必须 GetNewClosure()：脚本块非闭包，作用域销毁后变量全为 $null，点按钮静默失败。
   $cancel.Add_Click({ $f.DialogResult=$false; $f.Close() }.GetNewClosure())
 
   $ok.Add_Click({
-    # 提交逻辑在 Submit-AddService；$f 作 MessageBox owner，返回 $true 表示注册成功。
-    if (Submit-AddService $f @{ n=$inName.Text.Trim(); p=$inPort.Text.Trim(); exe=$inExe.Text.Trim()
+    if ($registration.Operation) { return }
+    $request = Prepare-AddService $f @{ n=$inName.Text.Trim(); p=$inPort.Text.Trim(); exe=$inExe.Text.Trim()
         url=$inUrl.Text.Trim(); dir=$inDir.Text.Trim(); par=$inPar.Text.Trim(); env=$inEnv.Text.Trim()
         probe=[string]$inProbe.SelectedItem.Tag
-        account=[string]$inAcct.SelectedItem.Tag; gpu=[bool]$inGpu.IsChecked }) {
-      $f.DialogResult=$true; $f.Close()
-    }
+        account=[string]$inAcct.SelectedItem.Tag; gpu=[bool]$inGpu.IsChecked }
+    if (-not $request) { return }
+    try { $registration.Operation = Start-AddServiceRegistration $request }
+    catch { Show-DialogError $f $_.Exception.Message; return }
+    $scroll.IsEnabled = $false
+    $progress.Text = '正在注册服务，完成后可关闭…'
+    $timer.Start()
   }.GetNewClosure())
 
   # 返回 OK 按钮与输入框句柄：测试要点真按钮走真处理器，才测得出闭包类错误。
   [pscustomobject]@{
-    Window = $f; Account = $inAcct; Gpu = $inGpu; Ok = $ok; Probe = $inProbe
+    Window = $f; Account = $inAcct; Gpu = $inGpu; Ok = $ok; Probe = $inProbe; Registration=$registration
     Inputs = @{ name=$inName; port=$inPort; exe=$inExe; url=$inUrl; dir=$inDir; par=$inPar; env=$inEnv }
   }
 }
@@ -322,5 +379,12 @@ function New-AddDialog(){
 function Show-Add($owner){
   $d = New-AddDialog
   $d.Window.Owner = $owner
-  $d.Window.ShowDialog() | Out-Null
+  # 关闭 owner 会直接关闭其模态子窗，不触发子窗 Closing；托盘退出也要等注册结果。
+  $keepOwner = [System.ComponentModel.CancelEventHandler]{
+    param($sender,$eventArgs)
+    if ($d.Registration.Operation) { $eventArgs.Cancel=$true }
+  }.GetNewClosure()
+  $owner.Add_Closing($keepOwner)
+  try { $d.Window.ShowDialog() | Out-Null }
+  finally { $owner.Remove_Closing($keepOwner) }
 }

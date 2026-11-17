@@ -29,6 +29,13 @@ function Add-ConfigNotice([string]$message) {
   if ($null -eq $script:configNotices) { $script:configNotices = @() }
   $script:configNotices += $message
 }
+
+# worker 在每轮结束发布实际采样间隔，卡片、批量与胶囊共用，避免正常空闲等待被误判陈旧。
+function Get-StateSampleInterval {
+  if ($script:sync.sampleIntervalMs) { return [int]$script:sync.sampleIntervalMs }
+  [int]$script:config.ProbeIntervalMs
+}
+
 $script:config = [ordered]@{
   PerPage             = 6        # 卡片每页数量（xaml.ps1 UniformGrid 3×2 与 Render-Page 分页共用）
   TcpTimeoutMs        = 200      # 端口探测超时（poll.ps1 TcpClient BeginConnect）

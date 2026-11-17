@@ -41,7 +41,7 @@ function Update-FreshnessPill {
       }
     }
   }
-  $interval = if ($script:config.ProbeIntervalMs) { [int]$script:config.ProbeIntervalMs } else { 4000 }
+  $interval = Get-StateSampleInterval
   $head = if ($pending -gt 0) { "$count 个服务 · $pending 个待处理" } else { "$count 个服务" }
   $text = if ($script:bgDeathReported) {
     '离线'

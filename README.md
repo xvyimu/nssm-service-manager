@@ -28,7 +28,7 @@ pwsh -NoProfile -File tests/run-all.ps1
 
 # 3. 一键部署（普通权限运行即可，脚本自己弹一次 UAC；同时把 nssm.exe 固定到 C:\Program Files\nssm）
 pwsh -NoProfile -File scripts/deploy-local.ps1
-#    资源管理器里也可以直接双击 scripts\deploy.cmd
+#    资源管理器里也可以直接双击 scripts\deploy.vbs（无黑窗；完成后弹结果，失败时给出日志末尾）
 
 # 4. 日常入口：双击部署目录里的 launch.vbs（桌面快捷方式指向它）
 #    C:\Program Files\ServiceManager\launch.vbs
@@ -83,8 +83,8 @@ NSSM 按两个固定候选加载，取先命中的：`C:\Program Files\nssm\nssm
 | `config.example.json` | 可调常量示例（复制为 `config.json`；后者已 git 忽略） |
 | `scripts/set-service-params-acl.ps1` | 收紧 NSSM 服务 `Parameters` 注册表键 ACL（见下） |
 | `scripts/package-release.ps1` | 打发布 zip（`dist/service-manager-<VERSION>.zip`，不含本机清单/配置） |
-| `scripts/deploy-local.ps1` | 一键部署到 `C:\Program Files\ServiceManager`：备份 → 复制 → 逐文件 SHA256 → ACL → 自检（模块清单从入口 dot-source 派生） |
-| `scripts/deploy.cmd` | 双击入口：转调 `deploy-local.ps1`（普通权限即可，脚本自己提权） |
+| `scripts/deploy-local.ps1` | 一键部署到 `C:\Program Files\ServiceManager`：备份 → 复制 → 逐文件 SHA256 → ACL → 自检（模块清单从入口 dot-source 派生）；任一文件失败即还原旧文件、删除本轮新增文件并列出还原失败的路径 |
+| `scripts/deploy.vbs` | 双击入口：隐藏窗口转调 `deploy-local.ps1`（普通权限即可，脚本自己提权），结果写 `%LOCALAPPDATA%\ServiceManager\deploy.log` |
 | `scripts/lib-entry-modules.ps1` | 部署与打包共用的入口解析 + 完整性断言（正负向夹具见 `tests/test-entry-modules.ps1`） |
 | `VERSION` | 当前版本号；打 tag `v<version>` 触发 `.github/workflows/release.yml` |
 | `PSScriptAnalyzerSettings.psd1` | 静态分析规则集与每条豁免的理由（CI 与本地共用） |
@@ -230,7 +230,7 @@ pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName <服务名
 | `WebViewPort` | 0 | Web 视图端口；`0` = 每次启动随机（避免和别的工具抢固定端口） |
 | `LogDir` | `''` | 日志根覆盖；空 = 仓内 `logs/`。只影响新注册的服务——已注册服务的 AppStdout 写死在注册表。日志窗口与保留策略按每个服务实际的 AppStdout 目录走，`LogDir` 只在读不到时兜底（手工 `nssm install` 的服务也能被看到和清理） |
 | `ProbeThrottleLimit` | 8 | 并行探测的 ThrottleLimit |
-| `ProbeIntervalMs` | 4000 | 有运行中服务、或本轮执行过命令时的轮询间隔，也用作健康探测的最小间隔 |
+| `ProbeIntervalMs` | 4000 | 有运行中服务、或本轮执行过命令时的轮询间隔，也用作健康探测的最小间隔；陈旧判据取 worker 发布的采样间隔 ×2（有运行中服务时按本值，空闲 15s 时按 15s），不再把正常等待误判为陈旧 |
 | `ProbePendingMs` | 1000 | 有服务处于启动中/停止中/暂停中/继续中时的轮询间隔。**只加快状态查询**，健康探测仍按 `ProbeIntervalMs` 限流；被限流跳过的那一轮照样把新状态送给卡片（沿用上次健康值） |
 | `ProbeIdleMs` | 15000 | 全停止、无在途命令、无中间态时的轮询间隔——省下空转的唤醒与整轮扫描 |
 | `WaitStoppedPollMs` | 300 | `Wait-Stopped` 轮询步长 |
@@ -285,7 +285,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 ## 测试与截图
 
 ```powershell
-pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 自动收集 tests/test-*.ps1（当前 35 项）
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 自动收集 tests/test-*.ps1（当前 38 项，每项 120s 超时）
 pwsh -NoProfile -File tests/analyze.ps1              # PSScriptAnalyzer（Error/Warning 必须为 0）
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-tmp/，已 git 忽略）
@@ -322,7 +322,10 @@ pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-t
 | `test-add-idempotent` | 已注册但清单缺失时只补参数不重复 install；补参失败弹原因且不下发 start；参数失败时不改 Application；install 跳过 Application 并在失败时回滚 |
 | `test-bg-death` | 后台 runspace 死亡：全卡转未知、按钮禁用、第二帧不重复报告、改按钮也不误刷新 |
 | `test-exit-confirm` | 退出确认只拦过渡态；无可见窗口或 `NSSM_SM_HEADLESS=1` 时不弹框 |
-| `test-freshness` | 30 秒新鲜度、`Stale` 判定、时钟回拨提示、超时转「无响应」 |
+| `test-freshness` | 30 秒新鲜度、`Stale` 判定、时钟回拨提示、超时转「无响应」；卡片/批量/胶囊共用 worker 发布的实际采样间隔 |
+| `test-probe-responsiveness` | 命令与关停能打断 5s HTTP 探测、只读响应头即判健康、退出后不留探测 job、无端口服务的采样间隔按状态发布 |
+| `test-deploy-local` | 部署失败恢复旧文件并撤销本轮新增、清理已退役的 `deploy.cmd`、缺失 NSSM 源时报出候选路径 |
+| `test-runner-timeout` | 挂起的测试在截止时间被杀并记失败，后续测试照常运行 |
 | `test-probe-none` | `probe=none` 无端口服务：注册/启停/端口占用提示/状态显示不发 HTTP |
 | `test-remove-save-fail` | 删除后保存失败回滚、待保存态提示、右键菜单项随状态启用/禁用 |
 | `test-shutdown` | 关窗收尾：后台 runspace 3 秒内停、日志落盘、重复调用幂等 |

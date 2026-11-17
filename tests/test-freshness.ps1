@@ -89,6 +89,28 @@ try {
   Assert ($script:freshPill.Text -match '未来') "未来 +30s 也应点明时钟异常，实际「$($script:freshPill.Text)」"
   Assert ($script:freshPill.Text -notmatch '0s 前') '+30s 不得写成「0s 前」'
   Write-Output 'PASS: 胶囊对未来时间戳给出时钟异常提示'
+
+  # 空闲轮询是 15s：9s 旧的真实状态仍有效，卡片、批量和胶囊应使用同一周期。
+  $script:sync.sampleIntervalMs = 15000
+  Update-CardData 'A' '已停止' ''
+  $now = Get-Date
+  $script:svcState = @{ A = @{ st = '已停止'; h = ''; at = $now.AddSeconds(-9) } }
+  Update-CardFreshness $card $now
+  Assert (-not $card.Stale -and $card.Btn.IsEnabled) '空闲采样间隔内不得禁用启动'
+  Update-FreshnessPill
+  Assert ($script:freshPill.Foreground -eq $script:T.BrushDim) '正常空闲等待不得把胶囊标陈旧'
+  $script:cmdQueue = [Collections.Concurrent.ConcurrentQueue[object]]::new()
+  $script:sync.wake = [Threading.AutoResetEvent]::new($false)
+  try {
+    $msg = Invoke-BatchCommand 'start'
+    Assert ($script:cmdQueue.Count -eq 1) "正常空闲样本必须进入批量启动：$msg"
+    $script:cmdQueue.Clear()
+  } finally { $script:sync.wake.Dispose() }
+  Set-CardRollback $card '已停止' ''
+  $script:svcState.A.at = $now.AddSeconds(-31)
+  Update-CardFreshness $card $now
+  Assert ($card.Stale -and -not $card.Btn.IsEnabled) '空闲周期真正超时后仍须禁用启动'
+  Write-Output 'PASS: idle cadence is shared by card, batch and freshness pill; genuinely stale samples remain disabled'
 } finally {
   try { $win.Close() } catch { }
 }

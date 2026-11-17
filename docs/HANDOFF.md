@@ -15,7 +15,7 @@
   健康历史在 `logs/health/health-YYYYMMDD.ndjson`（留 30 天，只记变化）。
 - **质量门**（两条都要绿，改动后各跑一次）：
   ```powershell
-  pwsh -NoProfile -File tests/run-all.ps1     # parser + 35 项回归（自动收集 tests/test-*.ps1）
+  pwsh -NoProfile -File tests/run-all.ps1     # parser + 38 项回归（自动收集 tests/test-*.ps1，每项 120s 超时）
   pwsh -NoProfile -File tests/analyze.ps1     # PSScriptAnalyzer，Error/Warning 必须为 0
   ```
   `analyze.ps1` 需要一次性 `Install-Module PSScriptAnalyzer -Scope CurrentUser`；规则集与每条
@@ -83,4 +83,4 @@
 3. **文档漂移巡检**：改了行为就同步 `README.md`（功能/文件表/CLI 用法）与
    `docs/PROJECT.md`（取舍、已知限制）；根 `CHANGELOG.md` 的当版小节在发版时定版。
 4. **测试数量**：`tests/run-all.ps1` 自动收集，新增用例不必登记；README 与 PROJECT.md 里
-   写死的「35 项」在新增 `test-*.ps1` 时要一起改。
+   写死的「38 项」在新增 `test-*.ps1` 时要一起改。

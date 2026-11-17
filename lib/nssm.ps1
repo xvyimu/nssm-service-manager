@@ -25,10 +25,10 @@ function Set-NssmServiceParams([string]$n,[string]$exe,[string]$dir,[string]$par
   # 读不全就会还原出错误值，比半更新更糟。
   # install 已写 Application，新装通过 -SkipApplication 避免重复启动外部进程。
   # 阈值先读 config；下面的字面量只是「单文件点源、没有 config」时的兜底，与 config.ps1 同名默认值保持一致。
-  $rotateBytes = if ($script:config -and $script:config.AppRotateBytes) { [int]$script:config.AppRotateBytes } else { 5242880 }
-  $stopMethod  = if ($script:config -and $script:config.AppStopMethodConsole) { [int]$script:config.AppStopMethodConsole } else { 5000 }
+  $rotateBytes = if ($null -ne $script:config.AppRotateBytes) { [int]$script:config.AppRotateBytes } else { 5242880 }
+  $stopMethod  = if ($null -ne $script:config.AppStopMethodConsole) { [int]$script:config.AppStopMethodConsole } else { 5000 }
   # 轮转年龄门槛：不设的话「每次启动轮转一次」会把频繁重启的服务的日志堆成几十个档
-  $rotateSecs  = if ($script:config -and $script:config.AppRotateSeconds) { [int]$script:config.AppRotateSeconds } else { 86400 }
+  $rotateSecs  = if ($null -ne $script:config.AppRotateSeconds) { [int]$script:config.AppRotateSeconds } else { 86400 }
   foreach($s in Get-NssmSetSpec $n $dir $par $envPairs $rotateBytes $stopMethod $account $rotateSecs){ nssm-set $n $s.k $s.v }
   if ($exe -and -not $SkipApplication) { nssm-set $n 'Application' $exe }
 }

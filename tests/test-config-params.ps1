@@ -69,6 +69,21 @@ try {
     Assert ($workerFallback.Sync.probeIntervalMs -eq 4000 -and $workerFallback.Sync.probeIdleMs -eq 15000 -and $workerFallback.Sync.probeThrottleLimit -eq 8) 'poll probe cadence defaults not restored when sync keys absent.'
   } finally { Close-FakePoll $workerFallback }
 
+  # 合法零值必须从配置贯通到最终 NSSM 参数；只测 Get-NssmSetSpec 不会发现包装层丢零。
+  [IO.File]::WriteAllText($originalRepoConfig,
+    '{"AppRotateBytes":0,"AppRotateSeconds":0,"AppStopMethodConsole":0}', [Text.UTF8Encoding]::new($false))
+  . (Join-Path $RepoRoot 'lib/config.ps1')
+  . (Join-Path $RepoRoot 'lib/nssm.ps1')
+  $script:nssmParameters = @{}
+  function nssm-set([string]$n,[string]$k,[Parameter(ValueFromRemainingArguments=$true)][object[]]$v) {
+    $script:nssmParameters[$k] = $v
+  }
+  Set-NssmServiceParams 'ZeroFixture' 'fixture.exe' '' '' @() -SkipApplication
+  foreach ($key in 'AppRotateBytes','AppRotateSeconds','AppStopMethodConsole') {
+    Assert ($script:nssmParameters[$key][0] -eq 0) "$key=0 must reach NSSM unchanged"
+  }
+  Write-Output 'PASS: valid zero configuration reaches NSSM unchanged'
+
   # ---- 2. 坏 config.json：回落默认值 + 留一条提示（可选文件坏了不拦启动）----
   $script:config = $null; $script:configWarning = $null; $script:configNotices = $null
   [IO.File]::WriteAllText((Join-Path $RepoRoot 'config.json'), '{ broken', [Text.UTF8Encoding]::new($false))

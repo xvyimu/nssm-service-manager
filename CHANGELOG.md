@@ -3,6 +3,20 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
+## [1.0.26] - 2026-11-17
+
+质量批：把四处「看起来能用、实测会咬人」的行为改对，并给回归加硬超时。
+
+- **空闲轮询不再被误判陈旧**（`lib/poll.ps1` / `lib/config.ps1` / `lib/card.ps1` / `lib/xaml.ps1`）：陈旧判据原来固定 `2 × ProbeIntervalMs`（8s），而全停空闲轮询是 15s，正常等待每轮都会被演成「状态未知」+ 按钮禁用。worker 现在每轮发布实际采样间隔（`$sync.sampleIntervalMs`），卡片、批量目标筛选与新鲜度胶囊共用 `Get-StateSampleInterval`；间隔取「每个服务两次真样本之间的最长间隔」——有运行中服务时是健康探测的 `ProbeIntervalMs`（即使同时有服务停在中间态），只有停止服务处于中间态时才用 1s 的 `ProbePendingMs`。
+- **合法零值不再被真值判断吞掉**（`lib/nssm.ps1`）：`AppRotateBytes` / `AppRotateSeconds` / `AppStopMethodConsole` 的 `if ($value)` 改成 `$null -ne`，`0` 原样下发到 NSSM。
+- **探测可被命令打断**（`lib/poll.ps1`）：并行探测改为同进程 job，worker 每 25ms 检查命令/关停并取消本轮（TCP 的 `WaitAny` 同时等取消令牌，HTTP 用 linked CTS），`Remove-Job -Force` 在 `finally` 回收。点击「启动」不再排在 3–5s 的 HTTP 探测后面（实测 37–55ms 拿到回执）。HTTP 健康判定改 `ResponseHeadersRead`，只读响应头，不下载用不到的响应体。
+- **注册不再冻结窗口**（`lib/dialogs.ps1`）：`sc.exe` / `nssm.exe` 调用移到后台 runspace，UI 线程只做校验与确认，计时器轮询进度；完成前禁止关窗（注册没有可安全撤销的取消），失败仍保留表单供重试。
+- **部署失败真的回滚**（`scripts/deploy-local.ps1`）：复制、校验、ACL、NSSM 固定同一段 `try`；任一阶段失败都把旧文件还原、本轮新增文件删到回收站、还原失败的路径逐条列出；路径先规范化并断言在目标目录内。`scripts/deploy.cmd` 退役，改为隐藏窗口的 `scripts/deploy.vbs`（结果写 `%LOCALAPPDATA%\ServiceManager\deploy.log`），部署时顺手清理目标目录里的旧 `deploy.cmd`。
+- **单条探测异常不再终结轮询**（`lib/poll.ps1`）：去掉 `Receive-Job -ErrorAction Stop`。并行块里未被 try 覆盖的同步异常（如资源压力下 `BeginConnect` 直接抛）原来会让 `Receive-Job` 抛错、轮询线程退出，整屏收敛到「后台已停止响应」且本会话不自愈；现在异常只进 error stream，本轮结果照常读取。
+- **回归有硬超时**（`tests/run-all.ps1`）：每个测试起独立子进程，默认 120s 未结束即 `Kill` 整棵进程树并记失败，后续测试照常运行——一个挂死的用例不再拖住 CI 到作业级超时。父进程按子进程实际使用的 OEM 代码页解码其 stdout/stderr，中文 PASS 行不再变成乱码。
+- **新增回归**：`test-probe-responsiveness`（命令/关停打断 5s 探测、只读响应头判健康、退出后不留 job、采样间隔发布）、`test-deploy-local`（恢复旧文件 / 撤销新增 / 清理退役入口 / 缺失 NSSM 源）、`test-runner-timeout`（挂起用例按截止时间失败且不阻断后续）。
+- **文档**：`ARCHITECTURE` / `PROJECT` 的陈旧判据改为「实际采样间隔」；`IMPLEMENTATION-NOTES` 新增 `§StateSampleInterval`、`§ZeroConfigValues`、`§ProbeCancellation`、`§AsyncRegistration`、`§DeployRollback`、`§TestRunnerTimeout`；README/AGENTS 的入口与测试数同步。
+
 ## [1.0.25] - 2026-11-17
 
 - **busy 覆盖从逐分支改成整段**（`lib/poll.ps1`）：`Set-PollBusy $true` 移到 `switch($act){` 之前，复位放进命令处理的 `finally`。1.0.24 只把四处阻塞各自包起来，`restart` 的启动阶段（`Invoke-ServiceStart`，内部 `$svc.Start()` 实测等满 30032ms）落在 `finally` 之后，慢启动服务重启时其它卡片仍会被 8s 陈旧判据误判——同一条 P2 的第二次出现。

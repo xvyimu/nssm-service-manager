@@ -1,11 +1,45 @@
 #requires -Version 7.0
-param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
+param(
+  [string]$RepoRoot = (Split-Path $PSScriptRoot -Parent),
+  [int]$TestTimeoutSeconds = 120
+)
 $ErrorActionPreference='Stop'
 
 # 收集失败继续跑下一项，避免一个环境性/偶发失败掩掉后续结果
 # （如沙箱挡 [IO.File]::Replace 导致 config round-trip 挂掉，后面 4 项根本没跑）。
 # 解析阶段若挂了，后面的测试也无从执行——解析失败仍按硬错误直接抛。
 $script:failures = @()
+
+function Invoke-RegressionTest([string]$path) {
+  # 无控制台的子进程按系统 OEM 代码页写 stdout，父进程默认按控制台编码（常为 UTF-8）解码，
+  # 中文 PASS 行会变成乱码。这里按子进程实际使用的 OEM 代码页解码。
+  # 必须继续用 -File：-Command 下 & 调用让脚本落到子作用域，GetNewClosure 的脚本块
+  # 看不到脚本级函数（WPF 事件处理器会报「术语 xxx 不会被识别」）。
+  $childEncoding = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
+  $start = [Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path)
+  foreach ($argument in @('-NoProfile','-NonInteractive','-STA','-File',$path)) {
+    $start.ArgumentList.Add($argument)
+  }
+  $start.UseShellExecute = $false
+  $start.CreateNoWindow = $true
+  $start.RedirectStandardOutput = $true
+  $start.RedirectStandardError = $true
+  $start.StandardOutputEncoding = $childEncoding
+  $start.StandardErrorEncoding = $childEncoding
+  $process = [Diagnostics.Process]::Start($start)
+  try {
+    $stdout = $process.StandardOutput.ReadToEndAsync()
+    $stderr = $process.StandardError.ReadToEndAsync()
+    if (-not $process.WaitForExit($TestTimeoutSeconds * 1000)) {
+      $process.Kill($true)
+      $process.WaitForExit()
+      throw "Test exceeded ${TestTimeoutSeconds}s: $path"
+    }
+    $global:LASTEXITCODE = $process.ExitCode
+    $stdout.GetAwaiter().GetResult() -split '\r?\n' | Where-Object { $_ }
+    $stderr.GetAwaiter().GetResult() -split '\r?\n' | Where-Object { $_ }
+  } finally { $process.Dispose() }
+}
 
 function Invoke-Check([string]$label, [scriptblock]$action) {
   Write-Output "== $label =="
@@ -57,12 +91,11 @@ $tests = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter 'test-*.ps1' -File |
   Sort-Object Name |
   ForEach-Object {
     @{ Name = [IO.Path]::GetFileNameWithoutExtension($_.Name)
-       Args = @('-NoProfile', '-STA', '-File', $_.FullName) }
+       Path = $_.FullName }
   })
 
 foreach ($test in $tests) {
-  $arguments = $test.Args
-  Invoke-Check $test.Name { & pwsh @arguments }
+  Invoke-Check $test.Name { Invoke-RegressionTest $test.Path }
 }
 
 if ($script:failures.Count) {

@@ -329,7 +329,7 @@ function Invoke-BatchCommand([string]$act) {
   $label = if ($act -eq 'start') { '启动' } else { '停止' }
   # 状态过期门闩：窗口刚打开、后台 runspace 死掉、或探测被限流时，svcState 可能是很久以前的值。
   # 朝「其实已经停了」的服务再发 stop 只会刷一串 1056/1062；超过 2 个探测周期就不下发。
-  $maxAgeMs = 2 * $(if ($script:config.ProbeIntervalMs) { [int]$script:config.ProbeIntervalMs } else { 4000 })
+  $maxAgeMs = 2 * (Get-StateSampleInterval)
   $now = [datetime]::Now
   $stale = 0
   $targets = @()
@@ -769,7 +769,7 @@ function Update-CardFreshness($card, [datetime]$now){
   if (-not $seen) { return }   # 首帧还没结果：交给「正在获取服务状态」
   $at = $seen.at
   if ($null -eq $at) { return }
-  $interval = if ($script:config.ProbeIntervalMs) { [int]$script:config.ProbeIntervalMs } else { 4000 }
+  $interval = Get-StateSampleInterval
   $ageMs = ($now - [datetime]$at).TotalMilliseconds
   # 未来样本（时钟回拨 / NTP 校正）同样不可信：差值恒负会让陈旧判据永不触发，
   # 卡片继续显示「运行中」而时间戳其实来自未来。只在 [−1 个周期, 2 个周期] 内算新鲜。

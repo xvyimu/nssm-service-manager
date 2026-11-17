@@ -194,9 +194,9 @@ while(-not $sync.stop){
     foreach ($n in $snap) { $svcStatus[$n] = if ($allStatus) { [string]$allStatus[$n] } else { '' } }
   }
 
-  # 收集阶段：运行中的留待并行探测，其余直接入队。并行化（发现 4）：6 服务串行最坏 ~19s，
-  # 并行后 ~3.2s；命令在收集间隙仍优先处理，但并行探测期间不插入。
+  # 收集阶段：运行中的留待并行探测，其余直接入队；新命令可取消正在进行的探测。
   $toProbe = [System.Collections.Generic.List[pscustomobject]]::new()
+  $activeProbe = 0
   # 服务停在中间态也算「活跃」，否则轮询退到 15s，「启动中」十几秒才更新一次。
   $pendingSeen = $false
   foreach($n in $snap){
@@ -223,6 +223,7 @@ while(-not $sync.stop){
     }
 
     if ($st -eq '运行中') {
+      $activeProbe++
       # probe=none：无端口服务，服务状态即健康状态，不做连通性探测
       if ([string]$info.probe -eq 'none') {
         $sync.queue.Enqueue([pscustomobject]@{n=$n;st=$st;h='正常';at=[datetime]::Now})
@@ -276,19 +277,25 @@ while(-not $sync.stop){
   # 到点（或不在中间态）：真探一轮 TCP+HTTP，结果同时刷新 $lastHealth
   if ($toProbe.Count -and -not $sync.stop -and $probeDue) {
     $lastProbeAt = [Environment]::TickCount64
-    $results = $toProbe | ForEach-Object -Parallel {
+    $probeCancel = [Threading.CancellationTokenSource]::new()
+    $probeJob = $null
+    $probeInterrupted = $false
+    try {
+    $probeJob = $toProbe | ForEach-Object -Parallel {
       $n=$_.n; $p=$_.port; $url=$_.url; $probeLocal=[string]$_.probe
       # 每项的生效超时：per-service 覆盖优先，缺省回落经 $using: 传入的全局值
       $tcpMsLocal  = if ($_.tcpMs)  { [int]$_.tcpMs }  else { $using:tcpMs }
       $httpMsLocal = if ($_.httpMs) { [int]$_.httpMs } else { $using:httpMs }
       $httpClient=$using:http
+      $roundCancel=$using:probeCancel
       # 轻量端口探测。$tcpMs 必须经 $using: 传入——Parallel 开新 runspace 不继承父变量，
       # 裸用取到 $null，WaitOne(0) 立刻返回 False，运行中服务被误判「无响应」变红。
       $listen=$false
       $tcp=[System.Net.Sockets.TcpClient]::new()
       try {
         $iar=$tcp.BeginConnect('127.0.0.1',$p,$null,$null)
-        if($iar.AsyncWaitHandle.WaitOne($tcpMsLocal,$false)){
+        $ready = [Threading.WaitHandle]::WaitAny(@($iar.AsyncWaitHandle, $roundCancel.Token.WaitHandle), $tcpMsLocal)
+        if($ready -eq 0){
           # 空 catch 有意：端口没人听时 EndConnect 必然抛，这是常态不是异常（每轮探测都走，加日志会刷屏）
           try{$tcp.EndConnect($iar);$listen=$true}catch{}
         }
@@ -306,9 +313,10 @@ while(-not $sync.stop){
         return [pscustomobject]@{n=$n;h='正常'}
       }
       # HTTP 探测。响应和 CTS 都必须 Dispose——每轮每服务各泄漏一份缓冲与 WaitHandle。
-      $cts = [System.Threading.CancellationTokenSource]::new($httpMsLocal)
+      $cts = [Threading.CancellationTokenSource]::CreateLinkedTokenSource($roundCancel.Token)
+      $cts.CancelAfter($httpMsLocal)
       try {
-        $r=$httpClient.GetAsync($url,$cts.Token).GetAwaiter().GetResult()
+        $r=$httpClient.GetAsync($url,[Net.Http.HttpCompletionOption]::ResponseHeadersRead,$cts.Token).GetAwaiter().GetResult()
         try { $h=if($r.StatusCode -eq [System.Net.HttpStatusCode]::OK){'正常'}else{'HTTP '+[int]$r.StatusCode} } finally { $r.Dispose() }
       } catch {
         # 异常归类：refused/connection → 无响应，其余（超时/DNS）→ 超时。
@@ -317,7 +325,27 @@ while(-not $sync.stop){
         $h=if($msg -match 'refused|unable to connect|连接|connection|ConnectFailure'){'无响应'}else{'超时'}
       } finally { $cts.Dispose() }
       [pscustomobject]@{n=$n;h=$h}
-    } -ThrottleLimit $probeThrottle
+    } -ThrottleLimit $probeThrottle -AsJob
+    while ($probeJob.State -in @('NotStarted','Running')) {
+      if ($sync.stop -or -not $sync.cmd.IsEmpty) { break }
+      [void]$sync.wake.WaitOne(25)
+    }
+    # 命令优先：取消本轮 TCP/HTTP，丢弃命令执行前采到的结果，下一轮重新查询状态。
+    $probeInterrupted = $sync.stop -or -not $sync.cmd.IsEmpty
+    if ($probeInterrupted) {
+      $probeCancel.Cancel()
+      $probeJob.StopJob()
+    } else {
+      # 不加 -ErrorAction Stop：单条探测抛出的异常只应进 error stream，不能让整个轮询线程退出
+      # （那会把所有卡片收敛到「后台已停止响应」且本会话不自愈）。本轮结果照常读取。
+      $results = @(Receive-Job -Job $probeJob -Wait)
+    }
+    } finally {
+      $probeCancel.Cancel()
+      if ($probeJob) { Remove-Job -Job $probeJob -Force }
+      $probeCancel.Dispose()
+    }
+    if ($probeInterrupted) { continue }
     foreach($r in $results){
       if ($r.stopped) {
         # 已停止服务的「端口占用」只用于提示，不进健康缓存
@@ -335,11 +363,16 @@ while(-not $sync.stop){
   # 「有服务停在过渡态」同样用短间隔，让翻转 1 秒内可见。
   if (-not $sync.stop) {
     # 中间态用更短间隔；也照常探测运行中的服务（本地回环，代价可忽略）。
-    # 只数「运行中」的探测项：已停止服务的端口占用检查不该把整轮节奏从 15s 拉到 4s。
-    $activeProbe = @($toProbe | Where-Object { -not $_.stopped }).Count
+    # 运行中的 probe=none 也要活跃刷新；已停止服务的端口检查不改变空闲节奏。
     $sleepMs = if ($pendingSeen) { $probePendingMs }
                elseif ($activeProbe -or $executedCmd) { $probeIntervalMs }
                else { $probeIdleMs }
+    # 陈旧基准是「每个服务两次真样本之间的最长间隔」，不是本轮睡眠时长：中间态轮询加快的是
+    # 状态查询，健康探测仍按 ProbeIntervalMs 限流（见上面的跳过轮），运行中卡片的样本 4s 才更新一次。
+    # 若按 1s 的中间态间隔发布，2×1s 就会把 4s 周期里的正常等待判成陈旧，批量命令也会漏掉这些目标。
+    $sync.sampleIntervalMs = if ($activeProbe -or $executedCmd) { $probeIntervalMs }
+                             elseif ($pendingSeen) { $probePendingMs }
+                             else { $probeIdleMs }
     [void]$sync.wake.WaitOne($sleepMs)
   }
 }

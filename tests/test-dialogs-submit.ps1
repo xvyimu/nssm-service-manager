@@ -1,7 +1,7 @@
 #requires -Version 7.0
 # T2/T3 回归：dialogs.ps1 的两个提交体此前零覆盖——弹模态框在测试里够不着，而 Click handler
 # 内联体（校验顺序、Test-EnvPairs、敏感键 OKCancel 分支、Save 失败分支、删除入队与过渡态）
-# 全在 GUI 里，没有测试缝。现抽成 Submit-AddService / Submit-RemoveCommand，本测试直测真函数。
+# 校验、注册、完成三段分别可测；按钮路径另外验证真实Dispatcher异步行为。
 # MessageBox 是 WPF 静态调用，无头跑会阻塞——故替身掉 Show-DialogError / Confirm-SensitiveEnvKeys
 # / Show-DialogWarning（生产里就是 MessageBox 的薄包装，见 dialogs.ps1）。
 param([string]$RepoRoot = (Split-Path $PSScriptRoot -Parent))
@@ -9,6 +9,15 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 foreach ($module in 'theme','util','svc-input','nssm','card','xaml','dialogs') { . (Join-Path $RepoRoot "lib/$module.ps1") }
 . (Join-Path $PSScriptRoot 'test-helpers.ps1')
+
+# 分阶段同步调用仅用于校验/幂等断言；真实按钮的异步路径另做Dispatcher测试。
+function Submit-AddService($owner,[hashtable]$fields) {
+  $request = Prepare-AddService $owner $fields
+  if (-not $request) { return $false }
+  try { $alreadyRegistered = Invoke-AddServiceRegistration $request @{} }
+  catch { Show-DialogError $owner $_.Exception.Message; return $false }
+  Complete-AddService $owner $request $alreadyRegistered
+}
 
 # ---- 夹具：队列/卡片缓存/svc，替身掉弹框与副作用 ----
 $script:cmdQueue = [Collections.Concurrent.ConcurrentQueue[object]]::new()
@@ -27,6 +36,7 @@ function Get-ExeDirVerdict([string]$exe) { return [string]$script:exeDirVerdict 
 function Confirm-SensitiveEnvKeys($owner, [string]$tip) { $script:confirmSeen = $tip; $script:confirmAnswer }
 # NSSM / 保存 替身
 $script:installed = @()
+function Test-ServicePresent { $false }
 function Install-NssmService($n, $exe, $dir, $par, $envPairs, $account) { $script:installed += $n; $script:lastEnvPairs = @($envPairs); $script:lastAccount = $account }
 $script:saved = $false
 function Save-Svc($data) { $script:saved = $true }
@@ -168,49 +178,91 @@ try {
   $d.Probe.SelectedIndex = 0
   Assert ($d.Inputs.url.IsEnabled) '切回 auto 应恢复 URL 输入'
 
-  # ---- T5：点真的「注册并启动」按钮——走真处理器，不直调 Submit-AddService ----
-  # 直调 Submit 测不出「处理器引用了已返回函数的局部变量」：PowerShell 脚本块不是闭包，
-  # New-AddDialog 返回后它的局部作用域就没了。曾经因此点注册抛 null-valued 异常、
-  # Submit 一次都没进，而所有测试仍是绿的。
-  $script:installed = @(); $script:dialogErrors = @(); $script:dialogWarnings = @()
-  $d.Inputs.name.Text = 'SvcClick'; $d.Inputs.port.Text = '8095'; $d.Inputs.exe.Text = $fakeExe
-  $clickEx = $null
-  try {
-    $d.Ok.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
-  } catch { $clickEx = $_.Exception.Message }
-  Assert ($script:installed -contains 'SvcClick') "点「注册并启动」没走到 Install-NssmService（clickEx=$clickEx）"
-  Assert ($script:dialogErrors.Count -eq 0) "点注册弹了错误框：$($script:dialogErrors -join ' / ')"
-  # 夹具限制：这个窗口没有 ShowDialog 过，处理器末尾设 DialogResult 会抛。排除这一种即可。
-  if ($clickEx) { Assert ($clickEx -match 'DialogResult') "点注册抛了非预期异常：$clickEx" }
-
-  # ---- T6：真 ShowDialog 下点「注册并启动」（离屏窗口，不打扰桌面）----
-  # T5 只证明处理器作用域对；这里走真模态消息循环，连 DialogResult / 关闭 / 下拉选中一起验。
-  # 无交互桌面时跳过——那种环境下 ShowDialog 会永久阻塞。
-  if ([Environment]::UserInteractive) {
-    $script:installed = @(); $script:dialogErrors = @(); $script:lastAccount = $null; $script:lastEnvPairs = @()
-    $script:modalDlg = New-AddDialog
-    $mw = $script:modalDlg.Window
-    $mw.WindowStartupLocation = 'Manual'; $mw.Left = -4000; $mw.Top = -4000; $mw.ShowInTaskbar = $false
-    $script:modalDlg.Inputs.name.Text = 'SvcModal'
-    $script:modalDlg.Inputs.port.Text = '8096'
-    $script:modalDlg.Inputs.exe.Text  = $fakeExe
-    $script:modalDlg.Inputs.env.Text  = 'NO_PROXY=127.0.0.1,localhost'
-    $script:modalDlg.Account.SelectedIndex = 1        # LocalService
-    $script:modalClickEx = $null
-    $mw.Add_ContentRendered({
-      try { $script:modalDlg.Ok.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)) }
-      catch { $script:modalClickEx = $_.Exception.Message; $script:modalDlg.Window.Close() }
-    })
-    $mw.ShowDialog() | Out-Null
-    Assert ($null -eq $script:modalClickEx) "真模态点击抛异常：$($script:modalClickEx)"
-    Assert ($script:installed -contains 'SvcModal') '真模态点击没走到 Install-NssmService'
-    Assert ($script:lastAccount -eq 'NT AUTHORITY\LocalService') "下拉选中的账户没传下去：[$($script:lastAccount)]"
-    Assert ($script:lastEnvPairs.Count -eq 1 -and $script:lastEnvPairs[0] -eq 'NO_PROXY=127.0.0.1,localhost') "环境变量值被拆散：$($script:lastEnvPairs -join ' | ')"
-    Write-Output 'PASS: real ShowDialog click registers with the selected account and an intact NO_PROXY value.'
-  } else {
-    Write-Output 'SKIP: 非交互会话，跳过 ShowDialog 模态测试（会永久阻塞）。'
+  # ---- T5：真实Click与模态消息循环，慢注册期间继续处理Dispatcher回调 ----
+  $script:registrationState = [hashtable]::Synchronized(@{Calls=0;Request=$null;DelayMs=500;Fail=$false})
+  function Start-AddServiceRegistration([hashtable]$request) {
+    $ps=[powershell]::Create()
+    [void]$ps.AddScript({
+      param($state,$request)
+      $state.Calls++
+      $state.Request=$request
+      Start-Sleep -Milliseconds $state.DelayMs
+      if ($state.Fail) { throw 'injected background registration failure' }
+      $false
+    }).AddArgument($script:registrationState).AddArgument($request)
+    @{PowerShell=$ps;Handle=$ps.BeginInvoke();Request=$request;Progress=@{Text="正在注册服务…"}}
   }
+  $script:modalDlg = New-AddDialog
+  $mw = $script:modalDlg.Window
+  $mw.WindowStartupLocation='Manual'; $mw.Left=-4000; $mw.Top=-4000; $mw.ShowInTaskbar=$false
+  $script:modalDlg.Inputs.name.Text='SvcModal'
+  $script:modalDlg.Inputs.port.Text='8096'
+  $script:modalDlg.Inputs.exe.Text=$fakeExe
+  $script:modalDlg.Inputs.env.Text='NO_PROXY=127.0.0.1,localhost'
+  $script:modalDlg.Account.SelectedIndex=1
+  $script:clickElapsedMs=0; $script:busyTicks=0; $script:closeWasRejected=$false; $script:ownerCloseWasRejected=$false
+  $heartbeat=[System.Windows.Threading.DispatcherTimer]::new()
+  $heartbeat.Interval=[TimeSpan]::FromMilliseconds(20)
+  $heartbeat.Add_Tick({
+    if ($script:modalDlg.Registration.Operation) {
+      $script:busyTicks++
+      if ($script:busyTicks -eq 1) {
+        $script:modalDlg.Ok.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+        $script:modalDlg.Window.Close()
+        $script:closeWasRejected=$script:modalDlg.Window.IsVisible
+        $win.Close()
+        $script:ownerCloseWasRejected=$win.IsVisible
+      }
+    }
+  })
+  $mw.Add_ContentRendered({
+    $clickWatch=[Diagnostics.Stopwatch]::StartNew()
+    $script:modalDlg.Ok.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
+    $script:clickElapsedMs=$clickWatch.ElapsedMilliseconds
+  })
+  $script:dialogFactory = ${function:New-AddDialog}
+  function New-AddDialog { $script:modalDlg }
+  function Confirm-ExitBusy { $true }
+  $win.WindowStartupLocation='Manual'; $win.Left=-4000; $win.Top=-4000; $win.ShowInTaskbar=$false
+  $win.Show()
+  $heartbeat.Start()
+  try { Show-Add $win; $modalResult=$mw.DialogResult }
+  finally { $heartbeat.Stop(); Set-Item Function:New-AddDialog $script:dialogFactory; $win.Hide() }
+  Assert ($modalResult -eq $true) 'Completed registration should close the modal dialog successfully.'
+  Assert ($script:clickElapsedMs -lt 250) "Click handler waited for registration: $($script:clickElapsedMs)ms"
+  Assert ($script:busyTicks -gt 0) 'Dispatcher heartbeat must run while registration is pending.'
+  Assert $script:closeWasRejected 'Closing during registration must keep the result receiver alive.'
+  Assert $script:ownerCloseWasRejected 'Owner/tray exit during registration must keep the result receiver alive.'
+  Assert ($script:registrationState.Calls -eq 1) 'Repeated Click during registration must not register twice.'
+  Assert ($script:registrationState.Request.account -eq 'NT AUTHORITY\LocalService') 'Selected account was not sent to the background worker.'
+  Assert ($script:registrationState.Request.envPairs.Count -eq 1 -and $script:registrationState.Request.envPairs[0] -eq 'NO_PROXY=127.0.0.1,localhost') 'Environment value was split before the background worker.'
+  Write-Output 'PASS: slow registration leaves Dispatcher responsive, rejects duplicate submission/closing, then persists and closes.'
 
+  # 后台失败恢复可编辑表单，不保存也不下发启动。
+  $script:registrationState.Calls=0; $script:registrationState.Fail=$true; $script:registrationState.DelayMs=30
+  $script:modalDlg=New-AddDialog
+  $mw=$script:modalDlg.Window
+  $mw.WindowStartupLocation='Manual'; $mw.Left=-4000; $mw.Top=-4000; $mw.ShowInTaskbar=$false
+  $script:modalDlg.Inputs.name.Text='SvcFailModal'
+  $script:modalDlg.Inputs.port.Text='8097'
+  $script:modalDlg.Inputs.exe.Text=$fakeExe
+  $script:dialogErrors=@(); $script:saved=$false; $script:cmdQueue.Clear()
+  $script:workerFailureObserved=$false
+  $heartbeat=[System.Windows.Threading.DispatcherTimer]::new()
+  $heartbeat.Interval=[TimeSpan]::FromMilliseconds(20)
+  $heartbeat.Add_Tick({
+    if ($script:dialogErrors.Count) {
+      $script:workerFailureObserved=$script:modalDlg.Ok.IsEnabled -and -not $script:modalDlg.Registration.Operation
+      $script:modalDlg.Window.Close()
+    }
+  })
+  $mw.Add_ContentRendered({ $script:modalDlg.Ok.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)) })
+  $heartbeat.Start()
+  try { [void]$mw.ShowDialog() } finally { $heartbeat.Stop() }
+  Assert $script:workerFailureObserved 'Registration failure must restore the editable form.'
+  Assert ($script:dialogErrors.Count -eq 1 -and $script:dialogErrors[0] -match 'injected background registration failure') 'Background failure reason was lost.'
+  Assert (-not $script:saved -and $script:cmdQueue.Count -eq 0) 'Failed background registration must not persist or start.'
+  Write-Output 'PASS: background registration failure restores the form and reports the original error without save/start.'
   # ---- T3-f：Save-Svc 失败分支——服务已注册但没写清单；必须保持窗口并说清处置 ----
   # 原实现提示完就关窗，用户以为没加成，常见反应是再填一次 → NSSM 报服务已存在。
   $script:installed = @(); $script:dialogWarnings = @(); $script:dialogErrors = @()
@@ -237,12 +289,25 @@ try {
   $ok = Submit-AddService $win @{ n='SvcQ'; p=''; exe=$fakeExe; url=''; dir=''; par=''; env='' }
   Assert (-not $ok) 'auto 口径下端口留空仍应被拦下。'
 
-  Write-Output 'PASS: Submit-AddService covers required/port/env/account validation, probe=none (blank port accepted, probe/port/url persisted), sensitive-key OKCancel (cancel vs continue), account passthrough, GPU hint (non-blocking, suppressed for non-LocalSystem), success enqueue, probe=tcp shape, and Save-failure branch (window stays open); New-AddDialog builds a scrollable dialog with the 3 built-in accounts, LocalSystem preselected and an auto/tcp/http/none probe dropdown; clicking the real "注册并启动" button reaches Install-NssmService (guards the non-closure trap).'
+  Write-Output 'PASS: add-service stages cover required/port/env/account validation, probe=none (blank port accepted, probe/port/url persisted), sensitive-key OKCancel (cancel vs continue), account passthrough, GPU hint (non-blocking, suppressed for non-LocalSystem), success enqueue, probe=tcp shape, and Save-failure branch (window stays open); New-AddDialog builds a scrollable dialog with the 3 built-in accounts, LocalSystem preselected and an auto/tcp/http/none probe dropdown; real modal clicks keep Dispatcher responsive during background registration.'
 
   # ---- T2：Submit-RemoveCommand ----
   # 卡片在缓存：入队 remove 且置「删除中」过渡态
   $script:svc = [ordered]@{ RmSvc = @{ port=9000; url='http://127.0.0.1:9000' } }
   Render-Page
+
+  # 慢注册不能占住Click处理器；真实模态/Dispatcher验收在下方。
+  $slowDialog = New-AddDialog
+  $slowDialog.Inputs.name.Text = 'SvcSlowClick'
+  $slowDialog.Inputs.port.Text = '8097'
+  $slowDialog.Inputs.exe.Text = $fakeExe
+  function Install-NssmService { Start-Sleep -Milliseconds 500 }
+  $clickWatch = [Diagnostics.Stopwatch]::StartNew()
+  try { $slowDialog.Ok.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)) }
+  catch { if ($_.Exception.Message -notmatch 'DialogResult') { throw } }
+  Assert ($clickWatch.ElapsedMilliseconds -lt 250) "Click handler waited for registration: $($clickWatch.ElapsedMilliseconds)ms"
+  $slowDialog.Window.Close()
+  function Install-NssmService($n, $exe, $dir, $par, $envPairs, $account) { $script:installed += $n; $script:lastEnvPairs = @($envPairs); $script:lastAccount = $account }
   $script:cmdQueue.Clear()
   Submit-RemoveCommand 'RmSvc'
   $card = $script:cards['RmSvc']
