@@ -16,6 +16,8 @@ $script:svc = [ordered]@{
   'ServiceF' = @{ port = 9000;  url = 'http://127.0.0.1:9000/health' }
 }
 $script:sync = @{ wake = [Threading.AutoResetEvent]::new($false) }
+# 帧尺寸不能随开发机上次退出的窗口形状变：记忆文件指到临时路径（不存在 = 默认尺寸）。
+$script:uiStatePath = Join-Path ([IO.Path]::GetTempPath()) ('svc-demo-ui-' + [guid]::NewGuid().ToString('N') + '.json')
 . (Join-Path $PSScriptRoot 'test-helpers.ps1')   # 共用空桩（Write-CrashLog / Stop-Background），不要在渲染脚本里各写一份
 
 $win = New-MainWindow
@@ -70,5 +72,6 @@ try {
   Write-Output "PASS: wrote $n frames to $tmp"
 } finally {
   if ($win.IsLoaded) { $win.Close() }
+  Remove-Item -LiteralPath $script:uiStatePath -Force -ErrorAction SilentlyContinue
   $script:sync.wake.Dispose()
 }

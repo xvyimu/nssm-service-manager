@@ -3,6 +3,21 @@
 > 本文件记录每次迭代的「为什么改」与「改了什么」，不重复 commit message（那是 git log 的事）。
 > 代码是行为真相，本文件是**阶段性脉络**——读完能看懂这工具怎么走到今天。
 
+## [1.0.29] - 2026-11-18
+
+窗口自适应 + 记忆形状：布局跟着窗口走，别让卡片在窄窗里挤成一团、在宽窗里摊成一片。
+
+- **窗口形状记忆**（`lib/xaml.ps1` 新增 `ui-state.json`）：关窗时记尺寸/位置/是否最大化（最大化取 `RestoreBounds`，不记屏幕尺寸），下次启动照原样开。记忆文件与 `config.json` 分开——那是人改的常量，这是程序自己写的状态；坏 json、缺字段、非整数一律当「没有记忆」，回默认 1040×640，不挡启动。坐标只在矩形至少露出 120×80 时恢复，否则回 `CenterScreen`（拔掉外接屏的旧坐标会开到看不见的地方）。`ui-state.json` 已进 `.gitignore`。
+- **列数按宽度自适应**（`lib/xaml.ps1` `Get-GridColumns`）：列数 = `min(窗口宽度 ÷ CardMinWidth, MaxGridColumns, 服务数)`，行数由 `ceil(n/cols)` 反推保持均衡（7 张卡 → 4×2 而不是 6+1）。窗口缩到 840 宽时 7 个服务从 4 列降到 3 列，卡片不被压到 240 以下。
+- **窗口最小高度按行数反推**（`lib/xaml.ps1` `Update-WindowMinHeight`）：非卡片区高度用「窗口实际高度 − 面板实际高度」实测，加上 行数 × 实际单卡最小高度。修的是实测缺陷：840×540 + 7 个服务（3 行）时单卡只有 ~130 px，状态行与副标题被裁切、叠到按钮上；现在窗口自动涨到 658 并拒绝更小。上限夹在工作区高度内。
+- **服务多到一屏装不下时按可用高度等分行高**（`Get-EffectiveCardMinHeight` + `Update-CardMinHeight`）：卡片的 `MinHeight` 不再写死 `CardMinHeight`，而是取「工作区 − 非卡片区」按行数等分与 `CardMinHeight` 的较小者，并同步到每张卡——否则 UniformGrid 等分行高、子项 MinHeight 超过行高时行与行会相互压叠。首帧 chrome 高度还是 0 的问题由 `ContentRendered` 再收敛一次兜底。
+- **卡片高度夹取**（`lib/card.ps1`）：`MinHeight=CardMinHeight` / `MaxHeight=CardMaxHeight`。1600×900 下卡片停在 320 高，不再把内容摊成一片空白。
+- **多显示器**（`Get-VirtualScreenBounds`）：位置可见性判定改用虚拟屏幕并集——`SystemParameters.WorkArea` 只给主屏，副屏的负坐标会被误判「不可见」导致记忆永远不生效。尺寸夹取仍按主屏工作区。
+- **缩放只重排不重建**：`SizeChanged` → `Update-GridLayout` 只改 `UniformGrid` 的 Columns/Rows，卡片对象、时长后缀与冷却状态不重来。
+- **测试隔离**：`Get-UiStatePath` 三级回落（脚本变量 → `NSSM_SM_UI_STATE` 环境变量 → 程序目录），`tests/run-all.ps1` 给子进程统一指到临时文件并收尾删除——否则 `test-dialogs-submit` 这类真建主窗的用例会把离屏坐标写进仓根 `ui-state.json`（实测发生过，已清掉污染文件）。
+- **配置新增** `CardMinWidth`（240）/ `MaxGridColumns`（4）/ `CardMinHeight`（170）/ `CardMaxHeight`（320），区间校验与 `config.example.json` 同步。
+- **回归**：新增 `tests/test-window-layout.ps1`（列数分档与宽度限制、行数装得下、放置夹取/屏幕外丢弃/坏值回落、记忆文件往返与坏 json、关窗快照含最大化、最小高度按行数反推且每行 ≥ CardMinHeight）。README 的 `PerPage` 残留（模块表、功能、常量表、路线图）一并改掉，测试计数 38→40。
+
 ## [1.0.28] - 2026-11-18
 
 一屏全量：服务不多时，翻页只是多点两下的负担。

@@ -192,6 +192,18 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 
 判据：**任何「靠退出码下结论」的外部命令都不能裸调**。测试通过 `$sync.scExe` 注入替身名，不用改调用点。
 
+### 11. 窗口形状记忆 + 卡片网格自适应
+
+**形状记忆单独一个文件**（`ui-state.json`，与 `services.json` / `config.json` 同目录、git 忽略）：`config.json` 是人改的常量，窗口形状是程序自己写的运行时状态；混在一起会让「程序每关一次就改你的配置文件」，写坏时也无从判断该丢哪一个。读失败（坏 json / 缺字段 / 非整数）一律当没有记忆，回默认 1040×640——记忆坏了不该挡住启动。
+
+**坐标恢复要有可见性判据**：至少 120×80 落在工作区内才恢复，否则交给 `CenterScreen`。外接屏拔掉后按旧坐标开窗会开到看不见的地方，且这个故障没有别的出口（用户看不到窗口，也就打不开设置改回来）。
+
+**网格先减列、后保底高**：列数 = `min(窗口宽度 ÷ CardMinWidth, MaxGridColumns, 服务数)`，行数再由 `ceil(n/cols)` 反推（7 张卡、6 列上限 → 2 行 × 4 列，而不是 6+1）。窄窗口先减列，卡片宽度不跌破 `CardMinWidth`；高度方向不这么做——行数由数量决定，所以改为**把窗口最小高度按行数反推**（非卡片区实测高度 + 行数 × `CardMinHeight`）。实测 840×540、7 张卡时 3 行的卡片只有 ~130 px，状态行会叠到按钮上。夹在工作区高度以内，不给出比屏幕还高的最小高度。
+
+**卡片最大高度**：窗口拉高时 UniformGrid 会把卡片一起拉高，内容被摊成一片。`CardMaxHeight` 让卡片停在 320，多出来的高度留在格子外。
+
+**缩放只重排不重建**：`SizeChanged` → `Update-GridLayout` 只改 `UniformGrid` 的 Columns/Rows，不重跑 `Render-Page`——重建会闪、会丢掉时长后缀与冷却状态。
+
 ## 已知限制
 
 - 真实 UAC、系统 Mica 效果与 NSSM 服务生命周期需在本机交互验证（单测用替身）
@@ -230,6 +242,6 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 
 ## 测试
 
-`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 自动收集的 `tests/test-*.ps1`（当前 38 项；`test-helpers.ps1` 是夹具；每项子进程 120s 超时，挂起即杀并按失败记录）。详见 README「测试与截图」节。
+`tests/run-all.ps1` 统一执行：PowerShell 解析检查 + 自动收集的 `tests/test-*.ps1`（当前 40 项；`test-helpers.ps1` 是夹具；每项子进程 120s 超时，挂起即杀并按失败记录）。详见 README「测试与截图」节。
 
 CI（`.github/workflows/test.yml`）跑 PowerShell 回归（Windows runner）。

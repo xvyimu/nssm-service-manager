@@ -390,8 +390,14 @@ function Invoke-BatchCommand([string]$act) {
 function New-Card([string]$name, $info){
   # Focusable：Tab 能停在卡片上（Border 不是 Control，没有 IsTabStop；Tab 导航对非 Control 的可聚焦
   # 元素只看 Focusable，实测会停）。焦点一到就换成 1px 强调色描边，尺寸不变所以卡片不跳动。
+  # MinHeight/MaxHeight：窗口拉高时卡片不跟着摊开（内容居中、多余高度留在外面），
+  # 压到窗口最小高度时也不至于把状态行挤到按钮上。两者都从 config 收口。
+  $minH = if ($script:config) { [double]$script:config.CardMinHeight } else { 170 }
+  $maxH = if ($script:config) { [double]$script:config.CardMaxHeight } else { 320 }
+  if ($maxH -lt $minH) { $maxH = $minH }
   $border = New-Object System.Windows.Controls.Border -Property @{
     CornerRadius=8; Margin='5'; Padding='12'
+    MinHeight=$minH; MaxHeight=$maxH; VerticalAlignment='Stretch'
     BorderBrush=$script:T.CardBrd; BorderThickness='1'; Background=$script:T.Card; Focusable=$true
   }
   $grid=New-Object System.Windows.Controls.Grid

@@ -85,6 +85,9 @@ Invoke-Check 'PowerShell parser' {
 # NSSM_SM_HEADLESS=1 让子进程跳过确认框（Confirm-ExitBusy）：MessageBox 在非交互测试里
 # 会真弹窗并永久阻塞，整个 run-all 就停在那儿等人工点「是」。
 $env:NSSM_SM_HEADLESS = '1'
+# 窗口形状记忆同样隔离：有测试会真建主窗并 Close()，否则离屏坐标会写进仓根 ui-state.json，
+# 既污染开发机的记忆，也让后续断言依赖上一次跑测试的窗口形状。
+$env:NSSM_SM_UI_STATE = Join-Path ([IO.Path]::GetTempPath()) ('sm-ui-state-test-' + [guid]::NewGuid().ToString('N') + '.json')
 # 统一 -STA（WPF 用例必需，纯函数用例加了也无害）；test-helpers.ps1 是被 dot-source 的夹具。
 $tests = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter 'test-*.ps1' -File |
   Where-Object { $_.Name -ne 'test-helpers.ps1' } |
@@ -102,6 +105,8 @@ if ($script:failures.Count) {
   Write-Output ""
   Write-Output "== $($script:failures.Count) failure(s) =="
   foreach ($f in $script:failures) { Write-Output "  - $($f.Label): $($f.Error)" }
+  Remove-Item -LiteralPath $env:NSSM_SM_UI_STATE -Force -ErrorAction SilentlyContinue
   exit 1
 }
+Remove-Item -LiteralPath $env:NSSM_SM_UI_STATE -Force -ErrorAction SilentlyContinue
 Write-Output "PASS: $($tests.Count) regression tests and parser check completed."

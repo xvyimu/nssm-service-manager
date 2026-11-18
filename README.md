@@ -11,7 +11,7 @@
 
 NSSM 本身是命令行工具。服务一多，日常启停、查状态、看日志全靠背命令——这个工具把它们收敛成一个窗口：
 
-- **一眼看全**——每张卡显示服务名、端口、健康圆点（绿=正常 / 橙=等待中或响应慢 / 红=无响应），六个服务一屏扫完
+- **一眼看全**——每张卡显示服务名、端口、健康圆点（绿=正常 / 橙=等待中或响应慢 / 红=无响应），所有服务一屏扫完，不分页
 - **一个键一个方向**——卡片右上角是「关闭」「启动」两个按钮，各自只管一个方向；习惯双击的也能双击切换。右键管重启/日志/删除，8 秒冷却 + 健康门闩挡住误操作
 - **配置是清单不是代码**——`services.json` 一份 JSON 列出所有服务，换机器复制即用；CLI 也有增删入口，脚本和 agent 可直接调用
 - **健康探测不靠猜**——端口 TCP + HTTP 两档并行：服务在但响应慢标「超时」，端口没监听标「无响应」
@@ -77,7 +77,7 @@ NSSM 按两个固定候选加载，取先命中的：`C:\Program Files\nssm\nssm
 | `lib/config.ps1` | 可调常量集中收口，默认值内嵌，`config.json` 覆盖 |
 | `lib/tray.ps1` | 可选托盘图标（`TrayEnabled` 打开才加载 WinForms）+ 关闭/最小化策略纯函数 |
 | `lib/card.ps1` | 卡片构建 + 启停门闩与冷却 + 过渡态保护 + 右键菜单 |
-| `lib/xaml.ps1` | 主窗口外壳（自定义标题栏 + 最大化/双击标题栏 + 工具栏 + 分页 + 状态栏） |
+| `lib/xaml.ps1` | 主窗口外壳（自定义标题栏 + 工具栏 + 自适应卡片网格 + 窗口尺寸/位置记忆 + 状态栏） |
 | `assets/icon.ico` | 自绘齿轮图标（窗口 + 任务栏） |
 | `services.example.json` | 服务清单示例（复制为 `services.json`；后者已 git 忽略） |
 | `config.example.json` | 可调常量示例（复制为 `config.json`；后者已 git 忽略） |
@@ -101,7 +101,9 @@ NSSM 按两个固定候选加载，取先命中的：`C:\Program Files\nssm\nssm
 
 ## 功能
 
-- 卡片网格填满主区域（默认 3 列 × 2 行六张，`PerPage` 可调），窗口缩放同步伸展；单页隐藏分页按钮
+- 卡片网格填满主区域，**不分页**：列数按窗口宽度能放下几张 `CardMinWidth` 的卡来算（最多 `MaxGridColumns` 列），行数按 `ceil(n/cols)` 反推保持均衡；窗口拉宽/缩小/最大化时只重排列与行，卡片不重建、状态不闪
+- 窗口尺寸、位置、是否最大化退出时记进 `ui-state.json`（程序自己写、git 忽略），下次原样打开；旧坐标已不在任何屏幕上（拔掉外接屏）时自动回到居中，坏文件按「没有记忆」处理
+- 卡片高度夹在 `CardMinHeight`～`CardMaxHeight` 之间；窗口最小高度按行数反推，窄窗口下先减列、再拒绝继续压扁——不会出现状态行叠到按钮上的挤压态
 - 每张卡：服务名、端口、URL、状态圆点、健康说明、运行时长、打开面板、「关闭」「启动」两个按钮（关闭在左）
 - 健康三档：`正常` / `超时`（服务在但响应慢）/ `无响应`（端口未监听或连接被拒）。进程在但探测没过时先显示「等待中」，超过 `WaitHealthyTimeoutMs`（默认 2 分钟）才升级为「无响应」——冷启动不给红点，真卡死也不会一直挂着等待中。恢复要连续两次探测正常，单次抖动不算。**非 HTTP 服务**（数据库、gRPC、纯 socket）在清单里写 `"probe": "tcp"`，TCP 通即算正常
 - 状态覆盖 SCM 全部取值：`已停止` / `启动中` / `运行中` / `停止中` / `已暂停` / `暂停中` / `继续中` / `未安装`。暂停态两个按钮都禁用，副标题提示用右键「重启」**尝试**恢复——这条未实测：本机没有可暂停的服务，且暂停/恢复需管理员；能否接受 STOP 控制码由各服务自己的控制处理函数决定
@@ -225,7 +227,10 @@ pwsh -NoProfile -File scripts/set-service-params-acl.ps1 -ServiceName <服务名
 
 | 键 | 默认 | 作用 |
 |------|------|------|
-| `PerPage` | 6 | 卡片每页数量（列数按 `ceil(sqrt(PerPage))` 自适应） |
+| `CardMinWidth` | 240 | 单卡最小宽度（DIP）：窗口变窄时先减列，不把卡片压到 URL 看不清 |
+| `MaxGridColumns` | 4 | 单页最多列数（窗口再宽也不继续加列） |
+| `CardMinHeight` | 170 | 单卡最小高度；窗口最小高度 = 非卡片区 + 行数 × 本值 |
+| `CardMaxHeight` | 320 | 单卡最大高度：窗口拉高时卡片不再摊开 |
 | `TcpTimeoutMs` | 200 | 端口探测超时（TcpClient BeginConnect） |
 | `HttpTimeoutMs` | 3000 | HTTP 探测超时（每请求一个 CancellationTokenSource；共享 HttpClient 的实例级 Timeout 已放开为无限，否则 per-service 的更大值改不动单次请求） |
 | `CrashLogMaxBytes` | 524288 | `gui-crash.log` 轮转阈值（512 KiB，超则挪成 `.1`） |
@@ -300,7 +305,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File service-manager-gui.ps1 -Add Name,
 ## 测试与截图
 
 ```powershell
-pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 自动收集 tests/test-*.ps1（当前 38 项，每项 120s 超时）
+pwsh -NoProfile -File tests/run-all.ps1              # 语法检查 + 自动收集 tests/test-*.ps1（当前 40 项，每项 120s 超时）
 pwsh -NoProfile -File tests/analyze.ps1              # PSScriptAnalyzer（Error/Warning 必须为 0）
 pwsh -NoProfile -STA -File tests/make-screenshot.ps1 # 重新生成 assets/screenshot.png
 pwsh -NoProfile -File tests/make-demo.ps1            # 生成帧序列（.demo-tmp/，已 git 忽略）
@@ -377,7 +382,7 @@ ffmpeg -y -framerate 3 -i .demo-tmp/frame-%02d.png -vf "scale=640:-1:flags=lancz
 
 按「最可能先做」排序，不承诺时间：
 
-- **分页再宽松**——`PerPage` 可调，但跨页过滤/排序还欠
+- **服务多时的过滤/排序**——现在不分页，服务数超过一屏（十几二十个）才需要搜索框与「只看异常」
 - **服务配置差异对比**——`services.json` 换机器迁移时一键 diff 出不一致项
 
 提新方向用「功能请求」模板开 issue，修 bug 用「Bug 报告」模板（`.github/ISSUE_TEMPLATE/`）。

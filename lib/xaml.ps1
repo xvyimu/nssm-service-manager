@@ -1,4 +1,4 @@
-# lib/xaml.ps1 — 卡片主视图：列数由 PerPage 计算，窗口缩放时同步伸展。实现细节：docs/IMPLEMENTATION-NOTES.md
+# lib/xaml.ps1 — 卡片主视图：一屏全量、列数按窗口宽度自适应，窗口尺寸/位置记在 ui-state.json。实现细节：docs/IMPLEMENTATION-NOTES.md
 if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
 if (-not (Get-Command Get-CloseAction -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot 'tray.ps1') }
 
@@ -18,6 +18,112 @@ function Get-MainWindowSize($workArea){
   if ($minH -gt $height) { $minH = $height }
   if ($minW -gt $width)  { $minW = $width }
   @{ Width=$width; Height=$height; MinWidth=$minW; MinHeight=$minH }
+}
+
+# 窗口位置/尺寸记忆：运行时状态，跟 services.json / config.json 同目录、不进 git。
+# 与 config.json 分开的理由：那是人改的常量；这是程序自己写的上次退出形状，写坏了只该丢记忆、不该毁配置。
+# 记忆文件路径的三级回落：脚本变量（测试/截图夹具改指临时文件）→ 环境变量（run-all 给所有子进程统一隔离）
+# → 程序目录。没有后两级时，回归套件里真建/真关主窗的用例会把离屏坐标写进仓根 ui-state.json。
+function Get-UiStatePath {
+  if ($script:uiStatePath) { return $script:uiStatePath }
+  if ($env:NSSM_SM_UI_STATE) { return $env:NSSM_SM_UI_STATE }
+  Join-Path (Split-Path $PSScriptRoot -Parent) 'ui-state.json'
+}
+
+# 读记忆：坏文件、缺字段、非整数一律当没有（回落到默认尺寸），不让一个坏 json 挡住启动。
+function Load-UiState([string]$path) {
+  if (-not $path) { $path = Get-UiStatePath }
+  if (-not (Test-Path -LiteralPath $path)) { return $null }
+  try { return (Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json) }
+  catch { Write-Verbose "ui-state.json 不可解析，按没有记忆处理：$($_.Exception.Message)"; return $null }
+}
+
+# 原子写记忆（临时文件 + Move-Item 替换）：写一半断电不会留下半个 json。
+function Save-UiState($state, [string]$path) {
+  if (-not $path) { $path = Get-UiStatePath }
+  $tmp = "$path.$PID.tmp"
+  try {
+    ($state | ConvertTo-Json -Depth 3) | Set-Content -LiteralPath $tmp -Encoding UTF8
+    Move-Item -LiteralPath $tmp -Destination $path -Force
+  } catch {
+    Write-Verbose "ui-state.json 写入失败（下次仍用默认尺寸）：$($_.Exception.Message)"
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+  }
+}
+
+# 多显示器：SystemParameters.WorkArea 只给主屏，副屏的负坐标会被判成「不可见」。
+# 可见性判定改用虚拟屏幕（所有显示器的并集）；尺寸夹取仍按主屏工作区，不给出比主屏还大的默认窗。
+function Get-VirtualScreenBounds {
+  $l = [System.Windows.SystemParameters]::VirtualScreenLeft
+  $t = [System.Windows.SystemParameters]::VirtualScreenTop
+  $w = [System.Windows.SystemParameters]::VirtualScreenWidth
+  $h = [System.Windows.SystemParameters]::VirtualScreenHeight
+  if ($w -le 0 -or $h -le 0) { return $null }
+  @{ Left=$l; Top=$t; Width=$w; Height=$h }
+}
+
+function Get-IntOrZero($value) {
+  $n = 0
+  if ($null -ne $value -and [int]::TryParse([string]$value, [ref]$n)) { return $n }
+  return 0
+}
+
+# 记忆的尺寸/位置 → 真正用的窗口放置参数（纯函数，可脱离桌面单测）。
+# 尺寸夹在 [MinWidth/MinHeight, 主屏工作区] 之间；位置只在「矩形至少露出 120×80」时恢复，
+# 其余交给 CenterScreen——拔掉外接屏后按旧坐标开窗会开到看不见的地方。
+# $screenBounds 是可见性判定用的屏幕范围（多显示器传虚拟屏幕并集，单屏传工作区即可）。
+function Get-WindowPlacement($saved, $workArea, $screenBounds) {
+  $base = Get-MainWindowSize $workArea
+  $aw = 0.0; $ah = 0.0
+  if ($workArea) { $aw = [double]$workArea.Width; $ah = [double]$workArea.Height }
+  $vis = if ($screenBounds) { $screenBounds } else { $workArea }
+  $vw = 0.0; $vh = 0.0; $waLeft = 0.0; $waTop = 0.0
+  if ($vis) {
+    $vw = [double]$vis.Width; $vh = [double]$vis.Height
+    $waLeft = [double]$vis.Left; $waTop = [double]$vis.Top
+  }
+  $placement = @{ Width=$base.Width; Height=$base.Height; Left=$null; Top=$null; Maximized=$false }
+  if (-not $saved) { return $placement }
+  if ($saved.maximized -eq $true) { $placement.Maximized = $true }
+  $w = Get-IntOrZero $saved.width
+  $h = Get-IntOrZero $saved.height
+  if ($w -gt 0 -and $h -gt 0) {
+    if ($aw -gt 0) { $w = [int][math]::Min($w, [math]::Floor($aw)) }
+    if ($ah -gt 0) { $h = [int][math]::Min($h, [math]::Floor($ah)) }
+    if ($w -lt $base.MinWidth) { $w = $base.MinWidth }
+    if ($h -lt $base.MinHeight) { $h = $base.MinHeight }
+    $placement.Width = $w; $placement.Height = $h
+  }
+  # 坐标两个都得是非空整数才算有位置：坏值（null / "abc"）退回居中，别把窗口钉到 0,0。
+  $l = 0; $t = 0
+  $hasPos = ($null -ne $saved.left) -and ($null -ne $saved.top) -and
+            [int]::TryParse([string]$saved.left, [ref]$l) -and [int]::TryParse([string]$saved.top, [ref]$t)
+  if ($hasPos -and $vw -gt 0 -and $vh -gt 0) {
+    $visibleX = [math]::Min($l + $placement.Width, $waLeft + $vw) - [math]::Max([double]$l, $waLeft)
+    $visibleY = [math]::Min($t + $placement.Height, $waTop + $vh) - [math]::Max([double]$t, $waTop)
+    if ($visibleX -ge 120 -and $visibleY -ge 80) { $placement.Left = $l; $placement.Top = $t }
+  }
+  $placement
+}
+
+# 关窗时取「下次该恢复成什么样」：最大化/最小化时 RestoreBounds 才是正常尺寸，
+# 直接读 Width/Height 会把最大化尺寸写进记忆。未 Show 过时 RestoreBounds 为空，回落到当前值。
+function Get-WindowPlacementSnapshot($win) {
+  $b = $win.RestoreBounds
+  $w = 0.0; $h = 0.0; $l = 0.0; $t = 0.0
+  if ($b -and $b.Width -gt 0 -and $b.Height -gt 0) {
+    $w = $b.Width; $h = $b.Height; $l = $b.Left; $t = $b.Top
+  } elseif ($win.ActualWidth -gt 0) {
+    $w = $win.ActualWidth; $h = $win.ActualHeight; $l = $win.Left; $t = $win.Top
+  }
+  if ($w -le 0 -or $h -le 0) { return $null }
+  [ordered]@{
+    width     = [int][math]::Round($w)
+    height    = [int][math]::Round($h)
+    left      = [int][math]::Round($l)
+    top       = [int][math]::Round($t)
+    maximized = ($win.WindowState -eq [System.Windows.WindowState]::Maximized)
+  }
 }
 
 # 标题栏新鲜度胶囊：只读 $script:svc / $script:svcState / $script:cards / $script:config，不碰探测。
@@ -68,16 +174,24 @@ function Update-FreshnessPill {
   if (Get-Command Update-TrayText -EA SilentlyContinue) { Update-TrayText }
 }
 
-# 建主窗口骨架：无边框标题栏（版本+汇总）、卡片面板、分页与页脚，并挂 F5 重载 / 批量菜单。
+# 建主窗口骨架：无边框标题栏（版本+汇总）、单页卡片面板、工具栏与页脚，并挂 F5 重载 / 批量菜单。
 function New-MainWindow {
-  $size = Get-MainWindowSize ([System.Windows.SystemParameters]::WorkArea)
+  $workArea = [System.Windows.SystemParameters]::WorkArea
+  $size = Get-MainWindowSize $workArea
+  $placement = Get-WindowPlacement (Load-UiState) $workArea (Get-VirtualScreenBounds)
   $win = New-Object System.Windows.Window -Property @{
-    Width=$size.Width; Height=$size.Height; MinWidth=$size.MinWidth; MinHeight=$size.MinHeight
+    Width=$placement.Width; Height=$placement.Height; MinWidth=$size.MinWidth; MinHeight=$size.MinHeight
     WindowStyle='None'; AllowsTransparency=$false; Background=[System.Windows.Media.Brushes]::Transparent
     ResizeMode='CanResize'; WindowStartupLocation='CenterScreen'
     Title='服务管理'; FontFamily=$script:cjkFont; FontSize=12
     UseLayoutRounding=$true; SnapsToDevicePixels=$true
   }
+  # 记忆里的位置只在还留在工作区内时生效（Get-WindowPlacement 已判定），否则维持居中。
+  if ($null -ne $placement.Left) {
+    $win.WindowStartupLocation = 'Manual'
+    $win.Left = $placement.Left; $win.Top = $placement.Top
+  }
+  if ($placement.Maximized) { $win.WindowState = [System.Windows.WindowState]::Maximized }
   # 原生非 layered 窗口允许 DWM 背景生效；WindowChrome 保留边缘缩放。
   $chrome = New-Object System.Windows.Shell.WindowChrome -Property @{
     CaptionHeight=0; ResizeBorderThickness='6'; GlassFrameThickness='-1'; UseAeroCaptionButtons=$false
@@ -137,7 +251,7 @@ function New-MainWindow {
   $actions = New-Object System.Windows.Controls.StackPanel -Property @{
     Orientation='Horizontal'; HorizontalAlignment='Right'; VerticalAlignment='Center'
   }
-  # 不分页：一屏放全部服务。列数由服务数量在 Render-Page 里算，这里只建空面板。
+  # 不分页：一屏放全部服务。列数在 Render-Page 里按宽度与服务数算，这里只建空面板。
   $btnAdd = New-Object System.Windows.Controls.Button -Property @{Content='+ 添加服务'; Foreground=$script:T.Accent; Padding='12,5'}
   [void]$actions.Children.Add($btnAdd)
   [void]$toolbar.Children.Add($actions)
@@ -211,7 +325,16 @@ function New-MainWindow {
       }
     }
   })
-  $win.Add_Closed({ Stop-Background; Remove-Tray })
+  $win.Add_Closed({
+    # 先记窗口形状再拆后台：Save-UiState 只用 UI 线程里的值，失败也只丢记忆。
+    $snap = Get-WindowPlacementSnapshot $win
+    if ($snap) { Save-UiState $snap }
+    Stop-Background; Remove-Tray
+  })
+  # 缩放/最大化时列数跟着宽度走：只调 UniformGrid 的列与行，不重建卡片。
+  $win.Add_SizeChanged({ Update-GridLayout })
+  # 首帧布局完成后再收敛一次：SizeChanged 可能早于面板量到真实宽度，那时 chrome 高度也还是 0。
+  $win.Add_ContentRendered({ Update-GridLayout })
   $btnAdd.Add_Click({ Show-Add $script:window; Render-Page })
   $win
 }
@@ -225,13 +348,89 @@ function Get-SvcNames {
   try { @($script:svc.Keys | Where-Object { -not (Test-SvcIsCompanion $_) }) } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }
 }
 
-# 一屏放下全部服务时的列数：1→1、2→2、3~6→3、7 以上→4（按数量算，不按页算）。
-# 卡片尺寸随之由 UniformGrid 等分，列越多单卡越窄，配合 card.ps1 的紧凑内边距刚好不挤。
-function Get-GridColumns([int]$count) {
+# 一屏放下全部服务时的列数：由「窗口宽度能放下几张卡」与数量共同决定，行数再按 ceil(n/cols) 反推。
+# 先减列不压卡：窄窗口列少了但每张卡仍有 CardMinWidth；宽窗口列到 MaxGridColumns 就停，剩下的宽度变成卡片留白。
+# 平衡取行的例子：7 张卡、上限 6 列 → 行=ceil(7/6)=2 → 列=ceil(7/2)=4（4+3），而不是 6+1。
+function Get-GridColumns([int]$count, [double]$width = 0, [int]$minCardWidth = 0, [int]$maxCols = 0) {
+  if ($minCardWidth -le 0) { $minCardWidth = if ($script:config) { [int]$script:config.CardMinWidth } else { 240 } }
+  if ($maxCols -le 0) { $maxCols = if ($script:config) { [int]$script:config.MaxGridColumns } else { 4 } }
+  if ($minCardWidth -le 0) { $minCardWidth = 240 }
+  if ($maxCols -lt 1) { $maxCols = 1 }
   if ($count -le 1) { return 1 }
-  if ($count -le 2) { return 2 }
-  if ($count -le 6) { return 3 }
-  return 4
+  $byWidth = if ($width -gt 0) { [int][math]::Floor($width / $minCardWidth) } else { $maxCols }
+  if ($byWidth -lt 1) { $byWidth = 1 }
+  $cap = [int][math]::Min([math]::Min($maxCols, $byWidth), $count)
+  if ($cap -lt 1) { $cap = 1 }
+  $rows = [int][math]::Max(1, [int][math]::Ceiling($count / $cap))
+  [int][math]::Max(1, [int][math]::Ceiling($count / $rows))
+}
+
+# 卡片面板当前可用宽度：首帧布局还没跑（ActualWidth=0）时按窗口宽减边距估算，再不行交给数量兜底。
+function Get-CardPanelWidth {
+  if ($script:cardPanel -and $script:cardPanel.ActualWidth -gt 0) { return [double]$script:cardPanel.ActualWidth }
+  if ($script:window -and $script:window.ActualWidth -gt 0) { return [double]($script:window.ActualWidth - 40) }
+  return 0.0
+}
+
+# 窗口「非卡片区」的高度：标题栏 + 汇总行 + 状态栏 + 内外边距。实测差值比写死常数稳：
+# 换个字号/DPI 后常数会漂，差值是当前布局自己算出来的。
+function Get-WindowChromeHeight {
+  if (-not $script:window -or -not $script:cardPanel) { return 0 }
+  if ($script:window.ActualHeight -le 0 -or $script:cardPanel.ActualHeight -le 0) { return 0 }
+  [int][math]::Max(0, $script:window.ActualHeight - $script:cardPanel.ActualHeight)
+}
+
+# 每行实际可用的最小卡片高度：正常就是 CardMinHeight；服务多到屏幕装不下时按可用高度等分。
+# 不设人为下限：UniformGrid 等分行高，子项 MinHeight 只要超过行高就会压到下一行上——
+# 宁可卡片内容被裁（服务多到一屏装不下本来就是已知限制），也不能叠行。
+function Get-EffectiveCardMinHeight([int]$rows, [double]$chrome = 0, [double]$workAreaHeight = 0) {
+  $cardMin = if ($script:config) { [int]$script:config.CardMinHeight } else { 170 }
+  if ($chrome -le 0) { $chrome = Get-WindowChromeHeight }
+  if ($workAreaHeight -le 0) {
+    $wa = [System.Windows.SystemParameters]::WorkArea
+    if ($wa) { $workAreaHeight = [double]$wa.Height }
+  }
+  if ($chrome -gt 0 -and $rows -gt 0 -and $workAreaHeight -gt 0) {
+    $fit = [int][math]::Floor(($workAreaHeight - $chrome) / $rows)
+    if ($fit -lt $cardMin) { $cardMin = [int][math]::Max(0, $fit) }
+  }
+  $cardMin
+}
+
+# 窗口缩到极小时卡片会被压到内容放不下（状态行叠到按钮上）：最小高度按行数反推，
+# 每行至少「实际可用最小高度」。夹在工作区高度以内——比屏幕还高的最小高度会让人没法用窗口。
+# 返回本轮采用的最小卡片高度（$null = 还量不出 chrome，调用方不要动卡片），供 Update-CardMinHeight 同步。
+function Update-WindowMinHeight([int]$rows) {
+  if (-not $script:window -or $rows -le 0) { return $null }
+  $chrome = Get-WindowChromeHeight
+  if ($chrome -le 0) { return $null }
+  $cardMin = Get-EffectiveCardMinHeight $rows
+  $need = $chrome + ($rows * $cardMin)
+  $wa = [System.Windows.SystemParameters]::WorkArea
+  if ($wa -and $wa.Height -gt 0) { $need = [int][math]::Min($need, [int][math]::Floor($wa.Height)) }
+  if ($need -gt 0 -and $script:window.MinHeight -ne $need) { $script:window.MinHeight = $need }
+  $cardMin
+}
+
+# 卡片的 MinHeight 跟着网格走：默认取 config，装不下时取等分后的值（可能为 0，表示不设下限）。
+function Update-CardMinHeight([double]$minHeight) {
+  if (-not $script:cards -or $null -eq $minHeight -or $minHeight -lt 0) { return }
+  foreach ($c in @($script:cards.Values)) {
+    if ($c -and [math]::Abs([double]$c.MinHeight - $minHeight) -gt 0.5) { $c.MinHeight = $minHeight }
+  }
+}
+
+# 窗口缩放/最大化时只重算网格形状：卡片对象、状态、冷却都不重来（重建会闪、会丢掉时长后缀）。
+function Update-GridLayout {
+  if (-not $script:cardPanel) { return }
+  $count = $script:cardPanel.Children.Count
+  if ($count -le 0) { return }
+  $cols = Get-GridColumns $count (Get-CardPanelWidth)
+  $rows = [int][math]::Max(1, [int][math]::Ceiling($count / $cols))
+  if ($script:cardPanel.Columns -ne $cols) { $script:cardPanel.Columns = $cols }
+  if ($script:cardPanel.Rows -ne $rows) { $script:cardPanel.Rows = $rows }
+  $cardMin = Update-WindowMinHeight $rows
+  if ($null -ne $cardMin) { Update-CardMinHeight $cardMin }
 }
 
 # 重建全部卡片（增删服务、配置重载后调用）；卡片对象缓存在 $cards，健康/过渡/冷却状态不丢。
@@ -239,7 +438,7 @@ function Render-Page {
   $script:cardPanel.Children.Clear()
   $gate = if ($script:sync -and $script:sync.gate) { $script:sync.gate } else { $null }
   $names = @(Get-SvcNames)
-  $cols = Get-GridColumns $names.Count
+  $cols = Get-GridColumns $names.Count (Get-CardPanelWidth)
   $script:cardPanel.Columns = $cols
   $script:cardPanel.Rows = [math]::Max(1, [int][math]::Ceiling($names.Count / $cols))
   foreach ($n in $names) {
@@ -254,4 +453,6 @@ function Render-Page {
     [void]$script:cardPanel.Children.Add($card)
   }
   $script:serviceSummary.Text="$($names.Count) 个本地服务"
+  # 增删服务会改行数，最小高度与卡片下限得跟着重算：只靠 SizeChanged 的话，窗口没被缩放就不会收敛。
+  Update-GridLayout
 }

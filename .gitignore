@@ -10,6 +10,9 @@ services.json
 # 本机实配（可调常量覆盖）——仓里只放 config.example.json
 config.json
 
+# 窗口尺寸/位置记忆（程序自己写，随机器而变）
+ui-state.json
+
 # Save-Svc 每次写前留下的上一版（含本机服务名/端口，绝不入仓）
 services.json.bak*
 config.json.bak*

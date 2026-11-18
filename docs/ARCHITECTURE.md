@@ -45,6 +45,7 @@ lib/poll.ps1                后台 runspace 探测循环：sc.exe query（带超
 | SCM 里的服务状态 | Windows 服务数据库 | `sc.exe query` / `Get-Service` |
 | 清单里的期望服务 | `services.json` | 文件本身（`.bak` 是上一版） |
 | 界面显示的状态 | `$script:svcState` + 卡片 | 由前两者派生的**带时间戳快照** |
+| 窗口形状（尺寸/位置/最大化） | `ui-state.json`（程序自己写，git 忽略） | 文件本身；坏了/过期当没有，回默认尺寸 |
 
 界面只显示两者都支持的状态；分歧必须显式可见（「未安装」「待保存」「状态未知」），不能靠猜。
 

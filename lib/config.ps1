@@ -1,4 +1,4 @@
-# lib/config.ps1 — 可调常量集中收口（PER_PAGE / 探测超时 / 日志轮转 / 冷却）
+# lib/config.ps1 — 可调常量集中收口（探测超时 / 日志轮转 / 冷却 / 卡片网格）
 # 默认值内嵌；仓根 config.json（已 git 忽略）存在时覆盖——与 services.json 同构：示例进仓、实配不进 git。
 # 实现细节与踩坑记录：docs/IMPLEMENTATION-NOTES.md
 # 状态集合：四组语义，判据只在这里写一次（tests/test-state-sets.ps1 钉住成员）。
@@ -65,6 +65,11 @@ $script:config = [ordered]@{
   AppStopMethodConsole = 5000    # 停止时给控制台进程的收尾毫秒（NSSM AppStopMethodConsole）
   # ---- UI 节奏 ----
   AckPollIntervalMs   = 400      # 命令回执/探测结果轮询的 DispatcherTimer 间隔（主脚本）
+  # ---- 卡片网格（窗口缩放时列数自适应）----
+  CardMinWidth        = 240      # 单卡最小宽度（DIP）：窗口变窄先减列，不把卡片压扁到看不清 URL
+  MaxGridColumns      = 4        # 单页最大列数；行数由 ceil(n/cols) 反推，保持网格均衡
+  CardMinHeight       = 170      # 单卡最小高度：低于它状态行会与按钮重叠，窗口最小高度按行数反推
+  CardMaxHeight       = 320      # 单卡最大高度：窗口拉高时卡片只到这么高，剩下的留白，不把内容摊成一片
   # ---- 可选托盘行为（默认全关，保持历史行为：最小化进任务栏、关闭即退出）----
   # ---- 只读 Web 视图（默认关；loopback + token，局域网走 SSH 端口转发）----
   WebView         = $false   # 总开关；开时状态栏显示带 token 的地址
@@ -100,6 +105,10 @@ $script:configRanges = @{
   AppRotateSeconds        = @(0, 31536000)
   AppStopMethodConsole    = @(0, 600000)
   AckPollIntervalMs       = @(100, 5000)
+  CardMinWidth            = @(120, 800)
+  MaxGridColumns          = @(1, 12)
+  CardMinHeight           = @(120, 600)
+  CardMaxHeight           = @(120, 1200)
   WebViewPort             = @(0, 65535)
 }
 
