@@ -29,7 +29,7 @@ try {
   foreach ($s in $states) { Update-CardData $s[0] $s[1] $s[2] }
   # 截图用状态栏文案：走 Set-StatusMessage 与生产代码同一条路径（含显示租约），
   # 免得截图里的状态栏与真实运行时的不一致。
-  Set-StatusMessage "$(Get-Date -Format 'HH:mm:ss')  状态自动刷新"
+  Set-StatusMessage '状态自动刷新'   # 时间戳由 Set-StatusMessage 自己补，别重复拼
 
   $win.WindowStartupLocation = 'Manual'
   $win.Left = -20000; $win.Top = -20000

@@ -19,7 +19,7 @@ try {
 
   # ---- 1. 覆盖值生效：全部键换成非默认值后再加载 ----
   [IO.File]::WriteAllText((Join-Path $RepoRoot 'config.json'),
-    '{"PerPage":4,"TcpTimeoutMs":50,"HttpTimeoutMs":500,"ToggleCooldownMs":1200,"CrashLogMaxBytes":1024,"WaitStoppedTimeoutMs":800,"LogKeepCount":3,"LogKeepDays":2,"LogDir":"C:\\sm-test-logs","ProbeThrottleLimit":4,"ProbeIntervalMs":1111,"ProbeIdleMs":2222,"WaitStoppedPollMs":77,"AppRotateBytes":1048576,"AppStopMethodConsole":1234,"AckPollIntervalMs":250}',
+    '{"TcpTimeoutMs":50,"HttpTimeoutMs":500,"ToggleCooldownMs":1200,"CrashLogMaxBytes":1024,"WaitStoppedTimeoutMs":800,"LogKeepCount":3,"LogKeepDays":2,"LogDir":"C:\\sm-test-logs","ProbeThrottleLimit":4,"ProbeIntervalMs":1111,"ProbeIdleMs":2222,"WaitStoppedPollMs":77,"AppRotateBytes":1048576,"AppStopMethodConsole":1234,"AckPollIntervalMs":250}',
     [Text.UTF8Encoding]::new($false))
   $script:config = $null   # 强制重新加载以验证 config.json 覆盖
   . (Join-Path $RepoRoot 'lib/config.ps1')
@@ -33,7 +33,7 @@ try {
       ForEach-Object { "$($_.InputObject)($($_.SideIndicator))" })
   Assert (-not $keyDiff.Count) "config.example.json 与 config.ps1 的键集合不一致（<= 只在示例 / => 只在默认）：$($keyDiff -join ', ')"
 
-  Assert ($script:config.PerPage -eq 4) 'PerPage not overridden.'
+  Assert ($script:config.HttpTimeoutMs -eq 500) 'HttpTimeoutMs not overridden.'
   Assert ($script:config.WaitStoppedTimeoutMs -eq 800) 'WaitStoppedTimeoutMs not overridden.'
   Assert ($script:config.CrashLogMaxBytes -eq 1024) 'CrashLogMaxBytes not overridden.'
   Assert ($script:config.LogKeepCount -eq 3) 'LogKeepCount not overridden.'
@@ -95,7 +95,7 @@ try {
   $script:configNotices = $null
   Add-ConfigNotice 'a'; Add-ConfigNotice 'b'
   Assert ($script:configNotices -is [array] -and $script:configNotices.Count -eq 2) 'Add-ConfigNotice 应累积成数组'
-  Assert ($script:config.PerPage -eq 6 -and $script:config.WaitStoppedTimeoutMs -eq 12000) 'Defaults not restored on broken config.'
+  Assert ($script:config.HttpTimeoutMs -eq 3000 -and $script:config.WaitStoppedTimeoutMs -eq 12000) 'Defaults not restored on broken config.'
   # LogDir 默认空串 = 用仓内 logs/（主脚本据此回落，见 service-manager-gui.ps1 顶部）
   Assert ($script:config.LogKeepCount -eq 10 -and $script:config.LogKeepDays -eq 14 -and $script:config.LogDir -eq '') 'Log retention defaults not restored on broken config.'
 
@@ -114,16 +114,14 @@ try {
   # ---- 2c. 数值越界：-1 会让 WaitOne/CTS 无限等待，0 会让分页除零 → 回落默认 + 提示 ----
   $script:config = $null; $script:configWarning = $null; $script:configNotices = $null
   [IO.File]::WriteAllText((Join-Path $RepoRoot 'config.json'),
-    '{"TcpTimeoutMs":-1,"PerPage":0,"HttpTimeoutMs":9999999,"BogusKey":1}', [Text.UTF8Encoding]::new($false))
+    '{"TcpTimeoutMs":-1,"HttpTimeoutMs":9999999,"BogusKey":1}', [Text.UTF8Encoding]::new($false))
   . (Join-Path $RepoRoot 'lib/config.ps1')
   Assert ($script:config.TcpTimeoutMs -eq 200) "负超时应回落 200，got $($script:config.TcpTimeoutMs)"
-  Assert ($script:config.PerPage -eq 6) "PerPage=0 应回落 6，got $($script:config.PerPage)"
   Assert ($script:config.HttpTimeoutMs -eq 3000) "超过上限应回落 3000，got $($script:config.HttpTimeoutMs)"
   $notices = @($script:configNotices)
-  Assert ($notices.Count -eq 4) "3 个越界 + 1 个未知键应给 4 条提示，got $($notices -join ' | ')"
+  Assert ($notices.Count -eq 3) "2 个越界 + 1 个未知键应给 3 条提示，got $($notices -join ' | ')"
   Assert (@($notices | Where-Object { $_ -match 'TcpTimeoutMs=-1' }).Count -eq 1) '越界提示应带实际值'
   Assert (@($notices | Where-Object { $_ -match '未知键 BogusKey' }).Count -eq 1) '未知键应提示'
-  $null = [math]::Sqrt($script:config.PerPage)   # 分页这步不该因除零抛出
 
   # ---- 3. mock restart：Wait-Stopped 用 $sync 注入的 waitMs=50——
   # 服务一直不进 Stopped（fake 状态 Running），注入生效时 ~50ms 就放弃重启并回一条失败回执；

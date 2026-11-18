@@ -1,7 +1,6 @@
 # lib/xaml.ps1 — 卡片主视图：列数由 PerPage 计算，窗口缩放时同步伸展。实现细节：docs/IMPLEMENTATION-NOTES.md
 if (-not $script:config) { . (Join-Path $PSScriptRoot 'config.ps1') }
 if (-not (Get-Command Get-CloseAction -EA SilentlyContinue)) { . (Join-Path $PSScriptRoot 'tray.ps1') }
-$script:PER_PAGE = [int]$script:config.PerPage
 
 # 主窗口尺寸按工作区推算：150%/200% 缩放的笔记本上，1040×640 的 DIP 可能直接超出工作区，
 # 底栏会被挤出屏幕。全部夹到工作区的 90%，MinHeight 也随工作区走（不再写死 540）。
@@ -138,20 +137,13 @@ function New-MainWindow {
   $actions = New-Object System.Windows.Controls.StackPanel -Property @{
     Orientation='Horizontal'; HorizontalAlignment='Right'; VerticalAlignment='Center'
   }
-  $btnPrev = New-Object System.Windows.Controls.Button -Property @{Content='上一页'; Padding='10,5'; Margin='0,0,6,0'}
-  $lblPage = New-Object System.Windows.Controls.TextBlock -Property @{
-    VerticalAlignment='Center'; Margin='4,0,10,0'; Foreground=$script:T.Dim
-  }
-  $btnNext = New-Object System.Windows.Controls.Button -Property @{Content='下一页'; Padding='10,5'; Margin='0,0,12,0'}
-  $btnAdd = New-Object System.Windows.Controls.Button -Property @{Content='+ 添加服务'; Foreground=$script:T.Accent; Padding='14,6'}
-  foreach ($control in $btnPrev,$lblPage,$btnNext,$btnAdd) { [void]$actions.Children.Add($control) }
+  # 不分页：一屏放全部服务。列数由服务数量在 Render-Page 里算，这里只建空面板。
+  $btnAdd = New-Object System.Windows.Controls.Button -Property @{Content='+ 添加服务'; Foreground=$script:T.Accent; Padding='12,5'}
+  [void]$actions.Children.Add($btnAdd)
   [void]$toolbar.Children.Add($actions)
   [System.Windows.Controls.DockPanel]::SetDock($toolbar, 'Top')
   [void]$content.Children.Add($toolbar)
-  # 列数取上取整 sqrt：PER_PAGE=6 → 3×2，4 → 2×2，8 → 3×3。
-  $cols = [math]::Ceiling([math]::Sqrt($script:PER_PAGE))
-  $rows = [math]::Ceiling($script:PER_PAGE / $cols)
-  $cardPanel = New-Object System.Windows.Controls.Primitives.UniformGrid -Property @{Columns=$cols; Rows=$rows}
+  $cardPanel = New-Object System.Windows.Controls.Primitives.UniformGrid -Property @{Columns=1; Rows=1}
   [void]$content.Children.Add($cardPanel)
   [void]$grid.Children.Add($content); [System.Windows.Controls.Grid]::SetRow($content,1)
 
@@ -168,8 +160,7 @@ function New-MainWindow {
   $root.Child=$grid; $win.Content=$root
 
   $script:window=$win; $script:cardPanel=$cardPanel; $script:statusBar=$statusBar
-  $script:lblPage=$lblPage; $script:btnPrev=$btnPrev; $script:btnNext=$btnNext
-  $script:serviceSummary=$summary; $script:cards=@{}; $script:curPage=0
+  $script:serviceSummary=$summary; $script:cards=@{}
   $script:freshPill=$freshPill
 
   # 最大化/还原共用；必须存 $script:，否则局部作用域销毁后处理器解析不到（脚本块非闭包）。
@@ -222,12 +213,6 @@ function New-MainWindow {
   })
   $win.Add_Closed({ Stop-Background; Remove-Tray })
   $btnAdd.Add_Click({ Show-Add $script:window; Render-Page })
-  $btnPrev.Add_Click({ if ($script:curPage -gt 0) { $script:curPage--; Render-Page } })
-  $btnNext.Add_Click({
-    $names = @(Get-SvcNames)
-    $pages = Get-PageCount $names.Count
-    if ($script:curPage -lt $pages-1) { $script:curPage++; Render-Page }
-  })
   $win
 }
 
@@ -240,37 +225,33 @@ function Get-SvcNames {
   try { @($script:svc.Keys | Where-Object { -not (Test-SvcIsCompanion $_) }) } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }
 }
 
-# 按 PerPage 算总页数；空清单也返回 1 页（Max），避免分页器出现「第 0 页」。
-function Get-PageCount([int]$count) { [math]::Max(1,[math]::Ceiling($count / $script:PER_PAGE)) }
+# 一屏放下全部服务时的列数：1→1、2→2、3~6→3、7 以上→4（按数量算，不按页算）。
+# 卡片尺寸随之由 UniformGrid 等分，列越多单卡越窄，配合 card.ps1 的紧凑内边距刚好不挤。
+function Get-GridColumns([int]$count) {
+  if ($count -le 1) { return 1 }
+  if ($count -le 2) { return 2 }
+  if ($count -le 6) { return 3 }
+  return 4
+}
 
-# 重建当前页的卡片（切页、增删服务后调用）；只动可见卡片，其它页状态保留在 $cards 里。
+# 重建全部卡片（增删服务、配置重载后调用）；卡片对象缓存在 $cards，健康/过渡/冷却状态不丢。
 function Render-Page {
   $script:cardPanel.Children.Clear()
   $gate = if ($script:sync -and $script:sync.gate) { $script:sync.gate } else { $null }
   $names = @(Get-SvcNames)
-  $pages = Get-PageCount $names.Count
-  $script:curPage=[math]::Max(0,[math]::Min($script:curPage,$pages-1))
-  $start=$script:curPage*$script:PER_PAGE
-  $end=[math]::Min($start+$script:PER_PAGE,$names.Count)-1
-  if ($start -le $end) {
-    foreach ($n in $names[$start..$end]) {
-      # 重用卡片，翻页不丢失健康状态、过渡状态或 8 秒冷却。
-      $cached = $script:cards.ContainsKey($n)
-      $card=if ($cached) { $script:cards[$n] } else { New-Card $n $script:svc[$n] }
-      # 命中缓存时刷新端口/URL/Tag（配置可能已变）；新建卡已在 New-Card 固化。
-      if ($cached) {
-        if ($gate) { [Threading.Monitor]::Enter($gate) }
-        try { $info = $script:svc[$n] } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }
-        if ($info) { Update-CardInfo $n $info }
-      }
-      [void]$script:cardPanel.Children.Add($card)
+  $cols = Get-GridColumns $names.Count
+  $script:cardPanel.Columns = $cols
+  $script:cardPanel.Rows = [math]::Max(1, [int][math]::Ceiling($names.Count / $cols))
+  foreach ($n in $names) {
+    $cached = $script:cards.ContainsKey($n)
+    $card=if ($cached) { $script:cards[$n] } else { New-Card $n $script:svc[$n] }
+    # 命中缓存时刷新端口/URL/Tag（配置可能已变）；新建卡已在 New-Card 固化。
+    if ($cached) {
+      if ($gate) { [Threading.Monitor]::Enter($gate) }
+      try { $info = $script:svc[$n] } finally { if ($gate) { [Threading.Monitor]::Exit($gate) } }
+      if ($info) { Update-CardInfo $n $info }
     }
+    [void]$script:cardPanel.Children.Add($card)
   }
   $script:serviceSummary.Text="$($names.Count) 个本地服务"
-  $script:lblPage.Text="$($script:curPage+1) / $pages"
-  foreach ($control in $script:btnPrev,$script:lblPage,$script:btnNext) {
-    $control.Visibility=if ($pages -gt 1) { 'Visible' } else { 'Collapsed' }
-  }
-  $script:btnPrev.IsEnabled=($script:curPage -gt 0)
-  $script:btnNext.IsEnabled=($script:curPage -lt $pages-1)
 }

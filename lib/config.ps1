@@ -37,7 +37,6 @@ function Get-StateSampleInterval {
 }
 
 $script:config = [ordered]@{
-  PerPage             = 6        # 卡片每页数量（xaml.ps1 UniformGrid 3×2 与 Render-Page 分页共用）
   TcpTimeoutMs        = 200      # 端口探测超时（poll.ps1 TcpClient BeginConnect）
   HttpTimeoutMs       = 3000     # HTTP 探测超时（poll.ps1 共享 HttpClient.Timeout，本地面板冷启动宽限）
   CrashLogMaxBytes    = 524288   # gui-crash.log 轮转阈值（512 KiB，超则挪成 .1）
@@ -76,9 +75,8 @@ $script:config = [ordered]@{
 }
 
 # 数值键的合法区间（含端点）。TryParse 只证明「是整数」：-1 会让 WaitOne/CTS 变成无限等待，
-# 0 会让分页做除零（窗口根本起不来）。越界一律回落默认值 + 提示，与「坏值不阻断」同一策略。§configRanges
+# 0 会让轮询/探测的除数归零。越界一律回落默认值 + 提示，与「坏值不阻断」同一策略。§configRanges
 $script:configRanges = @{
-  PerPage                 = @(1, 12)
   TcpTimeoutMs            = @(50, 600000)
   HttpTimeoutMs           = @(50, 600000)
   CrashLogMaxBytes        = @(1024, 104857600)

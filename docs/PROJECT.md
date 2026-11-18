@@ -24,7 +24,7 @@ PowerShell 7 + WPF 的本地 Windows 服务管理 GUI。卡片式启停 / 健康
 
 ```
 service-manager-gui.ps1（主入口：CLI 分支 + 提权 + 模块加载 + 窗口启动）
-├─ lib/config.ps1     可调常量收口（PerPage/超时/轮转/冷却/托盘/日志保留）
+├─ lib/config.ps1     可调常量收口（超时/轮转/冷却/托盘/日志保留）
 ├─ lib/theme.ps1      系统字体、主题色 $script:T、按钮模板、Mica P/Invoke
 ├─ lib/util.ps1       聚合加载点（2026-11-13 按职责拆分）：按依赖顺序点源下面五个模块
 ├─ lib/svc-store.ps1  清单读写（Read-SvcFile/Load-Svc/Save-Svc/Add-SvcEntry）、外部修改检测、重载
@@ -55,7 +55,7 @@ service-manager-gui.ps1（主入口：CLI 分支 + 提权 + 模块加载 + 窗�
 ├─ lib/add-svc.ps1    CLI 入口 Add-SvcFromCli（-Add 分支用）
 ├─ lib/tray.ps1       可选托盘（纯函数 Get-CloseAction/Get-MinimizeAction + 惰性 Initialize-Tray）
 ├─ lib/card.ps1       卡片构建 + 双击防抖 + 过渡态保护（Set-CardTransition）+ 右键菜单
-└─ lib/xaml.ps1       主窗口外壳（标题栏 + 工具栏 + 分页 + 状态栏）
+└─ lib/xaml.ps1       主窗口外壳（标题栏 + 工具栏 + 单页卡片网格 + 状态栏）
 ```
 
 加载顺序在 `service-manager-gui.ps1` 里固定：config → theme → health → util → svc-input → nssm →
@@ -137,7 +137,7 @@ UI DispatcherTimer → ack 分支 → 解封按钮 + 冷却
 
 ### 6. 删除走后台命令队列
 
-NSSM remove 是 stop → Wait-Stopped ≤12s → nssm remove confirm，同步执行会冻结 UI。删删除走后台命令队列（`act=remove`），UI 线程只关弹窗，回执由 DispatcherTimer 处理（从 svc 与卡片缓存移除，落盘配置，刷新分页）。
+NSSM remove 是 stop → Wait-Stopped ≤12s → nssm remove confirm，同步执行会冻结 UI。删删除走后台命令队列（`act=remove`），UI 线程只关弹窗，回执由 DispatcherTimer 处理（从 svc 与卡片缓存移除，落盘配置，重建卡片网格）。
 
 ### 7. 敏感键名检测不阻断
 
@@ -211,7 +211,7 @@ nssm remove SmokeTestObjectName confirm          → exit 0，服务已消失
 - **`Open-PanelUrl` 只放行 `http` / `https`**：2026-10-29 改为白名单。原实现直接 `Start-Process` 任意 URI，`file:///` 或自定义协议在提权 GUI 下等于以管理员**执行**任意程序（不只是「打开网页」）。非 http/https 的地址现在只更新状态栏，不启动。
 - **健康探测有 `probe` 口径（`auto` / `tcp` / `http` / `none`），关闭按钮不再看健康**：2026-10-30 加。原实现只有「TCP 通 + HTTP 200」一条路，非 HTTP 服务（数据库、gRPC、纯 socket）永远不是绿点；更糟的是 `Test-CardCanStop` 把健康一起判进去，这类服务的「关闭」按钮被永久禁用，只剩右键菜单。现在 `probe: tcp`（或 `url` 为空）时 TCP 通即正常，健康门闩只留在双击路径。
 - **`services.json` 的三道写入门闩**：解析失败拒写（原有）、顶层形状必须是对象（2026-10-30 加：`[]` / `"x"` 这类合法 JSON 取不到键，旧实现返回空清单并当成功，下一次保存把原文件覆盖成 `{}`）、载入后 mtime 变化拒写（手改或另一个会话抢先写时不让全量写回抹掉别人的改动）。写前顺手把上一版留成 `services.json.bak`。
-- **`config.json` 数值有区间校验**：2026-10-30 加。`TryParse` 只证明是整数，`TcpTimeoutMs: -1` 会让 `WaitOne` / `CancellationTokenSource` 变成无限等待（后台 runspace 从此不返回），`PerPage: 0` 会让分页做除零（窗口根本起不来）。越界回落默认值 + 弹提示。
+- **`config.json` 数值有区间校验**：2026-10-30 加。`TryParse` 只证明是整数，`TcpTimeoutMs: -1` 会让 `WaitOne` / `CancellationTokenSource` 变成无限等待（后台 runspace 从此不返回）。越界回落默认值 + 弹提示。
 - **健康历史只在「变化」时记一条**：`logs/health/health-YYYYMMDD.ndjson`，没有心跳/采样点，所以「一直平稳」在历史里是空白而不是一行行「正常」。这是刻意的——4 秒一拍全记一天几万行，读的时候全是噪声。写入在后台 runspace（UI 线程不碰 I/O），`HealthHistory=false` 时连队列都不建。保留天数用 `HealthKeepDays` 按天删文件。
 - **Web 只读视图的信任边界**：默认关。开时只 `127.0.0.1` 监听、只接受 `GET`、必须带 `?t=<128 位随机 token>`（状态栏显示一次），没有任何写入口。局域网访问走 SSH 端口转发——**不**监听外部网卡，也**不**自己写登录/会话。端口 0 = 随机，避免和别的工具抢固定端口；端口被占用时状态栏报错，不静默。
 - **批量启停只处理终态**：只挑「已停止 / 运行中」，启动中/停止中/暂停/未安装都不碰——批量命令和手动命令抢同一张卡时，过渡态最容易打架。目标来自全量探测结果 `$script:svcState`，不只当前页；**状态过期（超过 2 个探测周期没刷新）的条目跳过**并在文案里说明——窗口刚开、后台 runspace 死掉或探测被限流时，旧值会让批量朝「其实已经停了」的服务再发 stop。

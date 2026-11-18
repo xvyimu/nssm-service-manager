@@ -9,7 +9,7 @@
 ```
 入口层      service-manager-gui.ps1     CLI 分支 · 提权 · 依赖预检 · 模块加载 · 窗口启动
             launch.vbs                  wscript → runas pwsh（无控制台）
-UI 层       lib/xaml.ps1                窗口外壳 · 分页 · 状态栏
+UI 层       lib/xaml.ps1                窗口外壳 · 单页卡片网格 · 状态栏
             lib/card.ps1                卡片：状态呈现、按钮、右键菜单、过渡态
             lib/dialogs.ps1             添加/删除对话框（提交体可单测）
             lib/logview.ps1             日志窗口 · 健康历史窗口

@@ -364,7 +364,7 @@ $win.Add_SourceInitialized({
   Set-Backdrop $hwnd 2  # 2 = Mica
 })
 
-# ---- 渲染分页卡片 ----
+# ---- 渲染卡片（一屏全量，不分页）----
 # 只读 Web 视图（可选，默认关）：loopback + token，局域网访问请走 SSH 端口转发，不监听外部网卡。
 if ($script:config.WebView) {
   $script:webToken = [guid]::NewGuid().ToString('N')

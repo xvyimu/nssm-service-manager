@@ -391,7 +391,7 @@ function New-Card([string]$name, $info){
   # Focusable：Tab 能停在卡片上（Border 不是 Control，没有 IsTabStop；Tab 导航对非 Control 的可聚焦
   # 元素只看 Focusable，实测会停）。焦点一到就换成 1px 强调色描边，尺寸不变所以卡片不跳动。
   $border = New-Object System.Windows.Controls.Border -Property @{
-    CornerRadius=10; Margin='8'; Padding='18'
+    CornerRadius=8; Margin='5'; Padding='12'
     BorderBrush=$script:T.CardBrd; BorderThickness='1'; Background=$script:T.Card; Focusable=$true
   }
   $grid=New-Object System.Windows.Controls.Grid
@@ -403,33 +403,33 @@ function New-Card([string]$name, $info){
   [void]$heading.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition -Property @{Width='*'}))
   [void]$heading.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition -Property @{Width='Auto'}))
   $lblName=New-Object System.Windows.Controls.TextBlock -Property @{
-    Text=$name; FontFamily=$script:cjkFont; FontSize=17; FontWeight='SemiBold'; Foreground=$script:T.Fg
-    VerticalAlignment='Center'; TextTrimming='CharacterEllipsis'; ToolTip=$name; Margin='0,0,8,0'
+    Text=$name; FontFamily=$script:cjkFont; FontSize=14; FontWeight='SemiBold'; Foreground=$script:T.Fg
+    VerticalAlignment='Center'; TextTrimming='CharacterEllipsis'; ToolTip=$name; Margin='0,0,6,0'
   }
-  $port=New-Object System.Windows.Controls.Border -Property @{Background=$script:T.PortBg; CornerRadius=4; Padding='7,3'; VerticalAlignment='Center'}
-  $portText=New-Object System.Windows.Controls.TextBlock -Property @{Text=":$($info.port)"; FontFamily=$script:fontMono; FontSize=12; Foreground=$script:T.Dim}
+  $port=New-Object System.Windows.Controls.Border -Property @{Background=$script:T.PortBg; CornerRadius=4; Padding='5,2'; VerticalAlignment='Center'}
+  $portText=New-Object System.Windows.Controls.TextBlock -Property @{Text=":$($info.port)"; FontFamily=$script:fontMono; FontSize=11; Foreground=$script:T.Dim}
   $port.Child=$portText
   [void]$heading.Children.Add($lblName); [void]$heading.Children.Add($port)
   [System.Windows.Controls.Grid]::SetColumn($port,1)
   [void]$grid.Children.Add($heading)
 
   $endpoint=New-Object System.Windows.Controls.TextBlock -Property @{
-    Text=$info.url; FontFamily=$script:fontMono; FontSize=12; Foreground=$script:T.Dim
-    Margin='0,8,0,0'; TextTrimming='CharacterEllipsis'; ToolTip=$info.url
+    Text=$info.url; FontFamily=$script:fontMono; FontSize=10.5; Foreground=$script:T.Dim
+    Margin='0,5,0,0'; TextTrimming='CharacterEllipsis'; ToolTip=$info.url
   }
   [void]$grid.Children.Add($endpoint); [System.Windows.Controls.Grid]::SetRow($endpoint,1)
-  $state=New-Object System.Windows.Controls.StackPanel -Property @{VerticalAlignment='Center'; Margin='0,12,0,12'}
+  $state=New-Object System.Windows.Controls.StackPanel -Property @{VerticalAlignment='Center'; Margin='0,7,0,7'}
   $stateLine=New-Object System.Windows.Controls.StackPanel -Property @{Orientation='Horizontal'}
-  $dot=New-Object System.Windows.Shapes.Ellipse -Property @{Width=10; Height=10; Fill=$script:T.BrushStale; Margin='0,0,9,0'; VerticalAlignment='Center'}
-  $lblSt=New-Object System.Windows.Controls.TextBlock -Property @{Text='查询中'; FontFamily=$script:cjkFont; FontSize=18; FontWeight='SemiBold'; Foreground=$script:T.Fg}
-  $lblUp=New-Object System.Windows.Controls.TextBlock -Property @{Text='正在获取服务状态'; FontFamily=$script:cjkFont; FontSize=12; Foreground=$script:T.Dim; Margin='19,4,0,0'; TextTrimming='CharacterEllipsis'}
+  $dot=New-Object System.Windows.Shapes.Ellipse -Property @{Width=8; Height=8; Fill=$script:T.BrushStale; Margin='0,0,7,0'; VerticalAlignment='Center'}
+  $lblSt=New-Object System.Windows.Controls.TextBlock -Property @{Text='查询中'; FontFamily=$script:cjkFont; FontSize=15; FontWeight='SemiBold'; Foreground=$script:T.Fg}
+  $lblUp=New-Object System.Windows.Controls.TextBlock -Property @{Text='正在获取服务状态'; FontFamily=$script:cjkFont; FontSize=10.5; Foreground=$script:T.Dim; Margin='15,3,0,0'; TextTrimming='CharacterEllipsis'}
   [void]$stateLine.Children.Add($dot); [void]$stateLine.Children.Add($lblSt)
   [void]$state.Children.Add($stateLine); [void]$state.Children.Add($lblUp)
   # 停止/重启的确定进度条：放在副标题正下方，也就是状态文字那块（过渡态区域），
   # 不另起一行也不改行高——它属于第 2 行（*=伸缩行），显隐只挤压该行留白，卡片总高不变。
   # 4px、圆角、前景用现有强调色；无 stopProgress 时 Collapsed（不占位）。
   $stopBar=New-Object System.Windows.Controls.ProgressBar -Property @{
-    Height=4; Minimum=0; Maximum=1; Value=0; Margin='19,7,0,0'
+    Height=3; Minimum=0; Maximum=1; Value=0; Margin='15,5,0,0'
     Foreground=$script:T.BrushAccent; Background=$script:T.CardBrd
     BorderThickness=0; Focusable=$false; Visibility='Collapsed'
   }
@@ -441,7 +441,7 @@ function New-Card([string]$name, $info){
   # 无 url 的服务没有面板可开：整个按钮收起。
   $hasUrl=(-not [string]::IsNullOrWhiteSpace($info.url))
   $open=New-Object System.Windows.Controls.Button -Property @{
-    Content='打开面板'; FontFamily=$script:cjkFont; FontSize=12; Padding='10,6'
+    Content='打开面板'; FontFamily=$script:cjkFont; FontSize=11; Padding='7,4'
     HorizontalAlignment='Left'; Background='Transparent'; BorderThickness='0'; Foreground=$script:T.Accent
     Tag=$info.url; IsEnabled=$hasUrl; Visibility=$(if ($hasUrl) { 'Visible' } else { 'Collapsed' })
   }
@@ -450,18 +450,18 @@ function New-Card([string]$name, $info){
   $rightBtns=New-Object System.Windows.Controls.StackPanel -Property @{Orientation='Horizontal'; HorizontalAlignment='Right'}
   # 两个按钮同尺寸：它们是对等的两个方向，尺寸差会让「关闭」看起来比「启动」轻。
   $btnStop=New-Object System.Windows.Controls.Button -Property @{
-    Content='关闭'; FontFamily=$script:cjkFont; FontSize=12; Padding='14,6'; Margin='0,0,8,0'
-    MinWidth=82; IsEnabled=$false
+    Content='关闭'; FontFamily=$script:cjkFont; FontSize=11; Padding='9,4'; Margin='0,0,6,0'
+    MinWidth=64; IsEnabled=$false
   }
   $btn=New-Object System.Windows.Controls.Button -Property @{
-    Content='启动'; FontFamily=$script:cjkFont; FontSize=12; Padding='14,6'
-    MinWidth=82; IsEnabled=$false
+    Content='启动'; FontFamily=$script:cjkFont; FontSize=11; Padding='9,4'
+    MinWidth=64; IsEnabled=$false
   }
   [void]$rightBtns.Children.Add($btnStop); [void]$rightBtns.Children.Add($btn)
   [void]$actions.Children.Add($open); [void]$actions.Children.Add($rightBtns)
   $lblErr=New-Object System.Windows.Controls.TextBlock -Property @{
-    Text=''; FontFamily=$script:cjkFont; FontSize=11; Foreground=$script:T.Danger
-    TextWrapping='Wrap'; Margin='0,0,0,8'; Visibility='Collapsed'
+    Text=''; FontFamily=$script:cjkFont; FontSize=10; Foreground=$script:T.Danger
+    TextWrapping='Wrap'; Margin='0,0,0,5'; Visibility='Collapsed'
   }
   [void]$grid.Children.Add($lblErr); [System.Windows.Controls.Grid]::SetRow($lblErr,3)
   [void]$grid.Children.Add($actions); [System.Windows.Controls.Grid]::SetRow($actions,4)

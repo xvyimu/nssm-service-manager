@@ -1,5 +1,4 @@
 {
-  "PerPage":              6,
   "TcpTimeoutMs":         200,
   "HttpTimeoutMs":        3000,
   "CrashLogMaxBytes":     524288,
@@ -31,3 +30,4 @@
   "MinimizeToTray":       false,
   "CloseToTray":          false
 }
+
